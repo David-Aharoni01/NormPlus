@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Deep navy — pairs with the white watch body and teal accent in the launcher icon -->
+    <color name="launcher_background">#0D1B2A</color>
+</resources>

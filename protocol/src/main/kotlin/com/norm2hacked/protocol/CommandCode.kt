@@ -1,0 +1,100 @@
+package com.norm2hacked.protocol
+
+// All codes from NORM/smali_classes2/cn/appscomm/bluetooth/BluetoothCommandConstant.smali
+enum class CommandCode(val byte: Byte) {
+    RESPONSE(0x01),
+    WATCH_ID(0x02),
+    DEVICE_VERSION(0x03),
+    DATETIME(0x04),
+    TIME_SURFACE_SETTING(0x05),
+    PRIMARY_SURFACE_DISPLAY(0x06),
+    SCREEN_BRIGHTNESS(0x07),
+    BATTERY_POWER(0x08),
+    VOLUME(0x09),
+    SHOCK_MODE(0x0A),
+    LANGUAGE(0x0B),
+    UNIT(0x0C),
+    RESTORE_FACTORY(0x0D),
+    UPGRADE_MODE(0x0E),
+    BRIGHT_SCREEN_TIME(0x13),
+    SNOOZE(0x14),
+    DO_NOT_DISTURB(0x15),
+    TRAN_SPEED(0x16),
+    POWER_OFF_MODE(0x17),
+    TIME_ZONE(0x18),
+    NOTIFICATIONS_TEXT_SIZE(0x19),
+    CONTROL_DEVICE(0x1A),
+    CUSTOMIZE_WATCH_FACE_EX(0x1E),
+    CUSTOMIZE_WATCH_FACE_PRO(0x1F),
+    CUSTOMIZE_WATCH_FACE_SET(0x20),
+    ANALOG_MODE(0x21),
+    WEATHER_SETTING(0x22),
+    FIND_DEVICE(0x23),
+    BRIGHT_SCREEN_TIME_EX(0x25),
+    EVENT_TIME_INTERVAL(0x26),
+    WORK_MODE(0x12),
+    MAIN_ALARM_BACKGROUND_COLOR(0x11),
+    SHOCK_STRENGTH(0x10),
+    APP_SETTING(0x2A),
+    CUSTOMIZE_SCALE_ACTION(0x2D),
+    CUSTOMIZE_BUTTON(0x2E),
+    TIME_PERIOD_BRIGHTNESS(0x2F),
+    USER_INFO(0x30),
+    USAGE_HABITS(0x31),
+    USER_NAME(0x32),
+    GOAL(0x50),
+    SPORT_SLEEP_MODE(0x51),
+    TOTAL_SPORT_SLEEP_COUNT(0x52),
+    DELETE_SPORT_DATA(0x53),
+    GET_SPORT_DATA(0x54),
+    DELETE_SLEEP_DATA(0x55),
+    GET_SLEEP_DATA(0x56),
+    DEVICE_DISPLAY_DATA(0x57),
+    AUTO_SLEEP(0x58),
+    TOTAL_HEART_RATE_COUNT(0x59),
+    DELETE_HEART_RATE_DATA(0x5A),
+    GET_HEART_RATE_DATA(0x5B),
+    AUTO_HEART_RATE(0x5C),
+    HEART_RATE_ALARM_THRESHOLD(0x5D),
+    INACTIVITY_ALERT(0x5E),
+    GET_MOOD_DATA(0x5F),
+    CALORIES_TYPE(0x60),
+    GET_HEART_RATE_DATA_EX(0x61),
+    TOTAL_BLOOD_PRESSURE_COUNT(0x62),
+    DELETE_BLOOD_PRESSURE_DATA(0x63),
+    GET_BLOOD_PRESSURE_DATA(0x64),
+    TOTAL_REAL_TIME_SPORT_DATA_COUNT(0x66),
+    GET_REAL_TIME_SPORT_DATA(0x67),
+    DELETE_REAL_TIME_SPORT_DATA(0x68),
+    GPS(0x6A),
+    GET_GPS_DATA(0x6B),
+    GET_GPS_DATA_EX(0x6D),
+    GET_CURRENT_REAL_TIME_SPORT_DATA(0x6E),
+    GET_AEROBIC_SPORT_DATA(0x6F),
+    PHONE_NAME_PUSH(0x70),
+    SMS_PUSH(0x71),
+    MSG_COUNT_PUSH(0x72),
+    SOCIAL_PUSH(0x73),
+    EMAIL_PUSH(0x74),
+    SCHEDULE_PUSH(0x75),
+    SOCIAL_EX_PUSH(0x76),
+    WEATHER_PUSH(0x77),
+    WEATHER_PUSH_EX(0x78),
+    SOCIAL_NEW_PUSH(0x79),
+    SWITCH_SETTING(0x90.toByte()); // 0x90 = -0x70 signed
+
+    companion object {
+        fun fromByte(b: Byte): CommandCode? = entries.firstOrNull { it.byte == b }
+    }
+}
+
+enum class Action(val byte: Byte) {
+    CHECK(0x70),
+    SET(0x71),
+    CHECK_RESPONSE(0x80.toByte()),   // -0x80 signed (from BluetoothCommandConstant.smali: ACTION_CHECK_RESPONSE = -0x80)
+    SET_RESPONSE(0x81.toByte());     // -0x7F signed
+
+    companion object {
+        fun fromByte(b: Byte): Action? = entries.firstOrNull { it.byte == b }
+    }
+}
