@@ -24,6 +24,15 @@ import javax.inject.Inject
 
 private const val TAG = "SyncUseCase"
 
+// Whether to delete records off the watch after reading them.
+//
+// The original protocol deletes after each sync to free watch storage (single-consumer model).
+// But as a reverse-engineering tool that must COEXIST with the official app, deleting is
+// destructive: whichever app syncs first drains the records, leaving the other showing zeroes.
+// Default OFF so our sync is non-destructive. The watch keeps its records; our DB de-dupes via
+// the UNIQUE timestamp constraints, so re-reading the same records on each sync is harmless.
+private const val DELETE_AFTER_SYNC = false
+
 sealed class SyncProgress {
     data object Idle : SyncProgress()
     data class Running(val label: String, val current: Int, val total: Int) : SyncProgress()
@@ -102,8 +111,12 @@ class SyncHealthDataUseCase @Inject constructor(
         sportDao.insertAll(records)
         Log.i(TAG, "syncSportData: inserted ${records.size} record(s) into DB")
         // Source: MBluetooth.smali deleteSportData → DeleteSportData(callback, 1, 0) → payload=[0x00]
-        val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SPORT_DATA, Action.SET, byteArrayOf(0x00))
-        Log.i(TAG, "syncSportData: delete ack action=${delPkt.action}")
+        if (DELETE_AFTER_SYNC) {
+            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SPORT_DATA, Action.SET, byteArrayOf(0x00))
+            Log.i(TAG, "syncSportData: delete ack action=${delPkt.action}")
+        } else {
+            Log.i(TAG, "syncSportData: non-destructive mode — leaving ${count} record(s) on watch")
+        }
     }
 
     private suspend fun syncHeartRate(onProgress: suspend (SyncProgress) -> Unit) {
@@ -127,8 +140,12 @@ class SyncHealthDataUseCase @Inject constructor(
         heartRateDao.insertAll(records)
         Log.i(TAG, "syncHeartRate: inserted ${records.size} record(s) into DB")
         // Source: MBluetooth.smali deleteHeartRateData → DeleteHeartRateData(callback, 1, 0) → payload=[0x00]
-        val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_HEART_RATE_DATA, Action.SET, byteArrayOf(0x00))
-        Log.i(TAG, "syncHeartRate: delete ack action=${delPkt.action}")
+        if (DELETE_AFTER_SYNC) {
+            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_HEART_RATE_DATA, Action.SET, byteArrayOf(0x00))
+            Log.i(TAG, "syncHeartRate: delete ack action=${delPkt.action}")
+        } else {
+            Log.i(TAG, "syncHeartRate: non-destructive mode — leaving ${count} record(s) on watch")
+        }
     }
 
     private suspend fun syncSleep(onProgress: suspend (SyncProgress) -> Unit) {
@@ -177,8 +194,12 @@ class SyncHealthDataUseCase @Inject constructor(
         sleepDao.insertSessionWithStages(session, stageEntities)
 
         // Source: MBluetooth.smali deleteSleepData → DeleteSleepData(callback, 1, 0) → payload=[0x00]
-        val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SLEEP_DATA, Action.SET, byteArrayOf(0x00))
-        Log.i(TAG, "syncSleep: delete ack action=${delPkt.action}")
+        if (DELETE_AFTER_SYNC) {
+            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SLEEP_DATA, Action.SET, byteArrayOf(0x00))
+            Log.i(TAG, "syncSleep: delete ack action=${delPkt.action}")
+        } else {
+            Log.i(TAG, "syncSleep: non-destructive mode — leaving ${count} record(s) on watch")
+        }
     }
 }
 

@@ -14,6 +14,7 @@ import com.norm2hacked.domain.usecase.SyncProgress
 import com.norm2hacked.protocol.Action
 import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.commands.BatteryCommand
+import com.norm2hacked.protocol.commands.DeviceDisplayCommand
 import com.norm2hacked.protocol.commands.DeviceVersionCommand
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +35,8 @@ data class DashboardUiState(
     val steps: Int = 0,
     val stepGoal: Int = 10_000,
     val calories: Float = 0f,
+    val distanceMeters: Int = 0,
+    val activeMinutes: Int = 0,
     val lastHrBpm: Int = 0,
     val lastHrTimestamp: Long = 0L,
     val sleepMinutes: Int = 0,
@@ -115,6 +118,40 @@ class DashboardViewModel @Inject constructor(
                 val version = DeviceVersionCommand.parseVersionString(verPkt)
                 watchPreferences.saveDeviceVersion(version)
                 _state.update { it.copy(deviceVersion = version) }
+
+                // The watch-face "today" totals — the live cumulative summary the watch shows on
+                // its own screen. This is the correct source for the dashboard (the DB sport
+                // records are auto-detected activity snippets, not the all-day pedometer total).
+                // Source: DeviceDisplayData.smali (cmd 0x57).
+                val displayPkt = bleManager.sendAndAwait(
+                    DeviceDisplayCommand.CMD, Action.CHECK, DeviceDisplayCommand.queryPayload()
+                )
+                // The watch returns real display data as a CHECK_RESPONSE (cmd 0x57); a bare
+                // generic SET_RESPONSE ack (payload [0x57, status]) means "no data" — don't let
+                // that wipe the cached values.
+                if (displayPkt.action == Action.CHECK_RESPONSE && displayPkt.payload.size >= 4) {
+                    val display = DeviceDisplayCommand.parse(displayPkt)
+                    android.util.Log.i(
+                        "DashboardVM",
+                        "DeviceDisplay: step=${display.step} cal=${display.calorie} dist=${display.distanceMeters} " +
+                            "sleep=${display.sleepMinutes} sportTime=${display.sportTimeMinutes} hr=${display.heartRate} mood=${display.mood}"
+                    )
+                    _state.update {
+                        it.copy(
+                            steps = display.step,
+                            calories = display.calorie.toFloat(),
+                            distanceMeters = display.distanceMeters,
+                            activeMinutes = display.sportTimeMinutes,
+                            sleepMinutes = display.sleepMinutes,
+                            lastHrBpm = if (display.heartRate > 0) display.heartRate else it.lastHrBpm,
+                        )
+                    }
+                } else {
+                    android.util.Log.w(
+                        "DashboardVM",
+                        "DeviceDisplay (0x57) returned no data (action=${displayPkt.action}, ${displayPkt.payload.size}B) — keeping cached totals"
+                    )
+                }
             }.onFailure { e ->
                 android.util.Log.e("DashboardVM", "refreshWatchStats failed: ${e.message}", e)
                 _state.update { it.copy(error = "Watch stats unavailable: ${e.message}") }
@@ -131,7 +168,10 @@ class DashboardViewModel @Inject constructor(
                     is SyncProgress.Running -> _state.update { it.copy(syncLabel = progress.label) }
                     is SyncProgress.Done -> {
                         _state.update { it.copy(isSyncing = false, syncLabel = "") }
+                        // Refresh DB-derived totals; also re-attempt the live watch summary
+                        // (DeviceDisplay) for when that command starts returning data.
                         loadCachedData()
+                        refreshWatchStats()
                     }
                     is SyncProgress.Error -> _state.update { it.copy(isSyncing = false, error = progress.message) }
                     else -> Unit

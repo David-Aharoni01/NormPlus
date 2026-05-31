@@ -102,8 +102,7 @@ class PythonBridgeTransport(
                         line == "READY" -> { ready = true; readyDeferred.complete(Unit) }
                         line.startsWith("N ") -> {
                             val bytes = line.substring(2).hexToBytes()
-                            val pkt = deframer.feed(bytes)
-                            if (pkt != null) _parsedFlow.emit(pkt)
+                            for (pkt in deframer.feed(bytes)) _parsedFlow.emit(pkt)
                         }
                         line.startsWith("ERR ") -> {
                             val msg = line.substring(4)

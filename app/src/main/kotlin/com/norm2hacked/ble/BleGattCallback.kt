@@ -87,8 +87,7 @@ class BleGattCallback(
         } else {
             // Handle main response channels: 8002, 8004, 8005
             // All use the same deframing logic (source: BluetoothParse.smali)
-            val packet = deframer.feed(value)
-            if (packet != null) {
+            for (packet in deframer.feed(value)) {
                 Log.d(TAG, "  → cmd=${packet.cmdCode} action=${packet.action} payload[${packet.payload.size}]=${packet.payload.toHex()}")
                 packetChannel.trySend(packet)
             }

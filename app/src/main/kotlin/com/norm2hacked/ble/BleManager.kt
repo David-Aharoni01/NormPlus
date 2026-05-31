@@ -262,7 +262,10 @@ class BleManager @Inject constructor(
                 Log.w(TAG, "Discovery/setup stalled >${DISCOVERY_TIMEOUT_MS}ms (gen=$gen) — forcing reconnect. " +
                         "Likely the watch dropped the link mid-discovery (another GATT client holding it?).")
                 runCatching { g.disconnect() }
-                handleDisconnect(mac, gen)
+                // Run recovery in a SEPARATE coroutine: handleDisconnect()/connect() call
+                // discoveryWatchdog?.cancel(), which would otherwise cancel THIS coroutine
+                // mid-retry and silently abort the reconnect.
+                scope.launch { handleDisconnect(mac, gen) }
             }
         }
     }

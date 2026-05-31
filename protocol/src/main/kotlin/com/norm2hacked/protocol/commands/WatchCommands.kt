@@ -85,17 +85,28 @@ object SportCommand {
     fun buildDelete() =
         PacketBuilder.build(CommandCode.DELETE_SPORT_DATA, Action.SET)
 
+    // Record layout — source: GetSportData.smali parse80BytesArray + SportBT.<init>(IIIIIIJII).
+    // All multi-byte fields are little-endian (ParseUtil.bytesToLong, first byte = LSB).
+    //   [0..1]   index        (2 bytes — NOT 1; this was the off-by-one in the old parser)
+    //   [2..5]   timeStamp    (epoch seconds)
+    //   [6..9]   step
+    //   [10..13] calories
+    //   [14..17] distance     (metres)
+    //   [18..21] sportTime    (duration, seconds)
+    //   [22]     avgBpm       (1 byte)
+    //   [23]     type         (1 byte)
+    //   [24..27] staticCalorie
+    // The smali reads each trailing field only when the payload is long enough; we mirror that.
     fun parse(p: Packet): SportRecord? {
         val b = p.payload
-        if (b.size < 22) return null
-        val timestamp = b.readInt32LE(1) * 1000L
-        val steps = b.readInt32LE(5)
-        val calories = b.readInt32LE(9).toFloat() / 1000f
-        val distance = b.readInt32LE(13).toFloat()
-        val avgHr = b.readInt32LE(17)
-        val sportType = b[21].toInt() and 0xFF
-        // Duration field at offset 22 requires at least 26 bytes (22 + 4).
-        val durationSec = if (b.size >= 26) b.readInt32LE(22) else 0
+        if (b.size < 6) return null // need at least the timestamp
+        val timestamp = b.readInt32LE(2) * 1000L
+        val steps = if (b.size >= 10) b.readInt32LE(6) else 0
+        val calories = if (b.size >= 14) b.readInt32LE(10).toFloat() / 1000f else 0f
+        val distance = if (b.size >= 18) b.readInt32LE(14).toFloat() else 0f
+        val durationSec = if (b.size >= 22) b.readInt32LE(18) else 0
+        val avgHr = if (b.size >= 23) b[22].toInt() and 0xFF else 0
+        val sportType = if (b.size >= 24) b[23].toInt() and 0xFF else 0
         return SportRecord(timestamp, steps, calories, distance, avgHr, sportType, durationSec)
     }
 }
@@ -108,6 +119,47 @@ data class SportRecord(
     val avgHr: Int,
     val sportType: Int,
     val durationSeconds: Int,
+)
+
+// ── Device display data (the watch-face "today" totals) ─────────────────────────
+//
+// This is the live, cumulative daily summary the watch shows on its own face — NOT the
+// sum of the discrete GET_SPORT_DATA history records (those are auto-detected activity
+// snippets that get deleted after sync). Source: DeviceDisplayData.smali (cmd 0x57, CHECK;
+// request payload [0x00] per MBluetooth.getDeviceDisplay → DeviceDisplayData(cb, 1, 0)).
+object DeviceDisplayCommand {
+    val CMD = CommandCode.DEVICE_DISPLAY_DATA
+
+    /** Request payload — single zero byte → wire packet [6F 57 70 01 00 00 8F]. */
+    fun queryPayload() = byteArrayOf(0x00)
+
+    // Response is a sequence of 4-byte little-endian ints, addressed by index
+    // (DeviceDisplayData.parse80BytesArray packed-switch):
+    //   [0] step  [1] calorie  [2] distance  [3] sleep  [4] sportTime  [5] heartRate  [6] mood
+    // The watch may send fewer than 7 (length is always a multiple of 4); absent fields read 0.
+    fun parse(p: Packet): DeviceDisplay {
+        val b = p.payload
+        fun field(i: Int): Int = if (b.size >= (i + 1) * 4) b.readInt32LE(i * 4) else 0
+        return DeviceDisplay(
+            step = field(0),
+            calorie = field(1),
+            distanceMeters = field(2),
+            sleepMinutes = field(3),
+            sportTimeMinutes = field(4),
+            heartRate = field(5),
+            mood = field(6),
+        )
+    }
+}
+
+data class DeviceDisplay(
+    val step: Int,
+    val calorie: Int,
+    val distanceMeters: Int,
+    val sleepMinutes: Int,
+    val sportTimeMinutes: Int,
+    val heartRate: Int,
+    val mood: Int,
 )
 
 // ── Heart rate ────────────────────────────────────────────────────────────────
