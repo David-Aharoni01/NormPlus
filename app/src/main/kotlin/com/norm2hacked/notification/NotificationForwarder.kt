@@ -3,10 +3,11 @@ package com.norm2hacked.notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import com.norm2hacked.ble.BleConstants
 import com.norm2hacked.ble.BleManager
 import com.norm2hacked.data.db.dao.NotificationRuleDao
 import com.norm2hacked.data.db.entities.NotificationRuleEntity
+import com.norm2hacked.protocol.Action
+import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.commands.NotificationPushCommand
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
@@ -66,14 +67,14 @@ class NotificationForwarder : NotificationListenerService() {
         val extras = sbn.notification?.extras ?: return
 
         scope.launch {
+            // App display name — used as the new-rule default and as a title fallback. Resolved at
+            // most once and lazily, so a disabled app (which returns early below) does no lookup.
+            val appLabel by lazy(LazyThreadSafetyMode.NONE) { resolveAppLabel(pkg) }
+
             val rule = ruleDao.queryByPackage(pkg) ?: run {
-                val pm = applicationContext.packageManager
-                val label = runCatching {
-                    pm.getApplicationInfo(pkg, 0).let { pm.getApplicationLabel(it).toString() }
-                }.getOrDefault(pkg)
-                val newRule = NotificationRuleEntity(pkg, label)
+                val newRule = NotificationRuleEntity(pkg, appLabel)
                 ruleDao.upsert(newRule)
-                Log.i(TAG, "New app seen: pkg=$pkg label='$label' — auto-added with defaults (enabled=true, muteGroupChats=true)")
+                Log.i(TAG, "New app seen: pkg=$pkg label='$appLabel' — auto-added with defaults (enabled=true, muteGroupChats=true)")
                 newRule
             }
 
@@ -82,30 +83,43 @@ class NotificationForwarder : NotificationListenerService() {
                 return@launch
             }
 
-            val title = extras.getString("android.title") ?: ""
+            val titleRaw = extras.getString("android.title") ?: ""
             val text = extras.getCharSequence("android.text")?.toString() ?: ""
-            val content = "$title: $text".take(80)
+            val title = titleRaw.ifBlank { appLabel }
             val groupKey = sbn.groupKey ?: sbn.key
+            val messageType = NotificationPushCommand.socialTypeForPackage(pkg)
+            // Stable positive id from the notification key so an EDIT/repeat updates in place.
+            val id = (sbn.key ?: groupKey).hashCode() and 0x7FFFFFFF
 
             val vibrate = if (rule.muteGroupChats) cache.shouldVibrate(groupKey)
                           else rule.vibrateOnFirst
 
-            Log.i(TAG, "Forward: pkg=$pkg vibrate=$vibrate muteGroupChats=${rule.muteGroupChats} content='${content.take(50)}'")
+            Log.i(TAG, "Forward: pkg=$pkg type=$messageType vibrate=$vibrate title='${title.take(30)}' text='${text.take(40)}'")
 
             if (vibrate) {
-                bleManager.writeToChar(
-                    NotificationPushCommand.buildSocialNewPush(buildPayload(pkg, content)),
-                    BleConstants.CHAR_WRITE_8001,
+                // Routed through the write queue (urgent) so it's serialised + MTU-chunked — a real
+                // title+body exceeds one MTU and a raw writeToChar would truncate it.
+                bleManager.sendCommandNoResponse(
+                    CommandCode.SOCIAL_NEW_PUSH, Action.SET,
+                    NotificationPushCommand.appNotificationPayload(messageType, id, title, text),
+                    urgent = true,
                 )
             } else {
                 Log.d(TAG, "  silent push (dedup window active or vibrateOnFirst=false)")
-                bleManager.writeToChar(
-                    NotificationPushCommand.buildMsgCountPush(1),
-                    BleConstants.CHAR_WRITE_8001,
+                bleManager.sendCommandNoResponse(
+                    CommandCode.MSG_COUNT_PUSH, Action.SET,
+                    NotificationPushCommand.msgCountPayload(1),
+                    urgent = true,
                 )
             }
         }
     }
+
+    /** Human-readable app name for [pkg], falling back to the package name if it can't be resolved. */
+    private fun resolveAppLabel(pkg: String): String = runCatching {
+        val pm = applicationContext.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) { /* watch clears independently */ }
 
@@ -113,16 +127,5 @@ class NotificationForwarder : NotificationListenerService() {
         Log.i(TAG, "NotificationForwarder destroyed")
         scope.cancel()
         super.onDestroy()
-    }
-
-    // [pkgLen(1)][pkg bytes][content bytes] — flexible format for SocialNewPush (0x79)
-    private fun buildPayload(pkg: String, content: String): ByteArray {
-        val pkgBytes = pkg.toByteArray(Charsets.UTF_8).take(32).toByteArray()
-        val contentBytes = content.toByteArray(Charsets.UTF_8).take(80).toByteArray()
-        return ByteArray(1 + pkgBytes.size + contentBytes.size).also { buf ->
-            buf[0] = pkgBytes.size.toByte()
-            pkgBytes.copyInto(buf, 1)
-            contentBytes.copyInto(buf, 1 + pkgBytes.size)
-        }
     }
 }

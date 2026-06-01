@@ -1,7 +1,6 @@
 package com.norm2hacked.domain.usecase
 
 import android.util.Log
-import com.norm2hacked.ble.BleConstants
 import com.norm2hacked.protocol.WatchTransport
 import com.norm2hacked.data.db.dao.HeartRateDao
 import com.norm2hacked.data.db.dao.SleepDao
@@ -71,8 +70,10 @@ class SyncHealthDataUseCase @Inject constructor(
                 emit(SyncProgress.Error("Sleep sync failed: ${it.message}"))
             }
 
-        // Sync the phone's clock to the watch every session.
-        runCatching { bleManager.writeToChar(DateTimeCommand.buildSet(), BleConstants.CHAR_WRITE_8001) }
+        // Sync the phone's clock to the watch every session. Routed through sendAndAwait (not a
+        // raw writeToChar) so it serialises with the rest of the sync traffic and targets the
+        // resolved write characteristic — the watch ACKs DATETIME SET with a SET_RESPONSE.
+        runCatching { bleManager.sendAndAwait(CommandCode.DATETIME, Action.SET, DateTimeCommand.setPayload()) }
             .onSuccess { Log.i(TAG, "Clock sync sent to watch") }
             .onFailure { Log.w(TAG, "Clock sync failed: ${it.message}") }
 

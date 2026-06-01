@@ -154,7 +154,7 @@ class WatchSettingsViewModel @Inject constructor(
     }
 
     fun findWatch() {
-        bleManager.writeToChar(ControlDeviceCommand.buildFindWatch(), com.norm2hacked.ble.BleConstants.CHAR_WRITE_8001)
+        bleManager.writeToChar(ControlDeviceCommand.buildFindWatch(), bleManager.commandWriteChar)
     }
 
     fun toggleNotificationBit(bit: Int, enabled: Boolean) {

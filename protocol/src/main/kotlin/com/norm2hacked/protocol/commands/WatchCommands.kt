@@ -40,12 +40,18 @@ object DeviceVersionCommand {
 // ── DateTime ─────────────────────────────────────────────────────────────────
 
 object DateTimeCommand {
-    fun buildSet(instant: Instant = Instant.now()): ByteArray {
+    /** Raw 12-byte DATETIME SET payload (for routing through sendAndAwait / the write queue). */
+    fun setPayload(instant: Instant = Instant.now()): ByteArray {
         val cal = Calendar.getInstance().also { it.timeInMillis = instant.toEpochMilli() }
         val year = cal.get(Calendar.YEAR)
         val payload = byteArrayOf(
-            ((year shr 8) and 0xFF).toByte(),
+            // Year is LITTLE-endian [lo, hi]. Source: DateTime.smali encodes it with
+            // ParseUtil.intToByteArray(year, 2) — the same call that builds the frame's 2-byte
+            // content-length, which the wire format + PacketTest confirm is little-endian. Every
+            // other 2-byte field in this protocol (lengths, counts, goals, switch mask) is LE too.
+            // (Was big-endian here, which made the watch read a garbage year on every clock sync.)
             (year and 0xFF).toByte(),
+            ((year shr 8) and 0xFF).toByte(),
             (cal.get(Calendar.MONTH) + 1).toByte(),
             cal.get(Calendar.DAY_OF_MONTH).toByte(),
             cal.get(Calendar.HOUR_OF_DAY).toByte(),
@@ -54,8 +60,12 @@ object DateTimeCommand {
             cal.get(Calendar.DAY_OF_WEEK).toByte(),
             0, 0, 0, 0,
         )
-        return PacketBuilder.build(CommandCode.DATETIME, Action.SET, payload)
+        return payload
     }
+
+    /** Framed DATETIME SET packet (for fire-and-forget writers that don't route via the queue). */
+    fun buildSet(instant: Instant = Instant.now()): ByteArray =
+        PacketBuilder.build(CommandCode.DATETIME, Action.SET, setPayload(instant))
 }
 
 // ── Sync counts ───────────────────────────────────────────────────────────────
@@ -169,12 +179,16 @@ object HeartRateCommand {
     fun buildDelete() =
         PacketBuilder.build(CommandCode.DELETE_HEART_RATE_DATA, Action.SET)
 
-    // 7-byte records: [index(1)] [timestamp(4 LE)] [bpm(1)] [spare(1)]
+    // 7-byte records: [index(2 LE)] [timestamp(4 LE)] [bpm(1)]
+    // Source: GetHeartRateData.smali parse80BytesArray — index=bytesToLong(0,1) is TWO bytes,
+    // timestamp=bytesToLong(2,5), bpm=byte[6]. The index is 2 bytes, not 1 — the same off-by-one
+    // the sport parser already fixed. Reading ts at offset 1 / bpm at 5 shifted every record by a
+    // byte, so synced HR timestamps never matched the real time.
     fun parse(p: Packet): HeartRateRecord? {
         val b = p.payload
-        if (b.size < 6) return null
-        val timestamp = b.readInt32LE(1) * 1000L
-        val bpm = b[5].toInt() and 0xFF
+        if (b.size < 7) return null
+        val timestamp = b.readInt32LE(2) * 1000L
+        val bpm = b[6].toInt() and 0xFF
         return HeartRateRecord(timestamp, bpm)
     }
 }
@@ -188,12 +202,16 @@ object SleepCommand {
     fun buildDelete() =
         PacketBuilder.build(CommandCode.DELETE_SLEEP_DATA, Action.SET)
 
-    // 7-byte records: [index(1)] [timestamp(4 LE)] [stage(1)] [spare(1)]
+    // 7-byte records: [index(2 LE)] [timestamp(4 LE)] [stage(1)]
+    // Source: GetSleepData.smali parse80BytesArray — index=bytesToLong(0,1) is TWO bytes,
+    // timestamp=bytesToLong(2,5), stage=byte[6] (with the 0x12→0x11 normalisation below).
+    // The index is 2 bytes, not 1 — same off-by-one as HR/sport; ts at offset 1 / stage at 5
+    // shifted every record by a byte.
     fun parse(p: Packet): SleepRecord? {
         val b = p.payload
-        if (b.size < 6) return null
-        val timestamp = b.readInt32LE(1) * 1000L
-        val stage = b[5].toInt() and 0xFF
+        if (b.size < 7) return null
+        val timestamp = b.readInt32LE(2) * 1000L
+        val stage = b[6].toInt() and 0xFF
         val mappedStage = if (stage == 0x12) 0x11 else stage
         return SleepRecord(timestamp, mappedStage)
     }
@@ -226,6 +244,102 @@ object FindDeviceCommand {
 // ── Notification push ─────────────────────────────────────────────────────────
 
 object NotificationPushCommand {
+
+    // CRUD ops — source: MessageBT.smali constants.
+    const val CRUD_ADD: Byte = 0x00
+    const val CRUD_EDIT: Byte = 0x01
+    const val CRUD_DEL_ONE: Byte = 0x02
+    const val CRUD_DEL_ALL: Byte = 0x03
+
+    // messageType selects the icon shown on the watch.
+    // Source: PackageTypeData.smali (package→type map) + MessagePerfectBTFactory.smali (calls).
+    const val TYPE_MISSED_CALL: Byte = 0x00
+    const val TYPE_SMS: Byte = 0x01
+    const val TYPE_GENERIC: Byte = 0x02   // generic "message" icon — default for unknown apps
+    const val TYPE_EMAIL: Byte = 0x03
+    const val TYPE_CALENDAR: Byte = 0x04
+    const val TYPE_INCOMING_CALL: Byte = 0x05
+    const val TYPE_CALL_ENDED: Byte = 0x06
+
+    // Known social apps → icon type (PackageTypeData.initSocialData). Unknown → TYPE_GENERIC.
+    private val PACKAGE_TYPE: Map<String, Byte> = mapOf(
+        "com.tencent.mm" to 0x07,            // WeChat
+        "com.viber.voip" to 0x08,            // Viber
+        "com.snapchat.android" to 0x09,      // Snapchat
+        "com.whatsapp" to 0x0A,              // WhatsApp
+        "com.whatsapp.w4b" to 0x0A,          // WhatsApp Business
+        "com.tencent.mobileqq" to 0x0B,      // QQ
+        "com.facebook.katana" to 0x0C,       // Facebook
+        "com.facebook.orca" to 0x0D,         // Messenger
+        "com.instagram.android" to 0x0F,     // Instagram
+        "com.twitter.android" to 0x10,       // Twitter/X
+        "com.linkedin.android" to 0x11,      // LinkedIn
+        "com.google.android.gm" to TYPE_EMAIL,
+        "com.microsoft.office.outlook" to TYPE_EMAIL,
+    )
+
+    /** Icon type for a package: known social app → its type, email apps → email, else generic. */
+    fun socialTypeForPackage(pkg: String): Byte = PACKAGE_TYPE[pkg] ?: TYPE_GENERIC
+
+    /**
+     * Build an app-notification push — SocialNewPush (cmd 0x79, SET) carrying a MessageBT body.
+     * Source: MessageBT.getBytes() + MBluetooth.sendNewMessage.
+     *
+     * MessageBT body (little-endian throughout):
+     *   [bodyLen(2)] [id(4)] [crud(1)] [TLV…]
+     *     bodyLen = length of everything after these 2 bytes (= id+crud+TLVs)
+     *   each TLV = [valueLen+1(2)] [tag(1)] [value…]   (the +1 counts the tag byte)
+     *     tag 0x01 = messageType (1-byte value)   0x02 = title   0x03 = content
+     *     (0x04 = dateTime, 0x05 = phoneNumber — omitted for plain app notifications)
+     * Title is capped at 90 bytes, content at 240 (ParseUtil.getContentAddDot 0x5A / 0xF0).
+     */
+    /**
+     * The raw SocialNewPush MessageBT body (the SET payload, without the 0x6F frame). Prefer this
+     * over [buildAppNotification] when routing through the write queue, so the frame is built once
+     * in PacketBuilder and the queue handles MTU chunking — a real notification's title+content
+     * easily exceeds one MTU and must be chunked, not sent as a single (truncated) write.
+     */
+    fun appNotificationPayload(
+        messageType: Byte,
+        id: Int,
+        title: String,
+        content: String,
+        crud: Byte = CRUD_ADD,
+    ): ByteArray {
+        val titleBytes = title.toByteArray(Charsets.UTF_8).take(90).toByteArray()
+        val contentBytes = content.toByteArray(Charsets.UTF_8).take(240).toByteArray()
+
+        val body = ArrayList<Byte>(32)
+        body.addLE4(id)
+        body.add(crud)
+        body.addTlv(0x01, byteArrayOf(messageType))
+        if (titleBytes.isNotEmpty()) body.addTlv(0x02, titleBytes)
+        if (contentBytes.isNotEmpty()) body.addTlv(0x03, contentBytes)
+
+        val messageBt = ByteArray(2 + body.size)
+        messageBt[0] = (body.size and 0xFF).toByte()
+        messageBt[1] = ((body.size shr 8) and 0xFF).toByte()
+        for (i in body.indices) messageBt[2 + i] = body[i]
+        return messageBt
+    }
+
+    fun buildAppNotification(
+        messageType: Byte,
+        id: Int,
+        title: String,
+        content: String,
+        crud: Byte = CRUD_ADD,
+    ): ByteArray = PacketBuilder.build(
+        CommandCode.SOCIAL_NEW_PUSH, Action.SET,
+        appNotificationPayload(messageType, id, title, content, crud),
+    )
+
+    /** MsgCountPush payload: silent unread-badge update [count byte]. */
+    fun msgCountPayload(count: Byte): ByteArray = byteArrayOf(count)
+
+    fun buildMsgCountPush(count: Byte): ByteArray =
+        PacketBuilder.build(CommandCode.MSG_COUNT_PUSH, Action.SET, msgCountPayload(count))
+
     // SMS push: [type][content bytes]
     fun buildSmsPush(type: Byte, content: ByteArray): ByteArray {
         val payload = ByteArray(1 + content.size)
@@ -233,14 +347,6 @@ object NotificationPushCommand {
         content.copyInto(payload, 1)
         return PacketBuilder.build(CommandCode.SMS_PUSH, Action.SET, payload)
     }
-
-    // SocialNewPush: arbitrary payload for maximum flexibility
-    fun buildSocialNewPush(payload: ByteArray): ByteArray =
-        PacketBuilder.build(CommandCode.SOCIAL_NEW_PUSH, Action.SET, payload)
-
-    // MsgCountPush: silent badge update [count byte]
-    fun buildMsgCountPush(count: Byte): ByteArray =
-        PacketBuilder.build(CommandCode.MSG_COUNT_PUSH, Action.SET, byteArrayOf(count))
 
     fun buildPhoneNamePush(type: Byte, nameOrNumber: ByteArray): ByteArray {
         val payload = ByteArray(1 + nameOrNumber.size)
@@ -254,6 +360,22 @@ object NotificationPushCommand {
         payload[0] = type
         content.copyInto(payload, 1)
         return PacketBuilder.build(CommandCode.EMAIL_PUSH, Action.SET, payload)
+    }
+
+    private fun MutableList<Byte>.addLE4(v: Int) {
+        add((v and 0xFF).toByte())
+        add(((v shr 8) and 0xFF).toByte())
+        add(((v shr 16) and 0xFF).toByte())
+        add(((v shr 24) and 0xFF).toByte())
+    }
+
+    // TLV = [valueLen+1 (2, LE)] [tag] [value]
+    private fun MutableList<Byte>.addTlv(tag: Int, value: ByteArray) {
+        val len = value.size + 1
+        add((len and 0xFF).toByte())
+        add(((len shr 8) and 0xFF).toByte())
+        add(tag.toByte())
+        for (b in value) add(b)
     }
 }
 

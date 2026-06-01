@@ -87,7 +87,7 @@ class FirmwareViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(isFlashing = true, error = null, progress = OtaProgress(OtaStep.BT_PARAM)) }
             try {
-                bleManager.writeToChar(UpgradeModeCommand.buildSet(), com.norm2hacked.ble.BleConstants.CHAR_WRITE_8001)
+                bleManager.writeToChar(UpgradeModeCommand.buildSet(), bleManager.commandWriteChar)
                 bleManager.waitForDfuService()
                 val progressFlow = when {
                     assetName != null -> otaProtocol.flashAsset(assetName)

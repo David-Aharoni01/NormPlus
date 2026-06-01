@@ -42,12 +42,47 @@ import javax.inject.Singleton
 
 private const val TAG = "BleManager"
 
-// Upper bound for the whole post-connect "Setting up…" phase (service discovery +
-// notification/CCCD setup). If onServicesDiscovered never fires — e.g. the watch drops
-// the link mid-discovery because another GATT client (the official app) is holding it —
-// nothing else recovers, so the UI would sit in Discovering forever. This watchdog forces
-// the normal disconnect/retry path instead of hanging.
-private const val DISCOVERY_TIMEOUT_MS = 25_000L
+// Settle delay between CONNECTED and discoverServices().
+//
+// This watch hides its entire GATT database until the bonded link is ENCRYPTED. On a fresh
+// connection the Android SMP/encryption setup is racy on this device — the stack reports
+// `Encrypted:T` but then `smp skipping encryption enable`, so the link often isn't truly
+// encrypted on the first 1-2 attempts and discovery hangs (empty database). No per-attempt
+// settle reliably fixes this (even 2s still hangs); only a fresh connection cycle clears the
+// stuck SMP state. So we keep the settle short and lean on FAST detect-and-retry instead.
+private const val DISCOVERY_SETTLE_MS = 700L
+
+// How long after discoverServices() to wait before declaring the attempt stuck. A healthy
+// (encrypted) discovery returns in ~300ms. Total connect time is gated by how long the racy SMP
+// encryption takes to settle (~8-11s on a cold start), NOT by how fast we detect/retry — measured:
+// faster detection just churns more attempts to reach the same moment. So we keep detection
+// unhurried (gentler on the BT stack) rather than thrashing. Plus settle = the "Setting up…" budget.
+private const val DISCOVERY_TIMEOUT_MS = DISCOVERY_SETTLE_MS + 3_500L
+
+// The watch hides its services until the bonded link is encrypted, and the Samsung BT stack's
+// encryption for this device is racy — it can take several seconds / a few connection cycles to
+// settle on a cold start (a BT-adapter reset clears it instantly). Counter-intuitively, fast
+// retries make it WORSE (they thrash SMP); moderate spacing lets encryption settle. So we allow
+// enough spaced attempts to span that window. Reset to 0 on a successful connect.
+private const val MAX_RECONNECT_ATTEMPTS = 8
+
+// Warm-reconnect delay. When an ALREADY-ESTABLISHED (Ready/encrypted) link drops, the BT stack
+// still holds the SMP/encryption state for this device for a short while. Reconnecting almost
+// immediately rides that warm state and re-establishes in ~1s — sidestepping the slow cold-connect
+// SMP race entirely (the whole point of holding the link alive in BleService). Kept just above
+// MIN_CONNECT_INTERVAL_MS so connect()'s rate-limiter never skips the reconnect. Contrast with the
+// 1–1.5s *spaced* delays of the cold path, where fast retries actively make the SMP race worse.
+private const val WARM_RECONNECT_DELAY_MS = 250L
+
+// A connection that stays Ready at least this long is treated as "stable" — a later drop is a
+// genuine warm drop, not a flap. Shorter-lived Ready periods count as flaps (see below).
+private const val WARM_STABLE_MS = 5_000L
+
+// After this many consecutive flaps (Ready that dropped before WARM_STABLE_MS), stop taking the
+// fast 250ms warm-reconnect path and fall through to the bounded, spaced cold-retry path. Without
+// this, a chronically flapping link reconnects every ~250ms forever (retryCount is reset to 0 on
+// every warm drop), pinning the radio and never giving up.
+private const val MAX_CONSECUTIVE_WARM_FLAPS = 5
 
 @Singleton
 @SuppressLint("MissingPermission")
@@ -92,12 +127,27 @@ class BleManager @Inject constructor(
     // can be ignored — preventing double retries / double reconnects.
     @Volatile private var connGen = 0
 
+    // Whether the CURRENT connection ever reached Ready (a fully-encrypted, service-discovered
+    // link). Distinguishes a "warm drop" (an established link that fell over — reconnect fast on
+    // the still-warm SMP state) from a "cold failure" (an attempt that never came up — use the
+    // slow, spaced retry path). Reset at the start of every connect(); set in setupNotifications().
+    @Volatile private var reachedReady = false
+
+    // Flapping-link guard for the warm-reconnect path: when the current connection reached Ready,
+    // and how many consecutive short-lived (flapping) Ready periods we've seen. See
+    // WARM_STABLE_MS / MAX_CONSECUTIVE_WARM_FLAPS.
+    @Volatile private var readyAtMs = 0L
+    private var consecutiveWarmFlaps = 0
+
     // Forwarding channels from GATT callback into the shared flows.
     // Stored so they can be closed on disconnect, which stops the forwarding coroutines cleanly.
     @Volatile private var packetCh: Channel<Packet>? = null
     @Volatile private var otaCh: Channel<ByteArray>? = null
 
-    // Mutex ensures only one connect() runs at a time, making the rate-limit check atomic.
+    // Guards only the rate-limit check (timestamp read + update) so two coroutines can't both pass
+    // it simultaneously. It is NOT held across the whole connect() — that would block for the
+    // bonding/connect latency (up to ~30s on a first bond). A connect() superseded by a later one
+    // is instead neutralised by the connGen generation guard, not by mutual exclusion here.
     private val connectMutex = Mutex()
     private var lastConnectMs = 0L
     private var retryCount = 0
@@ -109,6 +159,18 @@ class BleManager @Inject constructor(
     @Volatile private var is8003Server7006 = false
 
     override val isConnected: Boolean get() = connectionState.value.isConnected
+
+    /**
+     * The resolved main-channel write characteristic for the current connection: 0x8003 when the
+     * extended 7006 service is present, else 0x8001 (source: AppsCommDevice.smali:296-360).
+     *
+     * Exposed so fire-and-forget writers (the OTA-mode trigger, clock sync, notification pushes)
+     * target the SAME characteristic the command queue uses. Hardcoding 0x8001 silently fails on
+     * watches that only expose the 7006/0x8003 service — `writeToChar` can't find 0x8001 and drops
+     * the write, which (for the OTA-mode trigger) means the watch never enters the bootloader.
+     */
+    val commandWriteChar: java.util.UUID
+        get() = if (is8003Server7006) BleConstants.CHAR_WRITE_8003 else BleConstants.CHAR_WRITE_8001
 
     // ── Scanning ──────────────────────────────────────────────────────────────
 
@@ -190,6 +252,7 @@ class BleManager @Inject constructor(
 
         // New connection generation — invalidates any in-flight watchdog/callbacks from a prior attempt.
         val myGen = ++connGen
+        reachedReady = false
         discoveryWatchdog?.cancel()
         Log.i(TAG, "connect($mac) retryCount=$retryCount gen=$myGen")
         val device = runCatching { btAdapter.getRemoteDevice(mac) }.getOrNull()
@@ -227,8 +290,17 @@ class BleManager @Inject constructor(
             onConnectionStateChange = { g, connected ->
                 if (connected) {
                     _connectionState.value = BleConnectionState.Discovering(device)
-                    g.discoverServices()
                     startDiscoveryWatchdog(g, mac, myGen)
+                    // Discover after a short settle delay so the bonded link finishes encrypting
+                    // (the watch refuses GATT discovery on an unencrypted link). With autoConnect
+                    // the stack establishes encryption properly, so the first attempt succeeds.
+                    scope.launch {
+                        delay(DISCOVERY_SETTLE_MS)
+                        if (myGen == connGen) {
+                            Log.d(TAG, "discoverServices() (gen=$myGen, after ${DISCOVERY_SETTLE_MS}ms settle)")
+                            g.discoverServices()
+                        }
+                    }
                 } else {
                     scope.launch { handleDisconnect(mac, myGen) }
                 }
@@ -259,8 +331,9 @@ class BleManager @Inject constructor(
         discoveryWatchdog = scope.launch {
             delay(DISCOVERY_TIMEOUT_MS)
             if (gen == connGen && _connectionState.value is BleConnectionState.Discovering) {
-                Log.w(TAG, "Discovery/setup stalled >${DISCOVERY_TIMEOUT_MS}ms (gen=$gen) — forcing reconnect. " +
-                        "Likely the watch dropped the link mid-discovery (another GATT client holding it?).")
+                Log.w(TAG, "Discovery stalled >${DISCOVERY_TIMEOUT_MS}ms (gen=$gen) — forcing reconnect. " +
+                        "Watch exposes no services until the bonded link is encrypted; SMP encryption " +
+                        "is racy on a cold start and may take a few connection cycles to settle.")
                 runCatching { g.disconnect() }
                 // Run recovery in a SEPARATE coroutine: handleDisconnect()/connect() call
                 // discoveryWatchdog?.cancel(), which would otherwise cancel THIS coroutine
@@ -279,21 +352,62 @@ class BleManager @Inject constructor(
         // disconnect arriving after the watchdog already forced recovery) is rejected.
         connGen++
         discoveryWatchdog?.cancel()
-        Log.i(TAG, "handleDisconnect($mac) — closing GATT, retryCount=$retryCount")
+
+        // Was this an established, encrypted (Ready) link that fell over — or a cold attempt that
+        // never came up? Capture before resetting: a warm drop reconnects fast on the still-warm
+        // SMP state; a cold failure must use the slow, spaced retry path below.
+        val wasWarm = reachedReady
+        reachedReady = false
+
+        Log.i(TAG, "handleDisconnect($mac) — closing GATT, wasWarm=$wasWarm retryCount=$retryCount")
         gatt?.close(); gatt = null
         queue?.detach()
         packetCh?.close(); packetCh = null
         otaCh?.close(); otaCh = null
+
+        if (wasWarm) {
+            // Distinguish a genuine warm drop from a flapping link: a connection that held Ready
+            // for at least WARM_STABLE_MS resets the flap counter; a shorter-lived one increments
+            // it. After MAX_CONSECUTIVE_WARM_FLAPS we stop spinning the fast path (which resets
+            // retryCount every time and so never gives up) and fall through to the bounded cold path.
+            val readyDurationMs = System.currentTimeMillis() - readyAtMs
+            consecutiveWarmFlaps = if (readyDurationMs >= WARM_STABLE_MS) 0 else consecutiveWarmFlaps + 1
+
+            if (consecutiveWarmFlaps <= MAX_CONSECUTIVE_WARM_FLAPS) {
+                // The link was up and encrypted; the BT stack still holds the SMP/encryption state.
+                // Reconnect right away to ride it before the stack tears the keys down (which would
+                // force a slow cold connect). This is what makes warm reconnects near-instant — and
+                // why BleService holds the link alive. A fresh budget: if this fast attempt itself
+                // fails to reach Ready, the next handleDisconnect sees wasWarm=false and falls
+                // through to the cold spaced-retry path below.
+                retryCount = 0
+                _connectionState.value = BleConnectionState.Error("Connection lost — reconnecting", 0)
+                Log.i(TAG, "Warm reconnect to $mac in ${WARM_RECONNECT_DELAY_MS}ms (SMP still warm, readyFor=${readyDurationMs}ms)")
+                delay(WARM_RECONNECT_DELAY_MS)
+                connect(mac)
+                return
+            }
+            // Link keeps flapping — stop spinning the fast path and fall through to the bounded,
+            // spaced cold-retry path below (which gives up after MAX_RECONNECT_ATTEMPTS).
+            Log.w(TAG, "Warm link flapping ($consecutiveWarmFlaps consecutive Ready periods < ${WARM_STABLE_MS}ms) — switching to cold spaced retries")
+        }
+
         retryCount++
-        if (retryCount <= 3) {
-            val delayMs = minOf(retryCount * 2_000L, 10_000L)
-            Log.i(TAG, "Reconnecting to $mac in ${delayMs}ms (attempt $retryCount/3)")
+        if (retryCount <= MAX_RECONNECT_ATTEMPTS) {
+            // Moderate spacing: give the racy SMP/encryption state time to settle between
+            // attempts. Fast retries thrash it and take LONGER; ~1.5s pauses let it recover.
+            val delayMs = when (retryCount) {
+                1 -> 1_000L
+                else -> 1_500L
+            }
+            Log.i(TAG, "Reconnecting to $mac in ${delayMs}ms (attempt $retryCount/$MAX_RECONNECT_ATTEMPTS)")
             _connectionState.value = BleConnectionState.Error("Disconnected", retryCount)
             delay(delayMs)
             connect(mac)
         } else {
-            Log.w(TAG, "Max reconnect attempts (3) reached for $mac — giving up")
+            Log.w(TAG, "Max reconnect attempts ($MAX_RECONNECT_ATTEMPTS) reached for $mac — giving up")
             retryCount = 0
+            consecutiveWarmFlaps = 0
             _connectionState.value = BleConnectionState.Disconnected
         }
     }
@@ -313,9 +427,15 @@ class BleManager @Inject constructor(
         Log.i(TAG, "Service discovery: base(6006)=$hasBase extended(7006)=$hasExtended → is8003Server7006=$is8003Server7006")
 
         if (!hasBase && !hasExtended) {
+            // Empty discovery (the classic first-connect failure). Leave the watchdog running so
+            // it forces a retry — do NOT cancel it here.
             Log.e(TAG, "Neither base (6006) nor extended (7006) service found — cannot communicate")
             return
         }
+        // Discovery genuinely succeeded. Stop the watchdog now: the remaining notification setup
+        // has its own per-write timeouts and cannot hang, so it needs no watchdog coverage (and
+        // a slow-but-progressing setup must not trip a false reconnect).
+        discoveryWatchdog?.cancel()
 
         val mainSvc = g.getService(BleConstants.SERVICE_MAIN) ?: run {
             Log.w(TAG, "Main service 6006 not found, trying extended 7006")
@@ -345,8 +465,9 @@ class BleManager @Inject constructor(
             }
         }
 
-        discoveryWatchdog?.cancel()
         retryCount = 0
+        reachedReady = true   // link is up & encrypted — a later drop is a "warm" drop (fast reconnect)
+        readyAtMs = System.currentTimeMillis()
         _connectionState.value = BleConnectionState.Ready(device, device.name ?: "Norm 2")
         Log.i(TAG, "BLE ready — notifications enabled" +
                 if (g.getService(BleConstants.SERVICE_APOLLO_DFU) != null) " (main + DFU)" else " (main)")
@@ -372,6 +493,8 @@ class BleManager @Inject constructor(
     override fun disconnect() {
         Log.i(TAG, "disconnect: user-initiated")
         connGen++              // invalidate any in-flight watchdog/callbacks
+        reachedReady = false   // a deliberate teardown must not trigger a warm reconnect
+        consecutiveWarmFlaps = 0
         discoveryWatchdog?.cancel()
         gatt?.disconnect(); gatt?.close(); gatt = null
         queue?.detach()
@@ -379,6 +502,18 @@ class BleManager @Inject constructor(
         otaCh?.close(); otaCh = null
         retryCount = 0
         _connectionState.value = BleConnectionState.Disconnected
+    }
+
+    /**
+     * Lightweight link keep-alive. Triggers a remote-RSSI read on the live GATT — pure radio
+     * activity that touches neither the command queue nor the 0x6F protocol, so it can never
+     * time out or fail the connection. Used by [BleService] to keep an idle link warm. No-op if
+     * not connected. The result lands in [BleGattCallback.onReadRemoteRssi] (logged only).
+     */
+    fun readRemoteRssi() {
+        val g = gatt ?: return
+        runCatching { g.readRemoteRssi() }
+            .onFailure { Log.w(TAG, "readRemoteRssi failed: ${it.message}") }
     }
 
     // ── Command send ──────────────────────────────────────────────────────────
@@ -410,8 +545,8 @@ class BleManager @Inject constructor(
         if (!connectionState.value.isConnected) throw IllegalStateException("Not connected")
         val q = queue ?: throw IllegalStateException("Write queue not initialised")
         val bytes = PacketBuilder.build(cmd, action, payload)
-        // Select write characteristic based on service discovery result
-        val charUuid = if (is8003Server7006) BleConstants.CHAR_WRITE_8003 else BleConstants.CHAR_WRITE_8001
+        // Select write characteristic based on service discovery result (see [commandWriteChar]).
+        val charUuid = commandWriteChar
         return q.enqueue(
             BleRequest(
                 bytes = bytes,
@@ -419,6 +554,36 @@ class BleManager @Inject constructor(
                 expectedCmd = cmd,
                 timeoutMs = timeoutMs,
                 urgent = urgent,
+            )
+        )
+    }
+
+    /**
+     * Serialised, MTU-chunked, fire-and-forget command write. Goes through [BleWriteQueue] exactly
+     * like [sendAndAwait] — so it can't race the command-write path on the shared characteristic and
+     * is chunked across MTU boundaries — but does NOT wait for a protocol response. Use for SET
+     * pushes the watch may not ACK and that can exceed one MTU, e.g. notification pushes (a raw
+     * [writeToChar] would send them as a single, truncated write).
+     */
+    suspend fun sendCommandNoResponse(
+        cmd: CommandCode,
+        action: Action,
+        payload: ByteArray = byteArrayOf(),
+        urgent: Boolean = false,
+    ) {
+        if (!connectionState.value.isConnected) {
+            Log.w(TAG, "sendCommandNoResponse($cmd): not connected, dropping")
+            return
+        }
+        val q = queue ?: run { Log.w(TAG, "sendCommandNoResponse($cmd): queue not initialised"); return }
+        q.enqueue(
+            BleRequest(
+                bytes = PacketBuilder.build(cmd, action, payload),
+                charUuid = commandWriteChar,
+                expectedCmd = cmd,
+                timeoutMs = BleConstants.WRITE_TIMEOUT_MS,
+                urgent = urgent,
+                awaitResponse = false,
             )
         )
     }

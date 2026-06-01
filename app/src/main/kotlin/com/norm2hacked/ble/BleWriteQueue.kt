@@ -32,6 +32,9 @@ data class BleRequest(
     val expectedCmd: CommandCode,
     val timeoutMs: Long,
     val urgent: Boolean = false,
+    // When false, the write is still serialised + MTU-chunked through the queue, but no protocol
+    // response is awaited (for SET pushes the watch may not ACK, e.g. notifications).
+    val awaitResponse: Boolean = true,
     val deferred: CompletableDeferred<Packet> = CompletableDeferred(),
 ) {
     override fun equals(other: Any?) = other is BleRequest && bytes.contentEquals(other.bytes)
@@ -104,6 +107,14 @@ class BleWriteQueue(
         }
         try {
             withTimeout(req.timeoutMs) {
+                if (!req.awaitResponse) {
+                    // Fire-and-forget: serialise + MTU-chunk the write so it can't race the command
+                    // path or be truncated, but don't wait for a protocol response (the trigger is
+                    // part of the request/response handshake, so it's skipped too).
+                    writeChunked(gatt, req)
+                    req.deferred.complete(Packet(req.expectedCmd, Action.SET_RESPONSE, ByteArray(0)))
+                    return@withTimeout
+                }
                 coroutineScope {
                     // Subscribe to the response flow BEFORE writing.
                     // SharedFlow has no replay — if the watch responds before we call .first(),
@@ -177,6 +188,11 @@ class BleWriteQueue(
         if (req.charUuid == BleConstants.CHAR_WRITE_8003) {
             char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         }
+
+        // Drain any stale write-completion left by a previously timed-out request. The channel has
+        // capacity 1, so a late onCharacteristicWrite from a cancelled request would otherwise be
+        // consumed here as if it were THIS chunk's completion, letting us race ahead of the radio.
+        while (commandWriteCompleteChannel.tryReceive().isSuccess) { /* discard stale completion */ }
 
         val chunks = req.bytes.chunkedByMtu(BleConstants.MTU_DEFAULT)
         chunks.forEachIndexed { idx, chunk ->

@@ -1,7 +1,6 @@
 package com.norm2hacked.ui
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -67,7 +66,7 @@ class MainActivity : ComponentActivity() {
         // Start service as long as the critical BLE connect permission was granted.
         // POST_NOTIFICATIONS denial is not fatal — the notification just won't show.
         if (results[Manifest.permission.BLUETOOTH_CONNECT] == true) {
-            startForegroundService(Intent(this, BleService::class.java))
+            BleService.start(this)
         }
     }
 
@@ -99,7 +98,7 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
         if (allGranted) {
-            startForegroundService(Intent(this, BleService::class.java))
+            BleService.start(this)
         } else {
             requestPermissionLauncher.launch(requiredPermissions)
         }

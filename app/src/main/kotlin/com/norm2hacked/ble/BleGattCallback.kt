@@ -131,6 +131,12 @@ class BleGattCallback(
         Log.i(TAG, "MTU changed to $mtu status=$status")
     }
 
+    // Result of BleManager.readRemoteRssi() (the BleService keep-alive). Logged only — the value
+    // isn't used; the read itself is the keep-alive, exercising the link to keep it warm.
+    override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+        Log.d(TAG, "keep-alive RSSI=$rssi dBm status=$status")
+    }
+
     private fun UUID.shortId() = toString().substring(4, 8).uppercase()
     private fun ByteArray.toHex() = joinToString("") { "%02X".format(it) }
 }

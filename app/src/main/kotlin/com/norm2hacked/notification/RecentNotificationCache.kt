@@ -21,6 +21,15 @@ class RecentNotificationCache @Inject constructor() {
                 now
             } else last
         }
+        // Opportunistically evict entries older than the dedup window so the map can't grow without
+        // bound over a long-running foreground session (one entry accrues per distinct group key).
+        if (cache.size > MAX_ENTRIES_BEFORE_PRUNE) {
+            cache.entries.removeIf { now - it.value > BleConstants.DEDUP_WINDOW_MS }
+        }
         return vibrate
+    }
+
+    private companion object {
+        const val MAX_ENTRIES_BEFORE_PRUNE = 256
     }
 }
