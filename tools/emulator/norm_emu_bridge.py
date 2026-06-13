@@ -19,7 +19,7 @@ Usage:
   py -3.11 norm_emu_bridge.py [--port 8877] [--usb usb:0A12:0001]
 
 Then launch the emulator pointed at this bridge:
-  emulator -avd Galaxy_S24_API35 -packet-streamer-endpoint localhost:8877 \
+  emulator -avd Pixel_8_API35 -packet-streamer-endpoint localhost:8877 \
            -writable-system -no-snapshot-load
 """
 import argparse

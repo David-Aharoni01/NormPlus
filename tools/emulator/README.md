@@ -1,8 +1,8 @@
-# Android Emulator (Galaxy S24) for Norm+
+# Android Emulator (Pixel 8) for Norm+
 
 A local Android emulator to build and run the `:app` companion app **without Android Studio**
-and without using a physical phone. The AVD mimics a **Samsung Galaxy S24** (6.2", 1080×2340,
-Google-APIs Android 15 / API 35).
+and without using a physical phone. The AVD is a **Pixel 8** (6.2", 1080×2400, 420 dpi) running
+**Google-APIs Android 15 / API 35** (AOSP — there is no Samsung/One UI image; see the note below).
 
 ## What's already set up on this machine
 
@@ -13,19 +13,19 @@ Google-APIs Android 15 / API 35).
 | Emulator pkg | `emulator` (installed via `sdkmanager`) |
 | System image | `system-images;android-35;google_apis;x86_64` |
 | Accelerator | **AEHD** v2.2 (Android Emulator Hypervisor Driver) — installed & usable |
-| AVD | `Galaxy_S24_API35` (`~/.android/avd/Galaxy_S24_API35.avd`) |
+| AVD | `Pixel_8_API35` (`~/.android/avd/Pixel_8_API35.avd`) |
 
 ## Run it
 
 ```powershell
 # UI-only boot (no Bluetooth)
-tools\emulator\launch-galaxy.ps1
+tools\emulator\launch-emulator.ps1
 
 # Cold boot after editing config.ini
-tools\emulator\launch-galaxy.ps1 -ColdBoot
+tools\emulator\launch-emulator.ps1 -ColdBoot
 
 # Software rendering fallback if the GPU path glitches
-tools\emulator\launch-galaxy.ps1 -Gpu swiftshader_indirect
+tools\emulator\launch-emulator.ps1 -Gpu swiftshader_indirect
 ```
 
 Then build & install the app onto the running emulator:
@@ -49,25 +49,24 @@ Start-Process "$env:ANDROID_HOME\extras\google\Android_Emulator_Hypervisor_Drive
 & $env:ANDROID_HOME\emulator\emulator.exe -accel-check   # expect "AEHD ... installed and usable"
 # Create AVD:
 $avd="$env:ANDROID_HOME\cmdline-tools\latest\bin\avdmanager.bat"
-"no" | & $avd create avd -n Galaxy_S24_API35 -k "system-images;android-35;google_apis;x86_64" -d pixel_8
-# Then edit ~/.android/avd/Galaxy_S24_API35.avd/config.ini:
-#   hw.lcd.height=2340, hw.lcd.width=1080, hw.lcd.density=420
+"no" | & $avd create avd -n Pixel_8_API35 -k "system-images;android-35;google_apis;x86_64" -d pixel_8
+# Then edit ~/.android/avd/Pixel_8_API35.avd/config.ini:
 #   hw.keyboard=yes, hw.ramSize=4096, vm.heapSize=256M, hw.gpu.enabled=yes
-#   hw.device.manufacturer=Samsung
 ```
 
-## A note on "Galaxy OS" (One UI)
+## Why a Pixel 8 and not a Samsung Galaxy
 
-The AVD runs Google's **AOSP / Google-APIs Android 15**, not Samsung **One UI**. A real One UI
-OS cannot run in a local emulator: Samsung does not publish One UI system images for AVDs, and
-the firmware is ARM, vendor-specific, and signed — it won't boot in the standard emulator
+The AVD is named/configured as a **Pixel 8** because that is what it actually is: a Google
+hardware profile running **AOSP / Google-APIs Android 15**. A real Samsung **One UI** OS cannot
+run in a local emulator — Samsung does not publish One UI system images for AVDs, and the
+firmware is ARM, vendor-specific, and signed, so it won't boot in the standard emulator
 (Genymotion is also AOSP under the hood). The only way to drive genuine One UI is Samsung's
 cloud **Remote Test Lab** (remote real devices), which is not a local emulator.
 
-A Samsung bezel **skin** (cosmetic frame only — no One UI features) can be added but is not used
-here: it enlarges the window and adds nothing functional. If you ever want one, download a skin
-zip from <https://developer.samsung.com/galaxy-emulator-skin/galaxy-s.html> (Samsung-account
-login required), unzip into `Sdk\skins\<name>\`, and set `skin.name`/`skin.path` in `config.ini`.
+A Samsung bezel **skin** is purely cosmetic (no One UI features) and only enlarges the window,
+so it is intentionally not used here. If you ever want the look, download a skin zip from
+<https://developer.samsung.com/galaxy-emulator-skin/galaxy-s.html> (Samsung-account login
+required), unzip into `Sdk\skins\<name>\`, and set `skin.name`/`skin.path` in `config.ini`.
 
 ## ⚠️ Bluetooth / the watch
 
@@ -93,7 +92,7 @@ py -3.11 -m pip install bumble
 
 Run it:
 ```powershell
-tools\emulator\launch-galaxy.ps1 -Bridge        # starts norm_emu_bridge.py + boots the AVD
+tools\emulator\launch-emulator.ps1 -Bridge        # starts norm_emu_bridge.py + boots the AVD
 # In the app: the Norm 2 appears under "Found Devices" — tap to connect.
 ```
 
@@ -114,4 +113,4 @@ Notes / gotchas:
 - The dongle and the built-in adapter are independent — the watch can be bonded to both. Avoid
   running normlink-cli / the official app at the same time as the emulator (they contend for the
   watch's single active connection).
-- If the guest BT won't turn on, cold-boot once: `tools\emulator\launch-galaxy.ps1 -Bridge -ColdBoot`.
+- If the guest BT won't turn on, cold-boot once: `tools\emulator\launch-emulator.ps1 -Bridge -ColdBoot`.

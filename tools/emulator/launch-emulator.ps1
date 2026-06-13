@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Boot the Galaxy S24 Android emulator for Norm+ (no Android Studio required).
+  Boot the Pixel 8 (AOSP) Android emulator for Norm+ (no Android Studio required).
 
 .DESCRIPTION
   Sets the SDK/JDK environment for this session and launches the AVD created by the
@@ -11,7 +11,7 @@
   Zadig). Without -Bridge the emulator has no Bluetooth and is UI-only.
 
 .PARAMETER Avd
-  AVD name to boot. Default: Galaxy_S24_API35.
+  AVD name to boot. Default: Pixel_8_API35.
 
 .PARAMETER ColdBoot
   Wipe the saved snapshot and boot cold (use after changing config.ini).
@@ -29,13 +29,13 @@
   Bumble controller transport for the physical dongle. Default: usb:0.
 
 .EXAMPLE
-  ./launch-galaxy.ps1                 # UI-only boot
-  ./launch-galaxy.ps1 -ColdBoot       # cold boot after editing config.ini
-  ./launch-galaxy.ps1 -Bridge         # boot with real-watch BLE via Bumble + USB dongle
+  ./launch-emulator.ps1                 # UI-only boot
+  ./launch-emulator.ps1 -ColdBoot       # cold boot after editing config.ini
+  ./launch-emulator.ps1 -Bridge         # boot with real-watch BLE via Bumble + USB dongle
 #>
 [CmdletBinding()]
 param(
-    [string]$Avd = "Galaxy_S24_API35",
+    [string]$Avd = "Pixel_8_API35",
     [switch]$ColdBoot,
     [ValidateSet("auto", "host", "swiftshader_indirect")]
     [string]$Gpu = "auto",
