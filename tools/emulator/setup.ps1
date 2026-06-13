@@ -93,7 +93,7 @@ Write-Host @"
       Options > List All Devices > select 'CSR8510 A10' (USB ID 0A12 0001)
       > target driver = WinUSB > Replace Driver.
   Then:
-      tools\emulator\launch-emulator.ps1            # UI only
-      tools\emulator\launch-emulator.ps1 -Bridge    # real-watch BLE
+      tools\emulator\launch-emulator.ps1            # real-watch BLE (default)
+      tools\emulator\launch-emulator.ps1 -NoBridge  # UI only
 "@ -ForegroundColor Yellow
 & $emulator -accel-check 2>&1 | Select-Object -Last 2

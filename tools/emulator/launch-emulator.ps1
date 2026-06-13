@@ -6,9 +6,9 @@
   Sets the SDK/JDK environment for this session and launches the AVD created by the
   emulator setup (see README.md in this folder). Hardware acceleration uses AEHD.
 
-  Phase B (-Bridge): also starts a Bumble HCI bridge so the app inside the emulator can
-  talk to a REAL Bluetooth controller (a dedicated USB BT dongle with a WinUSB driver via
-  Zadig). Without -Bridge the emulator has no Bluetooth and is UI-only.
+  By default it also starts a Bumble HCI bridge so the app inside the emulator can talk to a
+  REAL Bluetooth controller (a dedicated USB BT dongle with a WinUSB driver via Zadig). An
+  already-running bridge on the port is reused. Pass -NoBridge for a UI-only boot (no Bluetooth).
 
 .PARAMETER Avd
   AVD name to boot. Default: Pixel_8_API35.
@@ -19,8 +19,8 @@
 .PARAMETER Gpu
   Emulator GPU mode: auto (default), host, swiftshader_indirect (software fallback).
 
-.PARAMETER Bridge
-  Start the Bumble HCI bridge + launch with -packet-streamer-endpoint (Phase B).
+.PARAMETER NoBridge
+  Skip the Bumble HCI bridge and boot UI-only (no Bluetooth). The bridge is on by default.
 
 .PARAMETER BridgePort
   TCP port for the Bumble netsim bridge. Default: 8877.
@@ -29,9 +29,9 @@
   Bumble controller transport for the physical dongle. Default: usb:0.
 
 .EXAMPLE
-  ./launch-emulator.ps1                 # UI-only boot
+  ./launch-emulator.ps1                 # boot with real-watch BLE (Bumble bridge + USB dongle)
+  ./launch-emulator.ps1 -NoBridge       # UI-only boot (no Bluetooth)
   ./launch-emulator.ps1 -ColdBoot       # cold boot after editing config.ini
-  ./launch-emulator.ps1 -Bridge         # boot with real-watch BLE via Bumble + USB dongle
 #>
 [CmdletBinding()]
 param(
@@ -39,7 +39,7 @@ param(
     [switch]$ColdBoot,
     [ValidateSet("auto", "host", "swiftshader_indirect")]
     [string]$Gpu = "auto",
-    [switch]$Bridge,
+    [switch]$NoBridge,
     [int]$BridgePort = 8877,
     [string]$UsbController = "usb:0A12:0001"   # CSR dongle (must be WinUSB-bound via Zadig)
 )
@@ -67,17 +67,27 @@ if ($LASTEXITCODE -ne 0) {
 $emuArgs = @("-avd", $Avd, "-gpu", $Gpu)
 if ($ColdBoot) { $emuArgs += @("-no-snapshot", "-wipe-data") }
 
-if ($Bridge) {
-    # --- Phase B: real-watch BLE via Bumble HCI bridge ---
-    Write-Host "Starting Norm+ Bumble bridge on port $BridgePort (controller=$UsbController)..." -ForegroundColor Cyan
-    Write-Host "Prereqs: 'py -3.11 -m pip install bumble'; CSR dongle bound to WinUSB via Zadig." -ForegroundColor Yellow
-    # We use the repo's norm_emu_bridge.py (NOT stock bumble-hci-bridge): it adds the
-    # emulator-36.x 'packet' proto fix and the LE_GET_VENDOR_CAPABILITIES short-circuit
-    # the CSR8510 needs (see norm_emu_bridge.py header).
-    $bridgePy = Join-Path $PSScriptRoot "norm_emu_bridge.py"
-    Start-Process -FilePath "py" `
-        -ArgumentList "-3.11", $bridgePy, "--port", $BridgePort, "--usb", $UsbController -NoNewWindow
-    Start-Sleep -Seconds 3
+if ($NoBridge) {
+    Write-Host "Booting WITHOUT Bluetooth bridge (-NoBridge): emulator is UI-only." -ForegroundColor Yellow
+} else {
+    # --- real-watch BLE via Bumble HCI bridge (default) ---
+    $listening = Get-NetTCPConnection -LocalPort $BridgePort -State Listen -ErrorAction SilentlyContinue
+    if ($listening) {
+        Write-Host "Reusing Bumble bridge already listening on port $BridgePort." -ForegroundColor Green
+    } else {
+        Write-Host "Starting Norm+ Bumble bridge on port $BridgePort (controller=$UsbController)..." -ForegroundColor Cyan
+        Write-Host "Prereqs: 'py -3.11 -m pip install bumble'; CSR dongle bound to WinUSB via Zadig." -ForegroundColor Yellow
+        # We use the repo's norm_emu_bridge.py (NOT stock bumble-hci-bridge): it adds the
+        # emulator-36.x 'packet' proto fix and the LE_GET_VENDOR_CAPABILITIES short-circuit
+        # the CSR8510 needs (see norm_emu_bridge.py header).
+        $bridgePy = Join-Path $PSScriptRoot "norm_emu_bridge.py"
+        Start-Process -FilePath "py" `
+            -ArgumentList "-3.11", $bridgePy, "--port", $BridgePort, "--usb", $UsbController -NoNewWindow
+        Start-Sleep -Seconds 3
+        if (-not (Get-NetTCPConnection -LocalPort $BridgePort -State Listen -ErrorAction SilentlyContinue)) {
+            Write-Warning "Bridge did not come up on port $BridgePort. Is the dongle plugged in and WinUSB-bound via Zadig? The emulator will boot but Bluetooth won't work — use -NoBridge for a clean UI-only boot."
+        }
+    }
     $emuArgs += @("-packet-streamer-endpoint", "localhost:$BridgePort", "-writable-system", "-no-snapshot-load")
 }
 
