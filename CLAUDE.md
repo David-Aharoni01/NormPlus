@@ -38,6 +38,9 @@ protocol/           ← pure JVM module: packet framing + command definitions
 app/                ← Android companion app (Kotlin + Compose)
 cli/                ← normlink-cli: Windows JVM tool for autonomous BLE testing
   src/main/python/norm2_probe/  ← Python bleak BLE backend (bridge for the CLI)
+tools/
+  emulator/         ← Pixel 8 Android emulator + Bumble HCI bridge for on-device testing
+                       (the primary way to run/test :app — see "Testing on the emulator")
 ```
 
 The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
@@ -50,8 +53,14 @@ The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
 # Build debug APK (Android app)
 ./gradlew assembleDebug
 
-# Build and install on connected device
+# Build and install on connected device (or the emulator — use the DEBUG variant;
+# release is unsigned and fails to install with INSTALL_PARSE_FAILED_NO_CERTIFICATES)
 ./gradlew installDebug
+
+# Boot the test emulator (Pixel 8 AVD). Bluetooth-to-watch bridge is ON by default;
+# -NoBridge for a UI-only boot. See "Testing on the emulator".
+tools\emulator\launch-emulator.ps1
+tools\emulator\launch-emulator.ps1 -NoBridge
 
 # Build the Windows CLI tool (fat JAR distribution)
 ./gradlew :cli:installDist
@@ -80,6 +89,36 @@ CLI config: `cli/build.gradle.kts` — pure JVM, installs to `cli/build/install/
   :app        :cli
 (Android)   (Windows JVM)
 ```
+
+---
+
+## Testing on the emulator
+
+**`:app` is developed and tested on a local Android emulator** (not a physical phone) — a
+Pixel 8 AVD (`Pixel_8_API35`, AOSP Google-APIs Android 15 / API 35; no Android Studio). All
+tooling lives in `tools/emulator/` (see its `README.md` for the full story).
+
+- **Boot + install:** `tools\emulator\launch-emulator.ps1`, then `./gradlew installDebug`.
+  Always use the **debug** variant — the release build is unsigned and won't install.
+- **Real-watch BLE works in the emulator.** The emulator has no host Bluetooth radio, so a
+  dedicated **USB BLE dongle (CSR8510 `0A12:0001`, driver swapped to WinUSB via Zadig)** is
+  bridged in via **Bumble**. `launch-emulator.ps1` starts this bridge by default (`-NoBridge`
+  = UI-only). The bridge is `tools/emulator/norm_emu_bridge.py` — a *custom* bridge, not stock
+  `bumble-hci-bridge`, because it must (1) handle emulator 36.x's newer netsim `packet` proto
+  field and (2) short-circuit `LE_GET_VENDOR_CAPABILITIES (0xFD53)`, which the CSR8510 ignores
+  and which otherwise fatally aborts the guest BT stack. Don't "fix" the bridge by reverting
+  either workaround.
+- **Bonding gotcha:** the watch's SMP is racy (same as on a real phone — see "cold-connect
+  penalty"). If a connect attempt fails to bond, toggle guest BT and retry:
+  `adb -e shell svc bluetooth disable; adb -e shell svc bluetooth enable`.
+- **The dongle is independent of the host's built-in adapter**, which stays bonded to the watch
+  for `normlink-cli`. Don't run the emulator BLE bridge, `normlink-cli`, and the official app at
+  the same time — they contend for the watch's single active connection.
+- **Rebuild from scratch:** `tools\emulator\setup.ps1` (SDK packages + AEHD + AVD + Bumble);
+  the Zadig WinUSB swap is the one manual step.
+
+`normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
+the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
 
 ---
 
