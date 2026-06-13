@@ -576,16 +576,22 @@ class BleManager @Inject constructor(
             return
         }
         val q = queue ?: run { Log.w(TAG, "sendCommandNoResponse($cmd): queue not initialised"); return }
-        q.enqueue(
-            BleRequest(
-                bytes = PacketBuilder.build(cmd, action, payload),
-                charUuid = commandWriteChar,
-                expectedCmd = cmd,
-                timeoutMs = BleConstants.WRITE_TIMEOUT_MS,
-                urgent = urgent,
-                awaitResponse = false,
+        // Truly fire-and-forget: the queue still awaits the write completing, which can throw a
+        // BleTimeoutException if the link drops mid-write (e.g. a reconnect flap). That MUST NOT
+        // propagate — callers like the notification forwarder run in a SupervisorJob scope where an
+        // uncaught exception crashes the app. Swallow + log; there's no result to deliver anyway.
+        runCatching {
+            q.enqueue(
+                BleRequest(
+                    bytes = PacketBuilder.build(cmd, action, payload),
+                    charUuid = commandWriteChar,
+                    expectedCmd = cmd,
+                    timeoutMs = BleConstants.WRITE_TIMEOUT_MS,
+                    urgent = urgent,
+                    awaitResponse = false,
+                )
             )
-        )
+        }.onFailure { Log.w(TAG, "sendCommandNoResponse($cmd): write failed (${it.message})") }
     }
 
     /**

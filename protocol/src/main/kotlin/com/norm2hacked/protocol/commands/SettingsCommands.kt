@@ -112,11 +112,28 @@ object SwitchSettingCommand {
     const val BIT_HEART_RATE_MONITOR = 0x40000
     const val BIT_MOOD = 0x200000
 
+    // The notification-kind bits the watch must have enabled to actually DISPLAY pushed
+    // notifications (calls, missed calls, SMS, social-app messages, email, calendar). If these
+    // are off, the watch receives a push and silently drops it. Enabled by default on connect.
+    val NOTIFICATION_BITS =
+        BIT_CALL or BIT_MISS_CALL or BIT_SMS or BIT_SOCIAL or BIT_EMAIL or BIT_CALENDAR
+
     fun queryPayload(): ByteArray = byteArrayOf(0x00)
+
+    // Full-mask SET content is 5 bytes: a CONSTANT 0x00 sub-command byte, then the 4-byte LE mask.
+    // Source: MBluetooth.setSwitchSetting(cb, long, int) → longToByteArray(mask, 4) →
+    // SwitchSetting(cb, 5, byte[]) constructor, which builds content = [0x00][mask LE4].
+    // (The [0x01]-prefixed 3-byte variant is a DIFFERENT command that toggles a single switch by
+    // type, not the full mask — using it, or a bare mask, makes the watch ack-but-ignore.)
     fun setPayload(mask: Int): ByteArray = byteArrayOf(
-        (mask and 0xFF).toByte(), ((mask shr 8) and 0xFF).toByte(),
-        ((mask shr 16) and 0xFF).toByte(), ((mask shr 24) and 0xFF).toByte(),
+        0x00,
+        (mask and 0xFF).toByte(),
+        ((mask shr 8) and 0xFF).toByte(),
+        ((mask shr 16) and 0xFF).toByte(),
+        ((mask shr 24) and 0xFF).toByte(),
     )
+
+    // Response carries the bare 4-byte LE mask (no prefix). Source: SwitchSetting.smali parse.
     fun parse(p: Packet): Int {
         if (p.payload.size < 4) return 0
         return (p.payload[0].toInt() and 0xFF) or

@@ -307,6 +307,65 @@ Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `Gp
 
 `NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications, checks per-app rules from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses `ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via `NotificationPushCommand`.
 
+#### Notification forwarding — status & the firmware wall (IN PROGRESS, READ BEFORE RESUMING)
+
+**Goal:** phone notifications appear on the watch. **Current state: NOT working on-device — the watch
+silently drops them.** The full send pipeline is fixed and verified on the wire, but the watch never
+displays anything. Root analysis points at a firmware-compatibility wall (see below).
+
+**The 4-stage pipeline and what was fixed (all verified via logcat):**
+1. **Listener permission** — without it `onNotificationPosted` never fires. Granted in tests via
+   `adb shell cmd notification allow_listener com.norm2hacked/com.norm2hacked.notification.NotificationForwarder`.
+   *TODO: add an in-app "grant notification access" flow for real installs (no UI for it yet).*
+2. **MTU chunking** — `writeToChar` does a single un-chunked `writeCharacteristic`; a 50-66 byte
+   notification was truncated to ~20 bytes (MTU). Fixed: the forwarder now uses
+   `BleManager.sendCommandNoResponse(...)` which routes through `BleWriteQueue` (MTU-chunked, per-chunk
+   ACK). `BleRequest.awaitResponse=false` = fire-and-forget through the queue.
+3. **`[0x03]` trigger** — the watch needs the "data complete, process now" trigger to `0x8002` after
+   the write (send03ToDevice). The no-response path was skipping it; now it sends it for `CHAR_WRITE_8001`.
+4. **Crash fix** — `sendCommandNoResponse` `await()`s the write completing, which throws
+   `BleTimeoutException` if the link flaps; that propagated uncaught out of the forwarder's
+   `SupervisorJob` scope → app crash. Now wrapped in `runCatching` (truly fire-and-forget).
+
+**Decoded the legacy `MessageBT` body** (`NotificationPushCommand.appNotificationPayload`, cmd `0x79`
+SET; source `MessageBT.getBytes()` + `MBluetooth.sendNewMessage`):
+```
+6F 79 71 [len] | [bodyLen(2)] [id(4,LE)] [crud(1)] [TLV…] | 8F
+  TLV = [valueLen+1 (2,LE)] [tag] [value]   tags: 0x01=messageType 0x02=title 0x03=content
+```
+Package→icon-type map (`PackageTypeData.initSocialData`): WeChat 0x07, Viber 0x08, Snapchat 0x09,
+WhatsApp 0x0A, QQ 0x0B, Facebook 0x0C, Messenger 0x0D, Instagram 0x0F, Twitter 0x10, LinkedIn 0x11;
+email apps→0x03, calendar→0x04, SMS→0x01, calls→0x00/0x05/0x06, generic/unknown→0x02.
+
+**THE WALL — the watch acks-but-ignores two legacy commands this feature needs:**
+- **`SwitchSetting (0x90)` SET** — the watch's notification-kind bitmask (`BIT_CALL`/`BIT_SMS`/
+  **`BIT_SOCIAL=0x80`**/`BIT_EMAIL`/…) gates which kinds it will *display*. With `BIT_SOCIAL` off it
+  drops our `SOCIAL_NEW_PUSH`. We try to enable it on connect in `DashboardViewModel.refreshWatchStats`
+  (query → OR in `SwitchSettingCommand.NOTIFICATION_BITS=0x3F0` → SET). The watch **acks the SET but
+  the mask never changes** (re-query still shows `0x…0040`, social off). Verified with the byte-exact
+  full-mask format from smali: content = `[0x00][mask LE4]` (5 bytes) via `SwitchSetting(cb,5,byte[])`
+  — note the `(cb,I,B,B)` `[0x01,type,onOff]` variant is a *different* command (toggle ONE switch).
+  `SwitchSettingCommand.setPayload`/`parse` were corrected to this format regardless.
+- **`DeviceDisplayData (0x57)`** — same ack-but-ignore (documented under "live daily totals").
+
+**Conclusion / hypothesis:** battery/sport/HR/brightness work (those legacy `0x6F` commands are
+honored), but `0x90` switch-setting and `0x57` display are **silently ignored** — this firmware
+(`A0.2N1.0B01`) has migrated them to the **newer `cn.appscomm.commonprotocol` command set**
+(`SwitchSettingBT` / `LXSwitchSetting` / `SwitchExpandSetting`; notification body =
+`MessageNewBT`, an `@Order`/`@BLEField` VarInt annotation-encoded format — NOT the legacy `MessageBT`).
+Reverse-engineering the legacy smali keeps yielding accepted-but-dropped commands.
+
+**NEXT STEPS (pick up here):**
+1. **HCI-capture the official app** (`com.normconnectappv2.watch`) enabling notifications + forwarding
+   one → ground-truth bytes for the switch-enable command AND the notification body (+ any bind/session
+   preamble). This is the definitive path. (It needs the official app connected/forwarding; it has its
+   own listener permission + contends for the watch's single connection — handle BT carefully, no
+   rapid toggling.)
+2. Or decode the `commonprotocol` `SwitchSettingBT` + `MessageNewBT` annotation encoder
+   (`bluetooth/core/annotation/handler/*`) from smali — self-contained but slower (VarInt + length-prefix
+   framework; one wrong byte = silent drop).
+3. Then: add the in-app notification-listener permission request flow.
+
 ### UI Layer (`ui/`)
 
 Jetpack Compose + Material Design 3. Each screen has a ViewModel that calls either `BleManager` directly or a use case.
@@ -570,6 +629,11 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 **Status: Fixed in code, not yet verified on Android device.**
 
 ### Pending features (priority order)
+1. **Notifications → watch (IN PROGRESS, BLOCKED)** — send pipeline fixed (permission, MTU-chunking,
+   `[0x03]` trigger, crash) but the watch silently drops them: the legacy `SwitchSetting (0x90)`
+   notification-enable and the `MessageBT` body are acked-but-ignored on this firmware. Full state +
+   next steps in **"Notification forwarding — status & the firmware wall"** under the Notification Layer.
+   Next: HCI-capture the official app for the `commonprotocol` switch-enable + `MessageNewBT` format.
 1. **Verify warm-connection on-device** — the feature is implemented (see "Warm-connection via `BleService`"); confirm a warm reconnect is sub-second vs the ~8s cold path, then tune `KEEPALIVE_INTERVAL_MS` / `REKICK_DELAY_MS`.
 1. **Verify CHECK commands in the Android `:app` on-device** — the bridge-backed CLI confirms the protocol; the app's `BleManager` path still needs device verification.
 2. **`DEVICE_VERSION` payload quirk** — cmd `0x03` with payload `[06]` times out; find the correct request format.

@@ -16,6 +16,7 @@ import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.commands.BatteryCommand
 import com.norm2hacked.protocol.commands.DeviceDisplayCommand
 import com.norm2hacked.protocol.commands.DeviceVersionCommand
+import com.norm2hacked.protocol.commands.SwitchSettingCommand
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -152,6 +153,36 @@ class DashboardViewModel @Inject constructor(
                         "DeviceDisplay (0x57) returned no data (action=${displayPkt.action}, ${displayPkt.payload.size}B) — keeping cached totals"
                     )
                 }
+
+                // Enable notification kinds by default: the watch's SwitchSetting bitmask gates
+                // which notifications it will DISPLAY. With our kinds off, every pushed notification
+                // is received and silently dropped. OR them into the current mask (non-destructive,
+                // preserving the user's other toggles) once per connection. Best-effort: a failure
+                // here must not break the dashboard, so it's isolated in its own runCatching.
+                // The first query right after connect can transiently time out, so retry a couple
+                // of times. OR only ADDS the low notification bits, preserving every other bit of
+                // the watch's mask (including high bytes), so it's safe to apply.
+                var current: Int? = null
+                repeat(3) {
+                    if (current != null) return@repeat
+                    current = runCatching {
+                        SwitchSettingCommand.parse(
+                            bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.CHECK, SwitchSettingCommand.queryPayload())
+                        )
+                    }.getOrNull()
+                }
+                current?.let { cur ->
+                    val wanted = cur or SwitchSettingCommand.NOTIFICATION_BITS
+                    if (wanted != cur) {
+                        runCatching {
+                            bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.SET, SwitchSettingCommand.setPayload(wanted))
+                        }.onSuccess {
+                            android.util.Log.i("DashboardVM", "Enabled notification kinds on watch: 0x%08X -> 0x%08X".format(cur, wanted))
+                        }.onFailure { android.util.Log.w("DashboardVM", "enable notification kinds SET failed: ${it.message}") }
+                    } else {
+                        android.util.Log.d("DashboardVM", "Notification kinds already enabled (mask=0x%08X)".format(cur))
+                    }
+                } ?: android.util.Log.w("DashboardVM", "could not read switch mask to enable notification kinds")
             }.onFailure { e ->
                 android.util.Log.e("DashboardVM", "refreshWatchStats failed: ${e.message}", e)
                 _state.update { it.copy(error = "Watch stats unavailable: ${e.message}") }

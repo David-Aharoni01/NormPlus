@@ -109,9 +109,14 @@ class BleWriteQueue(
             withTimeout(req.timeoutMs) {
                 if (!req.awaitResponse) {
                     // Fire-and-forget: serialise + MTU-chunk the write so it can't race the command
-                    // path or be truncated, but don't wait for a protocol response (the trigger is
-                    // part of the request/response handshake, so it's skipped too).
+                    // path or be truncated. We DON'T wait for a protocol response, but we DO still
+                    // send the [0x03] trigger — on this watch it's the "data complete, process now"
+                    // signal (send03ToDevice), required for the watch to ACT on the command, not just
+                    // to emit a response. Without it a notification push is received but never shown.
                     writeChunked(gatt, req)
+                    if (req.charUuid == BleConstants.CHAR_WRITE_8001) {
+                        writeTrigger(gatt)
+                    }
                     req.deferred.complete(Packet(req.expectedCmd, Action.SET_RESPONSE, ByteArray(0)))
                     return@withTimeout
                 }
