@@ -23,7 +23,11 @@ package com.norm2hacked.protocol.commands
 object CommonProtocolCodec {
 
     sealed interface Field
-    /** Int or boolean (pass 0/1) with no `@BLEField` → single byte. */
+    /**
+     * A single-byte field. All scalar Java types with no `@BLEField` (`int`, `byte`, `boolean`)
+     * collapse to one byte here — `ParamsHandlerUtil.ObjectToByteArray` emits `int → byte` and
+     * `boolean → 0/1` when `maxLength` is absent. Pass `0/1` for booleans, `x and 0xFF` for bytes.
+     */
     data class Scalar(val value: Int) : Field
     /** String with no `@BLEField` → raw UTF-8, no length prefix. */
     data class RawText(val value: String) : Field
@@ -55,14 +59,17 @@ object CommonProtocolCodec {
     }
 
     /**
-     * Mirrors `ParseUtil.getContentAddDot`: keep the string if its UTF-8 form fits within
-     * [maxLen]; otherwise take the first `maxLen - 3` bytes (dropping a split trailing char)
-     * and append "..." so the result stays within [maxLen] bytes.
+     * Byte-faithful port of `ParseUtil.getContentAddDot`: keep the string if its UTF-8 form fits
+     * within [maxLen]; otherwise decode the first `maxLen - 3` bytes, drop trailing chars that are
+     * **not present in the original** string (this removes a multi-byte char split at the cut
+     * boundary, while preserving a legitimate U+FFFD that the original actually contains), then
+     * append "..." — so the result stays within [maxLen] bytes.
      */
     fun truncateWithDots(s: String, maxLen: Int): ByteArray {
         val bytes = s.toByteArray(Charsets.UTF_8)
         if (bytes.size <= maxLen) return bytes
-        val head = String(bytes, 0, maxLen - 3, Charsets.UTF_8).trimEnd('�')
+        var head = String(bytes, 0, maxLen - 3, Charsets.UTF_8)
+        while (head.isNotEmpty() && !s.contains(head.last())) head = head.dropLast(1)
         return (head + "...").toByteArray(Charsets.UTF_8)
     }
 }

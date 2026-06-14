@@ -1,10 +1,12 @@
 package com.norm2hacked.protocol
 
+import com.norm2hacked.protocol.commands.CommonProtocolCodec
 import com.norm2hacked.protocol.commands.MessageNewCommand
 import com.norm2hacked.protocol.commands.NotificationPushCommand
 import com.norm2hacked.protocol.commands.readInt32LE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class NotificationPushTest {
 
@@ -93,6 +95,42 @@ class NotificationPushTest {
         assertEquals(CommandCode.SOCIAL_EX_PUSH, pkt.cmdCode)
         assertEquals(Action.SET, pkt.action)
         assertEquals(0x0A.toByte(), pkt.payload[0])  // type byte
+    }
+
+    @Test
+    fun `truncateWithDots caps an over-long ASCII string at maxLen with trailing dots`() {
+        val out = CommonProtocolCodec.truncateWithDots("A".repeat(100), 0x5A) // maxLen 90
+        assertEquals(90, out.size)
+        assertEquals("...", String(out, out.size - 3, 3, Charsets.UTF_8))
+        // length byte the encoder would emit == actual byte count, and fits in a byte
+        assertTrue(out.size <= 0xFF)
+    }
+
+    @Test
+    fun `truncateWithDots drops a split multi-byte char, never emitting U+FFFD`() {
+        // "é" = C3 A9 (2 bytes); 60 of them = 120 bytes > 90 → the maxLen-3=87 cut lands mid-char.
+        val out = CommonProtocolCodec.truncateWithDots("é".repeat(60), 0x5A)
+        assertEquals("é".repeat(43) + "...", String(out, Charsets.UTF_8)) // 43*2 + 3 = 89 bytes
+        assertEquals(89, out.size)
+        assertEquals(-1, out.indexOf(0xEF.toByte()))  // no U+FFFD (EF BF BD) in the output
+    }
+
+    @Test
+    fun `truncateWithDots leaves an exact-maxLen string untouched (no dots)`() {
+        val s = "A".repeat(90)
+        assertEquals(s, String(CommonProtocolCodec.truncateWithDots(s, 0x5A), Charsets.UTF_8))
+    }
+
+    @Test
+    fun `MessageNewBT with empty content emits contentLen=0 and no content bytes`() {
+        // frame: 6F 76 71 [lenLo lenHi] [type][cv][titleLen][contentLen][title][content][date][shock][reply] 8F
+        val frame = MessageNewCommand.buildAppNotification(
+            type = 0x02, title = "Hi", content = "", date = "20260101T000000",
+        )
+        assertEquals(0x02.toByte(), frame[7])  // titleLen = 2
+        assertEquals(0x00.toByte(), frame[8])  // contentLen = 0
+        // contentLen is immediately followed by the title bytes (no content bytes in between)
+        assertEquals("Hi", String(frame, 9, 2, Charsets.UTF_8))
     }
 
     @Test

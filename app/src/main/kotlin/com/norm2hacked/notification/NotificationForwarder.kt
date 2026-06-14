@@ -89,7 +89,10 @@ class NotificationForwarder : NotificationListenerService() {
             }
 
             val titleRaw = extras.getString("android.title") ?: ""
-            val text = extras.getCharSequence("android.text")?.toString() ?: ""
+            // Prefer the expanded body (BigTextStyle) — messaging apps often put the real message
+            // there and leave android.text as a short summary (or empty).
+            val text = (extras.getCharSequence("android.bigText")
+                ?: extras.getCharSequence("android.text"))?.toString() ?: ""
             val title = titleRaw.ifBlank { appLabel }
             val groupKey = sbn.groupKey ?: sbn.key
             val messageType = NotificationPushCommand.socialTypeForPackage(pkg)
@@ -110,12 +113,13 @@ class NotificationForwarder : NotificationListenerService() {
                     urgent = true,
                 )
             } else {
-                Log.d(TAG, "  silent push (dedup window active or vibrateOnFirst=false)")
-                bleManager.sendCommandNoResponse(
-                    CommandCode.MSG_COUNT_PUSH, Action.SET,
-                    NotificationPushCommand.msgCountPayload(1),
-                    urgent = true,
-                )
+                // Deduped repeat (e.g. a group chat within the mute window). The legacy
+                // MSG_COUNT_PUSH (0x72) count-badge belongs to the older push generation and has no
+                // equivalent in this firmware's "New" generation (which only has sendMessageNew), so
+                // sending it is a dead write — skip it. Suppressing the repeat is exactly the intent
+                // of the dedup window. (Showing it silently would need MessageNewBT with a
+                // non-vibrating shockType, whose semantics aren't yet confirmed.)
+                Log.d(TAG, "  deduped — skipping (no count command in this firmware's push generation)")
             }
         }
     }
