@@ -4,6 +4,7 @@ import com.norm2hacked.protocol.Action
 import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.Packet
 import com.norm2hacked.protocol.PacketBuilder
+import com.norm2hacked.protocol.util.BidiUtil
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -307,8 +308,12 @@ object NotificationPushCommand {
         content: String,
         crud: Byte = CRUD_ADD,
     ): ByteArray {
-        val titleBytes = title.toByteArray(Charsets.UTF_8).take(90).toByteArray()
-        val contentBytes = content.toByteArray(Charsets.UTF_8).take(240).toByteArray()
+        // Reorder RTL (Hebrew/Arabic) text to visual order before encoding — the watch
+        // renders bytes left-to-right as received and does no bidi of its own. See BidiUtil.
+        // truncateWithDots = ParseUtil.getContentAddDot (0x5A / 0xF0): caps at the byte limit
+        // on a UTF-8 char boundary (never splits a multi-byte char), matching the original.
+        val titleBytes = CommonProtocolCodec.truncateWithDots(BidiUtil.formatRtlString(title), 0x5A)
+        val contentBytes = CommonProtocolCodec.truncateWithDots(BidiUtil.formatRtlString(content), 0xF0)
 
         val body = ArrayList<Byte>(32)
         body.addLE4(id)
@@ -419,8 +424,10 @@ object MessageNewCommand {
         listOf(
             CommonProtocolCodec.Scalar(type.toInt() and 0xFF),
             CommonProtocolCodec.Scalar(countOrVersion),
-            CommonProtocolCodec.LenText(title, 0x5A),    // @BLEField maxLength 90
-            CommonProtocolCodec.LenText(content, 0x80),  // @BLEField maxLength 128
+            // Reorder RTL (Hebrew/Arabic) to visual order first — the watch draws bytes
+            // left-to-right and does no bidi of its own (matches the original app). See BidiUtil.
+            CommonProtocolCodec.LenText(BidiUtil.formatRtlString(title), 0x5A),    // @BLEField maxLength 90
+            CommonProtocolCodec.LenText(BidiUtil.formatRtlString(content), 0x80),  // @BLEField maxLength 128
             CommonProtocolCodec.RawText(date),
             CommonProtocolCodec.Scalar(shockType),
             CommonProtocolCodec.Scalar(if (needReply) 1 else 0),
