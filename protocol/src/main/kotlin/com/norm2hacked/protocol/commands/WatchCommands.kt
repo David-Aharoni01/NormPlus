@@ -6,6 +6,7 @@ import com.norm2hacked.protocol.Packet
 import com.norm2hacked.protocol.PacketBuilder
 import java.time.Instant
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 
 // ── Battery ──────────────────────────────────────────────────────────────────
@@ -377,6 +378,64 @@ object NotificationPushCommand {
         add(tag.toByte())
         for (b in value) add(b)
     }
+}
+
+// ── Notification push (new "commonprotocol" generation, MessageNewBT cmd 0x76) ──
+//
+// Our watch (Norm 2) maps to the `New` push generation: BlueToothDevice.getMessagePushConfig
+// returns ofNew() (it's not in the PerfectSocial OEM list, not W04D), so the official app pushes
+// notifications via sendMessageNew(MessageNewBT) — cmd 0x76 (SOCIAL_EX_PUSH byte), SET, with NO
+// switch-enable / preamble (SwitchSettingBT is dead code in the APK). The legacy MessageBT (0x79)
+// in NotificationPushCommand above is acked-but-ignored by this firmware.
+//
+// Body = MessageNewBT @Order fields encoded by CommonProtocolCodec (FieldHandler rules):
+//   [type][countOrVersion][titleLen][contentLen][titleBytes][contentBytes][dateBytes][shockType][needReply]
+// Source: MessageNewBT.smali (@Order + @BLEField), MessageNewBTFactory.smali (field values/date).
+object MessageNewCommand {
+
+    /** Icon category for a package — same PackageTypeData map as the legacy command. */
+    fun socialTypeForPackage(pkg: String): Byte = NotificationPushCommand.socialTypeForPackage(pkg)
+
+    // MessageNewBTFactory uses TimeFormatter("yyyyMMdd'T'HHmmss") in local time.
+    private val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
+
+    fun formatDate(instant: Instant = Instant.now()): String =
+        DATE_FMT.format(instant.atZone(ZoneId.systemDefault()))
+
+    /**
+     * MessageNewBT body (the SET payload, without the 0x6F frame). Prefer this when routing
+     * through the write queue so the frame is built once and MTU-chunked. Defaults match the
+     * MessageNewBT ctor: countOrVersion=1, shockType=0xFF, needReply=false.
+     */
+    fun appNotificationPayload(
+        type: Byte,
+        title: String,
+        content: String,
+        date: String = formatDate(),
+        countOrVersion: Int = 1,
+        shockType: Int = 0xFF,
+        needReply: Boolean = false,
+    ): ByteArray = CommonProtocolCodec.encodeBody(
+        listOf(
+            CommonProtocolCodec.Scalar(type.toInt() and 0xFF),
+            CommonProtocolCodec.Scalar(countOrVersion),
+            CommonProtocolCodec.LenText(title, 0x5A),    // @BLEField maxLength 90
+            CommonProtocolCodec.LenText(content, 0x80),  // @BLEField maxLength 128
+            CommonProtocolCodec.RawText(date),
+            CommonProtocolCodec.Scalar(shockType),
+            CommonProtocolCodec.Scalar(if (needReply) 1 else 0),
+        )
+    )
+
+    fun buildAppNotification(
+        type: Byte,
+        title: String,
+        content: String,
+        date: String = formatDate(),
+    ): ByteArray = PacketBuilder.build(
+        CommandCode.SOCIAL_EX_PUSH, Action.SET,
+        appNotificationPayload(type, title, content, date),
+    )
 }
 
 // ── Byte helpers ──────────────────────────────────────────────────────────────

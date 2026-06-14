@@ -1,5 +1,6 @@
 package com.norm2hacked.protocol
 
+import com.norm2hacked.protocol.commands.MessageNewCommand
 import com.norm2hacked.protocol.commands.NotificationPushCommand
 import com.norm2hacked.protocol.commands.readInt32LE
 import kotlin.test.Test
@@ -49,6 +50,49 @@ class NotificationPushTest {
         assertEquals(Action.SET, pkt.action)
         // payload[2..5] = id (LE) = 12345
         assertEquals(12345, pkt.payload.readInt32LE(2))
+    }
+
+    @Test
+    fun `MessageNewBT (cmd 0x76) matches the commonprotocol Body encoding`() {
+        // type=WhatsApp(0x0A), title="WA", content="Hi", date fixed, defaults cv=1/shock=0xFF/reply=0.
+        // Body layout (FieldHandler): [type][cv][titleLen][contentLen][title][content][date][shock][reply]
+        // length-prefixed title/content emit their length inline, data deferred + flushed after content.
+        val frame = MessageNewCommand.buildAppNotification(
+            type = MessageNewCommand.socialTypeForPackage("com.whatsapp"),
+            title = "WA",
+            content = "Hi",
+            date = "20260101T000000",
+        )
+        val expected = byteArrayOf(
+            0x6F, 0x76, 0x71,                  // start, SOCIAL_EX_PUSH (0x76), SET
+            0x19, 0x00,                        // Leaf contentLen = 25
+            0x0A,                              // type = WhatsApp
+            0x01,                              // countOrVersion = 1
+            0x02,                              // titleLen = 2
+            0x02,                              // contentLen = 2
+            0x57, 0x41,                        // "WA" (deferred title bytes)
+            0x48, 0x69,                        // "Hi" (deferred content bytes)
+            0x32, 0x30, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31,  // "20260101"
+            0x54, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,        // "T000000"
+            0xFF.toByte(),                     // shockType = 0xFF (default)
+            0x00,                              // needReply = false
+            0x8F.toByte(),                     // end
+        )
+        assertEquals(hex(expected), hex(frame))
+    }
+
+    @Test
+    fun `MessageNewBT framed packet round-trips through the deframer`() {
+        val frame = MessageNewCommand.buildAppNotification(
+            type = MessageNewCommand.socialTypeForPackage("com.whatsapp"),
+            title = "Alice",
+            content = "Hey there!",
+            date = "20260101T000000",
+        )
+        val pkt = PacketDeframer().feed(frame).single()
+        assertEquals(CommandCode.SOCIAL_EX_PUSH, pkt.cmdCode)
+        assertEquals(Action.SET, pkt.action)
+        assertEquals(0x0A.toByte(), pkt.payload[0])  // type byte
     }
 
     @Test

@@ -8,6 +8,7 @@ import com.norm2hacked.data.db.dao.NotificationRuleDao
 import com.norm2hacked.data.db.entities.NotificationRuleEntity
 import com.norm2hacked.protocol.Action
 import com.norm2hacked.protocol.CommandCode
+import com.norm2hacked.protocol.commands.MessageNewCommand
 import com.norm2hacked.protocol.commands.NotificationPushCommand
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
@@ -59,6 +60,10 @@ class NotificationForwarder : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val pkg = sbn.packageName ?: return
 
+        // Never forward our own notifications (e.g. the BleService foreground notification) —
+        // that's just noise on the watch and a self-feedback loop.
+        if (pkg == packageName) return
+
         if (!bleManager.connectionState.value.isConnected) {
             Log.d(TAG, "Not connected — dropping notification from pkg=$pkg")
             return
@@ -88,8 +93,6 @@ class NotificationForwarder : NotificationListenerService() {
             val title = titleRaw.ifBlank { appLabel }
             val groupKey = sbn.groupKey ?: sbn.key
             val messageType = NotificationPushCommand.socialTypeForPackage(pkg)
-            // Stable positive id from the notification key so an EDIT/repeat updates in place.
-            val id = (sbn.key ?: groupKey).hashCode() and 0x7FFFFFFF
 
             val vibrate = if (rule.muteGroupChats) cache.shouldVibrate(groupKey)
                           else rule.vibrateOnFirst
@@ -97,11 +100,13 @@ class NotificationForwarder : NotificationListenerService() {
             Log.i(TAG, "Forward: pkg=$pkg type=$messageType vibrate=$vibrate title='${title.take(30)}' text='${text.take(40)}'")
 
             if (vibrate) {
-                // Routed through the write queue (urgent) so it's serialised + MTU-chunked — a real
-                // title+body exceeds one MTU and a raw writeToChar would truncate it.
+                // This firmware (Norm 2) is on the "New" push generation, so we send MessageNewBT
+                // (cmd 0x76) — the legacy MessageBT (0x79) is acked-but-ignored here. Routed through
+                // the write queue (urgent) so it's serialised + MTU-chunked — a real title+body
+                // exceeds one MTU and a raw writeToChar would truncate it.
                 bleManager.sendCommandNoResponse(
-                    CommandCode.SOCIAL_NEW_PUSH, Action.SET,
-                    NotificationPushCommand.appNotificationPayload(messageType, id, title, text),
+                    CommandCode.SOCIAL_EX_PUSH, Action.SET,
+                    MessageNewCommand.appNotificationPayload(messageType, title, text),
                     urgent = true,
                 )
             } else {
