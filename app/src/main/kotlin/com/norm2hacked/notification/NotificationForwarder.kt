@@ -1,5 +1,6 @@
 package com.norm2hacked.notification
 
+import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -71,6 +72,17 @@ class NotificationForwarder : NotificationListenerService() {
 
         val extras = sbn.notification?.extras ?: return
 
+        // Drop junk *types* (charging/system status, media, foreground-service "Waiting for
+        // messages…", progress, group summaries, etc.) before touching the DB or BLE. Done
+        // synchronously since all inputs are on the sbn. See NotificationFilter.
+        when (val decision = NotificationFilter.decide(sbn.toFacts())) {
+            is FilterDecision.Drop -> {
+                Log.d(TAG, "pkg=$pkg dropped: ${decision.reason}")
+                return
+            }
+            FilterDecision.Forward -> { /* fall through to the per-app rule + dedup path */ }
+        }
+
         scope.launch {
             // App display name — used as the new-rule default and as a title fallback. Resolved at
             // most once and lazily, so a disabled app (which returns early below) does no lookup.
@@ -88,11 +100,12 @@ class NotificationForwarder : NotificationListenerService() {
                 return@launch
             }
 
-            val titleRaw = extras.getString("android.title") ?: ""
-            // Prefer the expanded body (BigTextStyle) — messaging apps often put the real message
-            // there and leave android.text as a short summary (or empty).
-            val text = (extras.getCharSequence("android.bigText")
-                ?: extras.getCharSequence("android.text"))?.toString() ?: ""
+            // getCharSequence (not getString) so a SpannableString title resolves instead of
+            // falling back to the app label. EXTRA_BIG_TEXT first — messaging apps often put the
+            // real message there and leave EXTRA_TEXT as a short summary (or empty).
+            val titleRaw = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+            val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
+                ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: ""
             val title = titleRaw.ifBlank { appLabel }
             val groupKey = sbn.groupKey ?: sbn.key
             val messageType = NotificationPushCommand.socialTypeForPackage(pkg)
@@ -100,7 +113,8 @@ class NotificationForwarder : NotificationListenerService() {
             val vibrate = if (rule.muteGroupChats) cache.shouldVibrate(groupKey)
                           else rule.vibrateOnFirst
 
-            Log.i(TAG, "Forward: pkg=$pkg type=$messageType vibrate=$vibrate title='${title.take(30)}' text='${text.take(40)}'")
+            // Don't log notification content (PII) — lengths only.
+            Log.i(TAG, "Forward: pkg=$pkg type=$messageType vibrate=$vibrate titleLen=${title.length} textLen=${text.length}")
 
             if (vibrate) {
                 // This firmware (Norm 2) is on the "New" push generation, so we send MessageNewBT
