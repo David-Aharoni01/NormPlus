@@ -81,6 +81,9 @@ enum class CommandCode(val byte: Byte) {
     WEATHER_PUSH(0x77),
     WEATHER_PUSH_EX(0x78),
     SOCIAL_NEW_PUSH(0x79),
+    // Watch→phone: incoming-call response (answer/reject). payload[0]=0x00 accept, non-zero reject.
+    // Source: BluetoothCommandConstant.smali COMMAND_CODE_INCOME_CALL_RESPONSE = -0x24.
+    INCOME_CALL_RESPONSE(0xDC.toByte()), // 0xDC = -0x24 signed
     SWITCH_SETTING(0x90.toByte()); // 0x90 = -0x70 signed
 
     companion object {

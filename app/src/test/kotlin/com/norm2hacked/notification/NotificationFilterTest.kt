@@ -61,12 +61,17 @@ class NotificationFilterTest {
     }
 
     @Test
-    fun `ongoing user-facing categories are still forwarded (call, message, alarm)`() {
-        assertForwarded(message().copy(isOngoing = true, category = NotificationFilter.CATEGORY_CALL))
-        assertForwarded(message().copy(isOngoing = true, category = NotificationFilter.CATEGORY_MISSED_CALL))
+    fun `ongoing user-facing categories are still forwarded (message, alarm)`() {
         // A messenger holding a foreground service must not lose its actual chat message.
         assertForwarded(message().copy(isForegroundService = true, category = NotificationFilter.CATEGORY_MESSAGE))
         assertForwarded(message().copy(isOngoing = true, category = NotificationFilter.CATEGORY_ALARM))
+    }
+
+    @Test
+    fun `call notifications are dropped (handled first-class by CallManager)`() {
+        // Incoming-call notifications are ongoing CATEGORY_CALL; missed are CATEGORY_MISSED_CALL.
+        assertDropped(message().copy(isOngoing = true, category = NotificationFilter.CATEGORY_CALL), DropReason.CALL_HANDLED_ELSEWHERE)
+        assertDropped(message().copy(category = NotificationFilter.CATEGORY_MISSED_CALL), DropReason.CALL_HANDLED_ELSEWHERE)
     }
 
     @Test

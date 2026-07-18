@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.norm2hacked.R
+import com.norm2hacked.call.CallManager
 import com.norm2hacked.data.preferences.WatchPreferences
 import com.norm2hacked.ui.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
@@ -68,6 +69,7 @@ class BleService : Service() {
 
     @Inject lateinit var bleManager: BleManager
     @Inject lateinit var watchPreferences: WatchPreferences
+    @Inject lateinit var callManager: CallManager
 
     private val serviceScope = CoroutineScope(SupervisorJob())
 
@@ -86,6 +88,9 @@ class BleService : Service() {
         startForegroundCompat(buildNotification("Searching for watch…"))
         observeConnectionState()
         connectIfKnownDevice()
+        // Forward phone calls to the watch + handle the watch's answer/reject. Lives for the
+        // connected session; sends are no-ops while disconnected (BleManager guards them).
+        callManager.start(this, serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -102,6 +107,7 @@ class BleService : Service() {
     override fun onDestroy() {
         rekickJob?.cancel()
         keepAliveJob?.cancel()
+        callManager.stop()
         // Only tear the BLE link down on a deliberate stop. On an OS-initiated destroy we leave the
         // singleton BleManager's link intact: if the process survives, the link stays warm; if the
         // process is killed, it's gone anyway and START_STICKY brings us back to reconnect.

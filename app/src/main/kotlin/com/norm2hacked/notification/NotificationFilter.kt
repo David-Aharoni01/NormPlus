@@ -47,12 +47,11 @@ object NotificationFilter {
 
     /**
      * User-facing categories that are real events even when posted as ongoing / backed by a
-     * foreground service (calls, chat messages, alarms, …). Exempted from the ongoing/FGS drop so
-     * a messenger that holds a foreground service doesn't lose its actual messages.
+     * foreground service (chat messages, alarms, …). Exempted from the ongoing/FGS drop so a
+     * messenger that holds a foreground service doesn't lose its actual messages. Call categories
+     * are intentionally absent — calls are dropped here and handled first-class by CallManager.
      */
     private val KEEP_WHEN_ONGOING = setOf(
-        CATEGORY_CALL,
-        CATEGORY_MISSED_CALL,
         CATEGORY_MESSAGE,
         CATEGORY_EMAIL,
         CATEGORY_EVENT,
@@ -81,6 +80,12 @@ object NotificationFilter {
     /** Pure decision over extracted facts. Drops on the first matching rule. */
     fun decide(f: NotificationFacts): FilterDecision {
         if (f.pkg in SYSTEM_SOURCES) return FilterDecision.Drop(DropReason.SYSTEM_SOURCE)
+
+        // Calls are handled first-class by CallManager (telephony). Drop the dialer's own call
+        // notifications so every call doesn't also double up as a generic push on the watch.
+        if (f.category == CATEGORY_CALL || f.category == CATEGORY_MISSED_CALL) {
+            return FilterDecision.Drop(DropReason.CALL_HANDLED_ELSEWHERE)
+        }
 
         // Ongoing / foreground-service notifications are status, not events — except real
         // user-facing categories (calls, messages, alarms, …), which are ongoing by nature.
@@ -130,6 +135,7 @@ data class NotificationFacts(
 
 enum class DropReason {
     SYSTEM_SOURCE,
+    CALL_HANDLED_ELSEWHERE,
     ONGOING,
     FOREGROUND_SERVICE,
     MEDIA,

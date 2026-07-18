@@ -53,6 +53,12 @@ class MainActivity : ComponentActivity() {
         val perms = mutableListOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
+            // Phone-call support (non-fatal if denied — calls just won't forward / can't be
+            // answered from the watch). BLE startup below is gated only on BLUETOOTH_CONNECT.
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.ANSWER_PHONE_CALLS,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms += Manifest.permission.POST_NOTIFICATIONS
@@ -94,14 +100,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startBleServiceIfPermitted() {
-        val allGranted = requiredPermissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        // BLE connect is the only permission the service truly needs; the call permissions are
+        // optional (their denial just disables call forwarding). So start as soon as BLE is
+        // granted, and separately request whatever is still missing (incl. the optional perms).
+        val bleGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+        if (bleGranted) BleService.start(this)
+
+        val missing = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (allGranted) {
-            BleService.start(this)
-        } else {
-            requestPermissionLauncher.launch(requiredPermissions)
-        }
+        if (missing.isNotEmpty()) requestPermissionLauncher.launch(missing.toTypedArray())
     }
 }
 
