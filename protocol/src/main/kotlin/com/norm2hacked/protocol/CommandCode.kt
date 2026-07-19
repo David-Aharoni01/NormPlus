@@ -84,6 +84,10 @@ enum class CommandCode(val byte: Byte) {
     // Watch→phone: incoming-call response (answer/reject). payload[0]=0x00 accept, non-zero reject.
     // Source: BluetoothCommandConstant.smali COMMAND_CODE_INCOME_CALL_RESPONSE = -0x24.
     INCOME_CALL_RESPONSE(0xDC.toByte()), // 0xDC = -0x24 signed
+    // Hybrid-watch hand calibration. Source: BluetoothCommandConstant.smali
+    // COMMAND_CODE_WATCH_MOVE_ONE = -0x4a, COMMAND_CODE_WATCH_MOVE_KEEP = -0x48.
+    WATCH_MOVE_ONE(0xB6.toByte()),  // 0xB6 = -0x4a signed — one nudge
+    WATCH_MOVE_KEEP(0xB8.toByte()), // 0xB8 = -0x48 signed — continuous move / unlock / lock
     SWITCH_SETTING(0x90.toByte()); // 0x90 = -0x70 signed
 
     companion object {

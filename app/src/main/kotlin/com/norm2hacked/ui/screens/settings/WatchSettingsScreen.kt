@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,6 +59,7 @@ fun WatchSettingsScreen(
     viewModel: WatchSettingsViewModel,
     onNotificationRulesClick: () -> Unit,
     onFirmwareClick: () -> Unit,
+    onCalibrateHandsClick: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -251,6 +253,15 @@ fun WatchSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Teal),
                     ) { Text("Find Watch (Vibrate)", style = MaterialTheme.typography.bodyMedium) }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onCalibrateHandsClick,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Teal),
+                    ) {
+                        Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("  Calibrate Watch Hands", style = MaterialTheme.typography.bodyMedium)
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = onFirmwareClick,

@@ -12,6 +12,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.norm2hacked.ui.screens.activity.ActivityHistoryScreen
 import com.norm2hacked.ui.screens.activity.WorkoutDetailScreen
+import com.norm2hacked.ui.screens.calibration.HandsCalibrationScreen
 import com.norm2hacked.ui.screens.dashboard.DashboardScreen
 import com.norm2hacked.ui.screens.firmware.FirmwareScreen
 import com.norm2hacked.ui.screens.pairing.PairingScreen
@@ -28,6 +29,7 @@ sealed class Screen(val route: String) {
     data object Settings : Screen("settings")
     data object NotificationRules : Screen("notification_rules")
     data object Firmware : Screen("firmware")
+    data object HandsCalibration : Screen("hands_calibration")
 }
 
 @Composable
@@ -74,7 +76,8 @@ fun AppNavGraph(
             WatchSettingsScreen(
                 viewModel = hiltViewModel(),
                 onNotificationRulesClick = { navController.navigate(Screen.NotificationRules.route) },
-                onFirmwareClick = { navController.navigate(Screen.Firmware.route) }
+                onFirmwareClick = { navController.navigate(Screen.Firmware.route) },
+                onCalibrateHandsClick = { navController.navigate(Screen.HandsCalibration.route) }
             )
         }
         composable(Screen.NotificationRules.route) {
@@ -85,6 +88,12 @@ fun AppNavGraph(
         }
         composable(Screen.Firmware.route) {
             FirmwareScreen(
+                viewModel = hiltViewModel(),
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable(Screen.HandsCalibration.route) {
+            HandsCalibrationScreen(
                 viewModel = hiltViewModel(),
                 onBack = { navController.popBackStack() }
             )
