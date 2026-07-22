@@ -241,7 +241,8 @@ ble/                  Infrastructure: BLE hardware abstraction
 protocol/             Infrastructure: Packet framing, command definitions, OTA protocol
 data/                 Data: Room DB + DataStore prefs
 domain/               Domain: Business logic, use cases, models
-notification/         Infrastructure: System notification interception
+notification/         Infrastructure: System notification interception + junk filter
+call/                 Infrastructure: Phone-call detection (PHONE_STATE) + watch call-control
 ui/                   Presentation: Compose screens + ViewModels
 di/                   Dependency injection (Hilt)
 ```
@@ -344,7 +345,13 @@ Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `Gp
 
 ### Notification Layer (`notification/`)
 
-`NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications, checks per-app rules from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses `ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via `NotificationPushCommand`.
+`NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications,
+runs the **junk filter** (`NotificationFilter.decide`, drops charging/media/foreground-service/
+progress/group-summary/local-only/empty and the dialer's call notifications), checks per-app rules
+from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses
+`ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via
+`MessageNewCommand`. RTL title/content is reordered to visual order via `BidiUtil.formatRtlString`
+before framing (see "Feature status — verified on-device").
 
 #### Notification forwarding — WORKING (commonprotocol MessageNewBT)
 
@@ -592,6 +599,53 @@ The bond is an **OS-level** state, so it also unblocks the Kotlin `normlink-cli`
 
 ## Current Status & Known Issues
 
+### Feature status — verified on-device (works 100%)
+
+These features are implemented, byte-faithful to the original app's smali, unit-tested where the
+logic is pure, and **confirmed working on the physical watch** (phone calls and hand calibration
+end-to-end user-confirmed; the notification junk filter confirmed running on-device via logcat
+drops, e.g. `dropped: CALL_HANDLED_ELSEWHERE`):
+
+- **Notifications → watch** (`notification/`, cmd `0x76` `MessageNewBT`). Phone notifications appear
+  on the watch. Includes:
+  - **RTL rendering** (`protocol/.../util/BidiUtil.kt`) — Hebrew/Arabic titles/content are reordered
+    to visual order (Arabic reshaping + `java.text.Bidi`) before sending, since the watch draws bytes
+    left-to-right and does no bidi of its own. Applied to both the active `MessageNewCommand` (0x76)
+    and the legacy `NotificationPushCommand` (0x79).
+  - **Junk filtering** (`notification/NotificationFilter.kt`) — drops types that are useless on the
+    wrist (charging/system status, media/now-playing, foreground-service "Waiting for messages…",
+    progress, group summaries, local-only, empty content). Pure `decide(NotificationFacts)` rule
+    chain + `StatusBarNotification.toFacts()` extractor; unit-tested. Per-app enable/vibrate/mute
+    rules and 30s dedup (`RecentNotificationCache`) still apply on top.
+- **Phone calls** (`call/`). Forwards incoming / missed / call-ended to the watch with the caller's
+  **name** (resolved from contacts), and handles the watch's **answer / reject** buttons.
+  - Detection: `PhoneStateReceiver` (PHONE_STATE broadcast) → pure `CallStateMachine`
+    (RINGING→incoming, OFFHOOK→answered, IDLE→ended; RINGING→IDLE = missed). The caller number
+    arrives on a *second* RINGING broadcast ~3ms after the first, so `CallManager` **coalesces** the
+    incoming push over a 250ms window to send one push that already carries the name.
+  - Phone→watch: reuses `MessageNewBT` (0x76) with the call type byte — incoming `0x05`, missed
+    `0x00`, ended `0x06`.
+  - Watch→phone: cmd **`0xDC`** `INCOME_CALL_RESPONSE`, `payload[0]` 0=accept / non-zero=reject →
+    `TelecomManager.acceptRingingCall()` / `endCall()`.
+  - Hosted by `BleService` (`CallManager.start/stop`). `NotificationFilter` drops `CATEGORY_CALL`/
+    `CATEGORY_MISSED_CALL` so the dialer's own notifications don't double up. Permissions:
+    `READ_PHONE_STATE`, `READ_CALL_LOG`, `READ_CONTACTS`, `ANSWER_PHONE_CALLS`.
+- **Watch-hands calibration** (`ui/screens/calibration/`, cmds `0xB6`/`0xB8`). A guided screen to
+  re-align drifted physical hands: unlock → move each hand (minute, then hour — Norm 2 has no second
+  hand) to 12:00 via nudge (`WatchMoveOne` 0xB6) or hold-to-rotate (`WatchMoveKeep` 0xB8) → Save.
+  - Save sends **one** `DATETIME` (0x04) with **byte[8]=1** (the re-home flag), which sets the clock
+    and drives the hands from 12:00 to the current time, then `WatchMoveKeep` LOCK. LOCK is also sent
+    on any early exit so the hands are never left free.
+  - **Byte order gotcha (verified from `DateTime.smali` + `completeCalibration`):** the SET body is
+    `[yLo][yHi][mo][d][h][mi][s][0][flag][tzSign][tzHr][tzMin]` — the re-home flag is **byte[8]**,
+    not the last byte, with the timezone triplet at bytes[9..11]. Putting the flag at byte[11] makes
+    the watch read it as a stray tz value and re-home to the internal clock (wrong time).
+
+New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL_RESPONSE(0xDC)`,
+`WATCH_MOVE_ONE(0xB6)`, `WATCH_MOVE_KEEP(0xB8)`. New builders live in
+`protocol/.../commands/WatchHandsCommands.kt` (`WatchMoveCommand`, `TranSpeedCommand`,
+`CalibrationSaveCommand`).
+
 ### What's working
 
 **Android app (`app/`):**
@@ -600,9 +654,11 @@ The bond is an **OS-level** state, so it also unblocks the Kotlin `normlink-cli`
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
 - Room database v3 with unique constraints and 2 migrations
-- Notification forwarding with per-app filtering and dedup
+- Notification forwarding with per-app rules, junk-type filtering, RTL (Hebrew/Arabic), and dedup
+- Phone calls: forward incoming/missed/ended with caller name + answer/reject from the watch (`call/`)
+- Watch-hands calibration: guided re-align of the physical hands (`ui/screens/calibration/`)
 - Apollo DFU OTA (all 5 steps, channelFlow-based, fail-fast on 0x66)
-- Full Compose UI: dashboard, activity, firmware, pairing, settings
+- Full Compose UI: dashboard, activity, firmware, pairing, settings, calibration
 
 **`:protocol` module:**
 - Fully extracted from `:app`, compiles as pure JVM with zero Android deps
@@ -648,9 +704,20 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 **Status: Fixed in code, not yet verified on Android device.**
 
 ### Pending features (priority order)
-1. **Notifications → watch — DONE** ✅ — works on-device via `commonprotocol` `MessageNewBT` (cmd
-   `0x76`); see "Notification forwarding — WORKING" under the Notification Layer. Remaining: add the
-   in-app notification-listener permission flow (currently granted via adb).
+
+*(Done ✅ — see "Feature status — verified on-device" above: notifications→watch incl. RTL + junk
+filter, phone calls incl. answer/reject, watch-hands calibration.)*
+
+1. **Notification-listener permission flow** — the forwarder works but the listener permission is
+   still granted via adb; add the in-app enable-permission UI.
+1. **Reject-call-with-SMS** — the watch's incoming-call screen has a "send message" (canned-SMS)
+   button; not yet implemented (needs `SEND_SMS` + RE of the watch's send command — it's not the
+   `0xDC` accept/reject command).
+1. **Music as a control channel** — the original's `MusicManager`/`MediaController` (play/pause/next/
+   prev + now-playing via `KEYCODE_MEDIA_*`); we currently just suppress media notifications.
+1. **`DateTimeCommand` byte order** — the generic clock-set (`WatchCommands.kt`) has the same
+   byte-order bug the calibration save fixed: it puts day-of-week at byte[7] and drops the timezone
+   triplet (should be `[…s][0][0][tzSign][tzHr][tzMin]`). Clock roughly sets; fix for correctness.
 1. **Verify warm-connection on-device** — the feature is implemented (see "Warm-connection via `BleService`"); confirm a warm reconnect is sub-second vs the ~8s cold path, then tune `KEEPALIVE_INTERVAL_MS` / `REKICK_DELAY_MS`.
 1. **Verify CHECK commands in the Android `:app` on-device** — the bridge-backed CLI confirms the protocol; the app's `BleManager` path still needs device verification.
 2. **`DEVICE_VERSION` payload quirk** — cmd `0x03` with payload `[06]` times out; find the correct request format.
