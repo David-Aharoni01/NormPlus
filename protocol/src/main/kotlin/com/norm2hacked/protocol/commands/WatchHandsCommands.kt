@@ -5,8 +5,6 @@ import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.PacketBuilder
 import java.time.Instant
 import java.time.ZoneId
-import java.util.Calendar
-import kotlin.math.abs
 
 // ── Hybrid-watch hand calibration ──────────────────────────────────────────────
 //
@@ -79,47 +77,25 @@ object TranSpeedCommand {
 
 // ── Calibration save (DATETIME with the re-home flag) ──────────────────────────
 //
-// After the hands are aligned to 12:00 we set the time AND tell the watch to drive the hands to
-// it. The DATETIME (0x04) SET body is 12 bytes — byte order verified from DateTime.smali +
-// ManualTimeFragment.completeCalibration (which calls setDateTime(y,mo,d,h,mi,s, 0, 1, tz0,tz1,tz2)):
-//   [yearLo][yearHi][month][day][hour][min][sec][0][homeFlag][tzSign][tzHour][tzMin]
-//                                              (7)  (8)        (9)     (10)    (11)
-// byte[8] is 0 for a normal clock sync but **1 for calibration** — it re-homes the hands to the
-// set time from their current 12:00 position. tz triplet = getTimeZone4City() (sign 1=+/0=-, hr, min).
+// After the hands are aligned to 12:00 we set the time AND tell the watch to drive the hands to it.
+// That's the ordinary DATETIME (0x04) SET with byte[8]=1 — see DateTimeCommand.setPayload for the
+// full 12-byte layout; ManualTimeFragment.completeCalibration is the original's caller, and it
+// passes setDateTime(y,mo,d,h,mi,s, 0, 1, tz0,tz1,tz2).
 // (We previously had the flag at byte[11] and tz at [7..9] — the watch then read the flag as a tz
 // value and never re-homed.)
 
 object CalibrationSaveCommand {
 
     /**
-     * DATETIME SET payload. [reHome]=true sets byte[8]=1 ("set this time and drive the hands to it
-     * from their current 12:00 position"); [reHome]=false is a plain clock set (byte[8]=0).
+     * DATETIME SET payload with the re-home flag defaulted on — the calibration-flavoured entry
+     * point to [DateTimeCommand.setPayload] (same 12 bytes; byte[8]=1 tells the watch to drive the
+     * hands to the set time from their current 12:00 position).
      */
     fun dateTimePayload(
         instant: Instant = Instant.now(),
         zone: ZoneId = ZoneId.systemDefault(),
         reHome: Boolean = true,
-    ): ByteArray {
-        val cal = Calendar.getInstance().also { it.timeInMillis = instant.toEpochMilli() }
-        val year = cal.get(Calendar.YEAR)
-        val offsetMinutes = zone.rules.getOffset(instant).totalSeconds / 60
-        val sign = if (offsetMinutes >= 0) 1 else 0
-        val absMinutes = abs(offsetMinutes)
-        return byteArrayOf(
-            (year and 0xFF).toByte(),
-            ((year shr 8) and 0xFF).toByte(),
-            (cal.get(Calendar.MONTH) + 1).toByte(),
-            cal.get(Calendar.DAY_OF_MONTH).toByte(),
-            cal.get(Calendar.HOUR_OF_DAY).toByte(),
-            cal.get(Calendar.MINUTE).toByte(),
-            cal.get(Calendar.SECOND).toByte(),
-            0,                                 // byte7: reserved (0 in both normal + calibration)
-            if (reHome) 1 else 0,              // byte8: re-home flag
-            sign.toByte(),                     // byte9:  tz sign (1 = +, 0 = -)
-            (absMinutes / 60).toByte(),        // byte10: tz offset hours
-            (absMinutes % 60).toByte(),        // byte11: tz offset minutes
-        )
-    }
+    ): ByteArray = DateTimeCommand.setPayload(instant, zone, reHome)
 
     fun buildSet(instant: Instant = Instant.now()): ByteArray =
         PacketBuilder.build(CommandCode.DATETIME, Action.SET, dateTimePayload(instant))

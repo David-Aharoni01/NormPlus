@@ -8,7 +8,7 @@ import com.norm2hacked.protocol.util.BidiUtil
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.Calendar
+import kotlin.math.abs
 
 // ── Battery ──────────────────────────────────────────────────────────────────
 
@@ -42,27 +42,51 @@ object DeviceVersionCommand {
 // ── DateTime ─────────────────────────────────────────────────────────────────
 
 object DateTimeCommand {
-    /** Raw 12-byte DATETIME SET payload (for routing through sendAndAwait / the write queue). */
-    fun setPayload(instant: Instant = Instant.now()): ByteArray {
-        val cal = Calendar.getInstance().also { it.timeInMillis = instant.toEpochMilli() }
-        val year = cal.get(Calendar.YEAR)
-        val payload = byteArrayOf(
-            // Year is LITTLE-endian [lo, hi]. Source: DateTime.smali encodes it with
-            // ParseUtil.intToByteArray(year, 2) — the same call that builds the frame's 2-byte
-            // content-length, which the wire format + PacketTest confirm is little-endian. Every
-            // other 2-byte field in this protocol (lengths, counts, goals, switch mask) is LE too.
-            // (Was big-endian here, which made the watch read a garbage year on every clock sync.)
+    /**
+     * Raw 12-byte DATETIME SET payload (for routing through sendAndAwait / the write queue).
+     *
+     * Byte order verified from `DateTime.smali` + its callers (`MBluetooth.setDateTime` passes
+     * `len=0xC`; `SyncBluetoothDataNew.setTimeToDevice` supplies the field values):
+     * ```
+     * [yearLo][yearHi][month][day][hour][min][sec][0][reHome][tzSign][tzHour][tzMin]
+     *    0       1       2     3     4     5     6  (7)   (8)    (9)    (10)    (11)
+     * ```
+     * The year is LITTLE-endian: `ParseUtil.intToByteArray(year, 2)` is the same call that builds
+     * the frame's 2-byte content length, which the wire format + `PacketTest` confirm is LE, as is
+     * every other 2-byte field in this protocol (lengths, counts, goals, switch mask). (Was
+     * big-endian here, which made the watch read a garbage year on every clock sync.)
+     *
+     * byte[7] is always 0 — we previously put `DAY_OF_WEEK` there, and dropped the timezone triplet
+     * at [9..11] entirely, so the watch got a stray weekday and a UTC+00:00 offset.
+     *
+     * [reHome] sets byte[8]: 0 for a plain clock sync, **1 only for hand calibration** — it tells
+     * the watch to drive the physical hands to the set time from their current 12:00 position (see
+     * `CalibrationSaveCommand`). Sending 1 on a routine sync would sweep the hands unnecessarily.
+     */
+    fun setPayload(
+        instant: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+        reHome: Boolean = false,
+    ): ByteArray {
+        val local = instant.atZone(zone)
+        val year = local.year
+        // tz triplet = getTimeZone4City(): [sign, hours, minutes], sign 1 = '+', 0 = '-'.
+        val offsetMinutes = zone.rules.getOffset(instant).totalSeconds / 60
+        val absMinutes = abs(offsetMinutes)
+        return byteArrayOf(
             (year and 0xFF).toByte(),
             ((year shr 8) and 0xFF).toByte(),
-            (cal.get(Calendar.MONTH) + 1).toByte(),
-            cal.get(Calendar.DAY_OF_MONTH).toByte(),
-            cal.get(Calendar.HOUR_OF_DAY).toByte(),
-            cal.get(Calendar.MINUTE).toByte(),
-            cal.get(Calendar.SECOND).toByte(),
-            cal.get(Calendar.DAY_OF_WEEK).toByte(),
-            0, 0, 0, 0,
+            local.monthValue.toByte(),
+            local.dayOfMonth.toByte(),
+            local.hour.toByte(),
+            local.minute.toByte(),
+            local.second.toByte(),
+            0,                                  // byte7: always 0
+            if (reHome) 1 else 0,               // byte8: re-home the hands (calibration only)
+            (if (offsetMinutes >= 0) 1 else 0).toByte(), // byte9:  tz sign
+            (absMinutes / 60).toByte(),         // byte10: tz offset hours
+            (absMinutes % 60).toByte(),         // byte11: tz offset minutes
         )
-        return payload
     }
 
     /** Framed DATETIME SET packet (for fire-and-forget writers that don't route via the queue). */
