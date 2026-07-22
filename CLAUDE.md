@@ -640,6 +640,9 @@ drops, e.g. `dropped: CALL_HANDLED_ELSEWHERE`):
     `[yLo][yHi][mo][d][h][mi][s][0][flag][tzSign][tzHr][tzMin]` — the re-home flag is **byte[8]**,
     not the last byte, with the timezone triplet at bytes[9..11]. Putting the flag at byte[11] makes
     the watch read it as a stray tz value and re-home to the internal clock (wrong time).
+    **`DateTimeCommand.setPayload(instant, zone, reHome)` in `WatchCommands.kt` is the single
+    builder for this body** — calibration just calls it with `reHome=true`. It defaults to `false`
+    (guarded by a test): a routine clock sync that set byte[8]=1 would sweep the physical hands.
 
 New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL_RESPONSE(0xDC)`,
 `WATCH_MOVE_ONE(0xB6)`, `WATCH_MOVE_KEEP(0xB8)`. New builders live in
@@ -715,9 +718,6 @@ filter, phone calls incl. answer/reject, watch-hands calibration.)*
    `0xDC` accept/reject command).
 1. **Music as a control channel** — the original's `MusicManager`/`MediaController` (play/pause/next/
    prev + now-playing via `KEYCODE_MEDIA_*`); we currently just suppress media notifications.
-1. **`DateTimeCommand` byte order** — the generic clock-set (`WatchCommands.kt`) has the same
-   byte-order bug the calibration save fixed: it puts day-of-week at byte[7] and drops the timezone
-   triplet (should be `[…s][0][0][tzSign][tzHr][tzMin]`). Clock roughly sets; fix for correctness.
 1. **Verify warm-connection on-device** — the feature is implemented (see "Warm-connection via `BleService`"); confirm a warm reconnect is sub-second vs the ~8s cold path, then tune `KEEPALIVE_INTERVAL_MS` / `REKICK_DELAY_MS`.
 1. **Verify CHECK commands in the Android `:app` on-device** — the bridge-backed CLI confirms the protocol; the app's `BleManager` path still needs device verification.
 2. **`DEVICE_VERSION` payload quirk** — cmd `0x03` with payload `[06]` times out; find the correct request format.
