@@ -11,6 +11,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
 
+    <!-- Always-on uptime: restart the connection service after a reboot or an app update, and ask
+         the user to exempt us from Doze/battery optimisation (an exempt app may also start its
+         foreground service from the background, which is what the watchdog needs). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Phone-call support: detect call state + caller number, resolve names, answer/reject from watch. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
@@ -43,6 +49,27 @@
         <service
             android:name=".ble.BleService"
             android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
+
+        <!-- Auto-start after a reboot / app update. directBootAware so LOCKED_BOOT_COMPLETED is
+             actually delivered; the receiver itself defers real work until the user unlocks (our
+             DataStore is credential-protected). -->
+        <receiver
+            android:name=".ble.BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Periodic AlarmManager watchdog (explicit intent only — no filter needed). -->
+        <receiver
+            android:name=".ble.ConnectionWatchdogReceiver"
             android:exported="false" />
 
         <service

@@ -297,6 +297,33 @@ The cold-start penalty only applies when the BLE link has gone fully idle. The a
 
 **TODO — verify on-device:** after a first (cold ~8s) connect, force a disconnect and confirm the warm reconnect is sub-second; compare against the cold path. Then tune `KEEPALIVE_INTERVAL_MS` / `REKICK_DELAY_MS` (or disable keep-alive if the link never drops idle).
 
+### Always-on uptime — every way the link dies silently (IMPLEMENTED, pending on-device verification)
+
+The warm-connection work above keeps a *running* service connected. These are the layers that keep
+the service itself running, so the user is never silently disconnected:
+
+| Failure mode | Handled by |
+|---|---|
+| Phone rebooted | `ble/BootReceiver.kt` — `BOOT_COMPLETED` (+ `LOCKED_BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`), `RECEIVE_BOOT_COMPLETED` |
+| App updated (kills the service) | same receiver, `MY_PACKAGE_REPLACED` |
+| Bluetooth toggled off/on | `ble/BluetoothStateReceiver.kt`, registered **dynamically** by `BleService` (`ACTION_STATE_CHANGED` is not an implicit-broadcast exemption). OFF → clean stand-down (no retry thrash); ON → reconnect |
+| Process killed (memory / OEM optimiser) | `START_STICKY` + `onStartCommand` now resumes from DataStore on a **null intent** |
+| Process killed *and* not restarted | `ble/ConnectionWatchdog.kt` — 15-min `AlarmManager` (`setAndAllowWhileIdle`) tick that restarts the service / re-kicks the connect |
+| Doze / battery optimisation | in-app prompt (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, shown only when `isIgnoringBatteryOptimizations` is false; dismissal remembered in DataStore) |
+| Permission revoked, app background-restricted | surfaced in the FGS notification *and* the Settings → **Connection health** card, with one-tap fixes |
+
+Design rules to preserve:
+- **All connect requests funnel through `BleService.requestConnect` → `BleManager.connect`** (mutex +
+  rate-limited). Boot, adapter-ON, re-kick and the watchdog therefore cannot open concurrent cycles.
+- **Service start intents are typed:** `ACTION_START` = explicit user intent (re-arms auto-start),
+  `ACTION_RESUME` / null = unattended (honours the stored `autostart_enabled` flag), `ACTION_STOP` =
+  user stop (persists `autostart_enabled=false`, cancels the watchdog).
+- `BleService.resume()` **never throws**: a background FGS start is rejected on Android 12+ unless the
+  app is battery-optimisation exempt — that's why the exemption prompt exists (it lifts this too).
+- `AlarmManager`, not WorkManager: WorkManager isn't an `:app` dependency and buys nothing over an
+  inexact 15-min alarm here. Alarms don't survive a reboot — `BootReceiver` → service → reschedule.
+- New DataStore keys: `autostart_enabled`, `battery_opt_prompt_dismissed`, `last_connected_epoch`.
+
 ### Protocol Layer (`protocol/`)
 
 ```
