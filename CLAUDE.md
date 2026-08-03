@@ -347,11 +347,59 @@ Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `Gp
 
 `NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications,
 runs the **junk filter** (`NotificationFilter.decide`, drops charging/media/foreground-service/
-progress/group-summary/local-only/empty and the dialer's call notifications), checks per-app rules
-from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses
-`ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via
-`MessageNewCommand`. RTL title/content is reordered to visual order via `BidiUtil.formatRtlString`
-before framing (see "Feature status — verified on-device").
+progress/local-only/empty and the dialer's call notifications), checks per-app rules from the DB,
+**coalesces over a 300 ms window** (`NotificationMergePolicy`), suppresses exact repeats
+(`RecentNotificationCache`), then forwards to the watch via `MessageNewCommand`. RTL title/content
+is reordered to visual order via `BidiUtil.formatRtlString` before framing (see "Feature status —
+verified on-device").
+
+#### Notification lifecycle — there is NO watch-side delete or update (IMPORTANT)
+
+**The `New` push generation cannot retract, replace, or merge a notification once it is sent.**
+`MessageNewBT` (cmd `0x76`) carries no id, no slot, no crud byte — `[type][countOrVersion][titleLen]
+[contentLen][title][content][date][shockType][needReply]` and nothing else. The original app detects
+phone-side dismissal and routes it all the way to `MessagePushRepositoryHelper.deleteMessage`
+(`messagepush/repository/helper/MessagePushRepositoryHelper.smali:16-40`), which is a **literal
+`return-void` unless `isPerfect()`** — no `isNew()` branch, no `isW04d()` branch. For our watch, a
+dismissal on the phone produces **zero BLE traffic**. `MessagePushBLEService` has no
+`deleteMessageNew`/`clearSocial`/`clearAll` at all (its only `clear*` is `clearCalendarView`).
+So `onNotificationRemoved` is deliberately a no-op *toward the watch*; it only evicts from the
+suppression cache.
+
+**`countOrVersion` is a vestigial *count* byte, always `0x01`.** Grep over the whole APK finds it
+only at `MessageNewBT.smali:10/:28/:56` (order entry, declaration, `= 1`) — nothing ever assigns it.
+The count that *is* computed (`getActiveNotificationCount`) is explicitly discarded on the `New`
+path (`MessagePushRepositoryHelper.smali:152-165`). **Do not use it as an id, slot, or badge.**
+
+**Therefore all grouping is phone-side**, and we copy the original's pipeline (`notification/`):
+- **300 ms debounce** — `MessagePushHandler.sendMessageDelayed(…, 0x12c)`. Anchored to the first
+  post of a burst (not sliding), so a steady drip can't starve the flush.
+- **Last-write-wins per merge key** `pkg + sbn.id + tag` (`NotificationParser.parseId`) —
+  `NotificationTaskMerger.removeMessageTask`. Five in-place updates of one chat → one push.
+- **Group summary vs children** — `isSupportGroupNotification()` is a hardcoded `false`
+  (`BlueToothDevice.smali:155-161`), so the original takes the branch where **the summary wins and
+  the children are evicted**. Our `NotificationFilter` used to do the exact opposite. One deliberate
+  UX deviation: when a summary and *exactly one* child are in the window we forward the child (its
+  real text beats "1 new message"); 2+ children still collapse to the summary. Tunable via
+  `NotificationMergePolicy.PREFER_LONE_CHILD`.
+- **Suppression cache** — `OldProtocolFilter` (installed for every non-`Perfect` device, i.e. ours):
+  FIFO cap 100, key `(mergeKey, title, content)`, suppress exact repeats *indefinitely*, evict on
+  removal. This replaced the old fixed 30 s dedup window.
+
+Pure + unit-tested: `NotificationMergePolicy.merge`, `NotificationMergeBuffer`,
+`RecentNotificationCache` (`app/src/test/kotlin/com/norm2hacked/notification/`).
+
+**Dead ends — do NOT try** (all ruled out from smali):
+- Re-pushing `0x76` with empty title/content to "blank out" the old one — no identity field, so it
+  adds an *extra blank* notification.
+- `0x79` / `MessagePerfectBT` with `crud=2` — only reachable behind `isPerfect()`; already recorded
+  as acked-but-ignored on this firmware.
+- `SET_OPERATION_DELETE (0x2)` / `DELETE_ALL (0x3)` and `COMMAND_CODE_6E_PHONE_DELETE_*_REMIND` —
+  these are *reminder/alarm* ops on a different protocol generation, not social pushes.
+- `MSG_COUNT_PUSH (0x72)` as a badge/merge signal — `W04d`-only.
+- Enabling `SWITCH_BIT_SOCIAL (0x80)` on the `0x90` mask to "unlock" a delete — `SwitchSettingBT` is
+  never called on the `New` path, and there is no delete command to unlock.
+- `clearCalendarView()` as a generic clear — it is the calendar page (`id=0x99`, `pageType=7`).
 
 #### Notification forwarding — WORKING (commonprotocol MessageNewBT)
 
@@ -614,9 +662,9 @@ drops, e.g. `dropped: CALL_HANDLED_ELSEWHERE`):
     and the legacy `NotificationPushCommand` (0x79).
   - **Junk filtering** (`notification/NotificationFilter.kt`) — drops types that are useless on the
     wrist (charging/system status, media/now-playing, foreground-service "Waiting for messages…",
-    progress, group summaries, local-only, empty content). Pure `decide(NotificationFacts)` rule
-    chain + `StatusBarNotification.toFacts()` extractor; unit-tested. Per-app enable/vibrate/mute
-    rules and 30s dedup (`RecentNotificationCache`) still apply on top.
+    progress, local-only, empty content). Pure `decide(NotificationFacts)` rule chain +
+    `StatusBarNotification.toFacts()` extractor; unit-tested. Per-app rules, the 300 ms coalescing
+    window and exact-repeat suppression apply on top — see "Notification lifecycle" above.
 - **Phone calls** (`call/`). Forwards incoming / missed / call-ended to the watch with the caller's
   **name** (resolved from contacts), and handles the watch's **answer / reject** buttons.
   - Detection: `PhoneStateReceiver` (PHONE_STATE broadcast) → pure `CallStateMachine`
@@ -657,7 +705,8 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
 - Room database v3 with unique constraints and 2 migrations
-- Notification forwarding with per-app rules, junk-type filtering, RTL (Hebrew/Arabic), and dedup
+- Notification forwarding with per-app rules, junk-type filtering, RTL (Hebrew/Arabic), 300 ms
+  coalescing/group-merge, and exact-repeat suppression
 - Phone calls: forward incoming/missed/ended with caller name + answer/reject from the watch (`call/`)
 - Watch-hands calibration: guided re-align of the physical hands (`ui/screens/calibration/`)
 - Apollo DFU OTA (all 5 steps, channelFlow-based, fail-fast on 0x66)
