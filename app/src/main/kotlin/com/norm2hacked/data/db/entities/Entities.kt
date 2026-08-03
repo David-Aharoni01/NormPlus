@@ -70,11 +70,20 @@ data class WorkoutEntity(
     val gpsPointsJson: String?,  // JSON array of {lat, lon, speed, epoch}
 )
 
+/**
+ * Per-app notification rule. This table is a **whitelist**: a row exists only for apps the user
+ * has touched in the notification-apps picker, and only `enabled = true` rows forward to the
+ * watch. A missing row means "never forward" — see [com.norm2hacked.notification.NotificationWhitelist].
+ *
+ * [enabled] therefore defaults to **false**: a row created for any reason other than an explicit
+ * user opt-in must not start forwarding. (It defaulted to `true` up to DB v3, when this table was
+ * an opt-*out* list the forwarder auto-populated; `MIGRATION_3_4` resets those rows.)
+ */
 @Entity(tableName = "notification_rules", indices = [Index("packageName", unique = true)])
 data class NotificationRuleEntity(
     @PrimaryKey val packageName: String,
     val appLabel: String,
-    val enabled: Boolean = true,
+    val enabled: Boolean = false,
     val vibrateOnFirst: Boolean = true,
     val muteGroupChats: Boolean = true,
 )

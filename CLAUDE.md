@@ -348,7 +348,7 @@ ota/
 
 ### Data Layer (`data/`)
 
-Room database v3 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
+Room database v4 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
 
 ```
 sport_sessions         timestampEpoch (UNIQUE)
@@ -374,11 +374,38 @@ Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `Gp
 
 `NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications,
 runs the **junk filter** (`NotificationFilter.decide`, drops charging/media/foreground-service/
-progress/group-summary/local-only/empty and the dialer's call notifications), checks per-app rules
-from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses
+progress/group-summary/local-only/empty and the dialer's call notifications), checks the **app
+whitelist** (`NotificationWhitelist`, see below), deduplicates within a 30-second window via
+`RecentNotificationCache` (uses
 `ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via
 `MessageNewCommand`. RTL title/content is reordered to visual order via `BidiUtil.formatRtlString`
 before framing (see "Feature status — verified on-device").
+
+#### App whitelist (`NotificationWhitelist`) + the app picker
+
+Forwarding is **opt-in per app**. `NotificationWhitelistPolicy.decide(rule)` is pure (no row →
+`NotWhitelisted`; `enabled=false` → `NotWhitelisted`; else `Allowed(vibrateOnFirst, muteGroupChats)`)
+and unit-tested in `app/src/test/.../NotificationWhitelistTest.kt`. `NotificationWhitelist` is the
+injectable DB wrapper and **fails closed** — a Room error logs and drops rather than throwing.
+The whitelist is *necessary, not sufficient*: `NotificationFilter` + the 30s dedup still apply.
+
+- **DB v4.** `notification_rules.enabled` now defaults to **false** (Kotlin default only — the SQL
+  column is unchanged). `MIGRATION_3_4` runs `UPDATE notification_rules SET enabled = 0`: up to v3
+  the forwarder auto-inserted `enabled=1` for every app it ever saw, so those rows can't be
+  distinguished from a real user choice; carrying them over would whitelist everything. Rows are
+  kept (labels + vibrate/mute preferences survive), so re-enabling an app restores its settings.
+- **Picker** (`ui/screens/settings/NotificationRulesScreen.kt` + `NotificationRulesViewModel.kt`,
+  backed by `data/apps/InstalledAppsRepository.kt`). Settings-style installed-app list: icon +
+  label + package + switch, search, "show system apps" toggle, enabled apps pinned to the top.
+  Labels load first on `Dispatchers.IO`, then icons stream in in batches of 32 pre-rasterised to
+  the row size — all into a `StateFlow`, never in composition, so 200+ rows scroll smoothly.
+- **Package visibility:** `AndroidManifest.xml` declares `<queries><intent>` for `ACTION_MAIN` +
+  `CATEGORY_LAUNCHER` — **not** `QUERY_ALL_PACKAGES` (Play-policy-restricted and unnecessary).
+  Non-launchable apps aren't offered; an app that already has a rule is always re-added by package
+  name so an old rule can never become unreachable.
+- **Listener permission flow** (the old TODO): an inline card on this screen when
+  `NotificationManagerCompat.getEnabledListenerPackages` doesn't contain us, with a button opening
+  `Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS`; re-checked on `ON_RESUME`.
 
 #### Notification forwarding — WORKING (commonprotocol MessageNewBT)
 
@@ -415,8 +442,7 @@ package (no self-feedback). Byte-exact test in `protocol/.../NotificationPushTes
 MTU-chunking via `BleWriteQueue`; the `[0x03]` "process now" trigger to `0x8002` after the write;
 and `runCatching` around the fire-and-forget write so a link flap can't crash the forwarder's scope.
 
-**Still TODO:** in-app notification-listener permission flow (no UI yet — granted via adb for now).
-If a future firmware reports the `Perfect` generation, implement `MessagePerfectBT` (id `0x79`,
+**Still TODO:** if a future firmware reports the `Perfect` generation, implement `MessagePerfectBT` (id `0x79`,
 `@IndexBody` — a *different* encoding using index bytes, not the `@Body` rule above).
 
 ### UI Layer (`ui/`)
@@ -683,8 +709,9 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - SET commands work — brightness, DND, vibration, language, and other settings apply on the watch
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
-- Room database v3 with unique constraints and 2 migrations
-- Notification forwarding with per-app rules, junk-type filtering, RTL (Hebrew/Arabic), and dedup
+- Room database v4 with unique constraints and 3 migrations
+- Notification forwarding with an explicit per-app whitelist (installed-app picker + listener-permission
+  flow), junk-type filtering, RTL (Hebrew/Arabic), and dedup
 - Phone calls: forward incoming/missed/ended with caller name + answer/reject from the watch (`call/`)
 - Watch-hands calibration: guided re-align of the physical hands (`ui/screens/calibration/`)
 - Apollo DFU OTA (all 5 steps, channelFlow-based, fail-fast on 0x66)
@@ -738,8 +765,6 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 *(Done ✅ — see "Feature status — verified on-device" above: notifications→watch incl. RTL + junk
 filter, phone calls incl. answer/reject, watch-hands calibration.)*
 
-1. **Notification-listener permission flow** — the forwarder works but the listener permission is
-   still granted via adb; add the in-app enable-permission UI.
 1. **Reject-call-with-SMS** — the watch's incoming-call screen has a "send message" (canned-SMS)
    button; not yet implemented (needs `SEND_SMS` + RE of the watch's send command — it's not the
    `0xDC` accept/reject command).
