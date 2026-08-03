@@ -16,9 +16,8 @@ class NotificationWhitelistTest {
 
     private fun rule(
         enabled: Boolean = true,
-        vibrateOnFirst: Boolean = true,
-        muteGroupChats: Boolean = true,
-    ) = WhitelistRule(enabled, vibrateOnFirst, muteGroupChats)
+        suppressDuplicates: Boolean = true,
+    ) = WhitelistRule(enabled, suppressDuplicates)
 
     // ── Whitelist semantics ───────────────────────────────────────────────────
 
@@ -47,18 +46,18 @@ class NotificationWhitelistTest {
     @Test
     fun `allowed decision carries the per-app delivery options`() {
         val decision = NotificationWhitelistPolicy.decide(
-            rule(enabled = true, vibrateOnFirst = false, muteGroupChats = false),
+            rule(enabled = true, suppressDuplicates = false),
         )
-        assertEquals(WhitelistDecision.Allowed(vibrateOnFirst = false, muteGroupChats = false), decision)
+        assertEquals(WhitelistDecision.Allowed(suppressDuplicates = false), decision)
     }
 
     @Test
     fun `disabled rule ignores its delivery options`() {
-        // A row can keep vibrate/mute preferences while switched off (so re-enabling restores them);
-        // they must never leak a notification through.
+        // A row can keep its delivery preferences while switched off (so re-enabling restores
+        // them); they must never leak a notification through.
         assertEquals(
             WhitelistDecision.NotWhitelisted,
-            NotificationWhitelistPolicy.decide(rule(enabled = false, vibrateOnFirst = true, muteGroupChats = true)),
+            NotificationWhitelistPolicy.decide(rule(enabled = false, suppressDuplicates = true)),
         )
     }
 
@@ -78,6 +77,8 @@ class NotificationWhitelistTest {
 
     @Test
     fun `entity maps to whitelist rule field for field`() {
+        // `muteGroupChats` is the storage column behind `suppressDuplicates`; `vibrateOnFirst` is
+        // deliberately not mapped (it is dead — see NotificationRuleEntity).
         val entity = NotificationRuleEntity(
             packageName = "com.whatsapp",
             appLabel = "WhatsApp",
@@ -86,7 +87,7 @@ class NotificationWhitelistTest {
             muteGroupChats = true,
         )
         assertEquals(
-            WhitelistRule(enabled = true, vibrateOnFirst = false, muteGroupChats = true),
+            WhitelistRule(enabled = true, suppressDuplicates = true),
             entity.toWhitelistRule(),
         )
     }

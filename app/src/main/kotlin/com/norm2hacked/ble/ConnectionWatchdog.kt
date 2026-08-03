@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
 import com.norm2hacked.data.preferences.WatchPreferences
+import com.norm2hacked.notification.NotificationListenerHealth
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +103,11 @@ class ConnectionWatchdogReceiver : BroadcastReceiver() {
     }
 
     private suspend fun check(app: Context) {
+        // Independent of the BLE link: the notification listener can be unbound while the watch is
+        // perfectly connected, which looks like "notifications randomly stopped working". Runs
+        // before the auto-start bail-out because it is not part of the connection lifecycle.
+        NotificationListenerHealth.requestRebindIfNeeded(app)
+
         if (!watchPreferences.isAutoStartEnabled()) {
             Log.i(TAG, "tick: auto-start disabled by the user — standing down")
             return

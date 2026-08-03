@@ -84,6 +84,16 @@ data class NotificationRuleEntity(
     @PrimaryKey val packageName: String,
     val appLabel: String,
     val enabled: Boolean = false,
+    /**
+     * **Unused — retained only so the column survives.** It never controlled vibration: the old
+     * forwarder used it to gate *sending* entirely, which is what [enabled] means now. Kept rather
+     * than dropped because removing a column costs a table rebuild for no behavioural gain.
+     */
     val vibrateOnFirst: Boolean = true,
+    /**
+     * Apply duplicate suppression to this app (see `RecentNotificationCache`). Historical name: it
+     * gated a 30s group-chat mute window; it now gates the general "identical text already on the
+     * watch" cache, which holds until the notification is dismissed on the phone.
+     */
     val muteGroupChats: Boolean = true,
 )

@@ -6,7 +6,8 @@ import android.service.notification.StatusBarNotification
 /**
  * Drops notification *types* that are never useful on the watch, so we don't flood it with
  * garbage: phone charging status, media "now playing", foreground-service "Waiting for
- * messages…", download progress, group summaries, etc.
+ * messages…", download progress, etc. Group summary vs. children is *not* decided here — that
+ * needs sibling state and lives in [NotificationMergePolicy].
  *
  * This is informed by the original NORM companion app's filter chain
  * (`cn.appscomm.messagepush.filter.{ProgressFilter,EmptyContentFilter}`) and Gadgetbridge's
@@ -97,7 +98,11 @@ object NotificationFilter {
 
         if (f.isMediaStyle || f.category == CATEGORY_TRANSPORT) return FilterDecision.Drop(DropReason.MEDIA)
         if (f.hasProgress) return FilterDecision.Drop(DropReason.PROGRESS)
-        if (f.isGroupSummary) return FilterDecision.Drop(DropReason.GROUP_SUMMARY)
+        // NOTE: group summaries are deliberately NOT dropped here. The original app keeps the
+        // summary and evicts the children for our device class (`isSupportGroupNotification()` is a
+        // hardcoded false), which is the opposite of what this rule used to do. The choice needs
+        // sibling state — is a summary/child of the same group in this window? — so it can't be a
+        // pure per-notification rule; it lives in NotificationMergePolicy.merge instead.
         if (f.isLocalOnly && f.pkg !in LOCAL_ONLY_EXCEPTIONS) return FilterDecision.Drop(DropReason.LOCAL_ONLY)
         if (f.category in JUNK_CATEGORIES) return FilterDecision.Drop(DropReason.JUNK_CATEGORY)
         if (f.titleBlank && f.textBlank) return FilterDecision.Drop(DropReason.EMPTY_CONTENT)
@@ -140,7 +145,6 @@ enum class DropReason {
     FOREGROUND_SERVICE,
     MEDIA,
     PROGRESS,
-    GROUP_SUMMARY,
     LOCAL_ONLY,
     JUNK_CATEGORY,
     EMPTY_CONTENT,

@@ -177,7 +177,6 @@ fun NotificationRulesScreen(viewModel: NotificationRulesViewModel, onBack: () ->
                         AppRuleCard(
                             row = row,
                             onEnabledChange = { viewModel.setEnabled(row, it) },
-                            onVibrateChange = { viewModel.setVibrateOnFirst(row, it) },
                             onMuteChange = { viewModel.setMuteGroupChats(row, it) },
                         )
                     }
@@ -260,7 +259,6 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
 private fun AppRuleCard(
     row: AppRuleRow,
     onEnabledChange: (Boolean) -> Unit,
-    onVibrateChange: (Boolean) -> Unit,
     onMuteChange: (Boolean) -> Unit,
 ) {
     Column(
@@ -300,8 +298,10 @@ private fun AppRuleCard(
 
         if (row.enabled) {
             Spacer(Modifier.height(4.dp))
-            RuleToggle("Vibrate on first", row.vibrateOnFirst, onVibrateChange)
-            RuleToggle("Mute group chat repeats (30s)", row.muteGroupChats, onMuteChange)
+            // "Vibrate on first" used to live here; it never controlled vibration (it gated
+            // sending, which the whitelist switch above now does) so showing it would be a
+            // no-op control. See NotificationRuleEntity.vibrateOnFirst.
+            RuleToggle("Skip repeats of identical text", row.muteGroupChats, onMuteChange)
         }
     }
 }

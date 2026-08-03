@@ -32,32 +32,36 @@ object NotificationWhitelistPolicy {
     fun decide(rule: WhitelistRule?): WhitelistDecision = when {
         rule == null -> WhitelistDecision.NotWhitelisted
         !rule.enabled -> WhitelistDecision.NotWhitelisted
-        else -> WhitelistDecision.Allowed(
-            vibrateOnFirst = rule.vibrateOnFirst,
-            muteGroupChats = rule.muteGroupChats,
-        )
+        else -> WhitelistDecision.Allowed(suppressDuplicates = rule.suppressDuplicates)
     }
 }
 
 /** Android/Room-free view of a stored per-app rule, so the policy stays pure. */
 data class WhitelistRule(
     val enabled: Boolean,
-    val vibrateOnFirst: Boolean,
-    val muteGroupChats: Boolean,
+    val suppressDuplicates: Boolean,
 )
 
 sealed interface WhitelistDecision {
     /** No row, or the user turned the app off — drop it. */
     data object NotWhitelisted : WhitelistDecision
 
-    /** The user picked this app; carries the per-app delivery options. */
-    data class Allowed(val vibrateOnFirst: Boolean, val muteGroupChats: Boolean) : WhitelistDecision
+    /**
+     * The user picked this app; carries the per-app delivery options.
+     *
+     * @param suppressDuplicates apply [RecentNotificationCache]'s repeat suppression to this app —
+     *   a re-post with identical `(mergeKey, title, content)` is not sent again until the user
+     *   dismisses it on the phone. Stored in the legacy `muteGroupChats` column.
+     */
+    data class Allowed(val suppressDuplicates: Boolean) : WhitelistDecision
 }
 
 fun NotificationRuleEntity.toWhitelistRule() = WhitelistRule(
     enabled = enabled,
-    vibrateOnFirst = vibrateOnFirst,
-    muteGroupChats = muteGroupChats,
+    // `muteGroupChats` is the historical column name; the behaviour it gates is now the general
+    // duplicate-suppression cache, not a 30s group-chat window. `vibrateOnFirst` is deliberately
+    // not mapped — see NotificationRuleEntity.
+    suppressDuplicates = muteGroupChats,
 )
 
 @Singleton

@@ -147,7 +147,6 @@ class NotificationRulesViewModel @Inject constructor(
     /** Whitelist / un-whitelist an app. Creates the rule row on first opt-in. */
     fun setEnabled(row: AppRuleRow, enabled: Boolean) = upsert(row.copy(enabled = enabled))
 
-    fun setVibrateOnFirst(row: AppRuleRow, vibrate: Boolean) = upsert(row.copy(vibrateOnFirst = vibrate))
 
     fun setMuteGroupChats(row: AppRuleRow, mute: Boolean) = upsert(row.copy(muteGroupChats = mute))
 
