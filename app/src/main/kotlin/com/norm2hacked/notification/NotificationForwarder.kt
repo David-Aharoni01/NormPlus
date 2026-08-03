@@ -5,8 +5,6 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.norm2hacked.ble.BleManager
-import com.norm2hacked.data.db.dao.NotificationRuleDao
-import com.norm2hacked.data.db.entities.NotificationRuleEntity
 import com.norm2hacked.protocol.Action
 import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.commands.MessageNewCommand
@@ -36,12 +34,12 @@ class NotificationForwarder : NotificationListenerService() {
     @InstallIn(SingletonComponent::class)
     interface NotificationForwarderEntryPoint {
         fun bleManager(): BleManager
-        fun notificationRuleDao(): NotificationRuleDao
+        fun notificationWhitelist(): NotificationWhitelist
         fun recentNotificationCache(): RecentNotificationCache
     }
 
     private lateinit var bleManager: BleManager
-    private lateinit var ruleDao: NotificationRuleDao
+    private lateinit var whitelist: NotificationWhitelist
     private lateinit var cache: RecentNotificationCache
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -54,7 +52,7 @@ class NotificationForwarder : NotificationListenerService() {
             NotificationForwarderEntryPoint::class.java,
         )
         bleManager = ep.bleManager()
-        ruleDao = ep.notificationRuleDao()
+        whitelist = ep.notificationWhitelist()
         cache = ep.recentNotificationCache()
     }
 
@@ -88,15 +86,9 @@ class NotificationForwarder : NotificationListenerService() {
             // most once and lazily, so a disabled app (which returns early below) does no lookup.
             val appLabel by lazy(LazyThreadSafetyMode.NONE) { resolveAppLabel(pkg) }
 
-            val rule = ruleDao.queryByPackage(pkg) ?: run {
-                val newRule = NotificationRuleEntity(pkg, appLabel)
-                ruleDao.upsert(newRule)
-                Log.i(TAG, "New app seen: pkg=$pkg label='$appLabel' — auto-added with defaults (enabled=true, muteGroupChats=true)")
-                newRule
-            }
-
-            if (!rule.enabled) {
-                Log.d(TAG, "pkg=$pkg: rule.enabled=false — dropping")
+            // Whitelist gate: only apps the user explicitly picked forward. Unknown app = drop.
+            val allow = whitelist.decide(pkg) as? WhitelistDecision.Allowed ?: run {
+                Log.d(TAG, "pkg=$pkg: not whitelisted — dropping")
                 return@launch
             }
 
@@ -110,8 +102,8 @@ class NotificationForwarder : NotificationListenerService() {
             val groupKey = sbn.groupKey ?: sbn.key
             val messageType = NotificationPushCommand.socialTypeForPackage(pkg)
 
-            val vibrate = if (rule.muteGroupChats) cache.shouldVibrate(groupKey)
-                          else rule.vibrateOnFirst
+            val vibrate = if (allow.muteGroupChats) cache.shouldVibrate(groupKey)
+                          else allow.vibrateOnFirst
 
             // Don't log notification content (PII) — lengths only.
             Log.i(TAG, "Forward: pkg=$pkg type=$messageType vibrate=$vibrate titleLen=${title.length} textLen=${text.length}")

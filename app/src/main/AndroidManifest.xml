@@ -21,6 +21,21 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!--
+      Package visibility (API 30+): the notification-whitelist picker lists the apps the user can
+      choose to forward. Declaring the launcher intent makes every *launchable* app visible to
+      PackageManager, which is exactly the set a user recognises. We deliberately do NOT request
+      QUERY_ALL_PACKAGES — it is Play-policy-restricted and unnecessary for this use case; apps with
+      no launcher entry are simply not offered (an app that already has a rule is still listed by
+      package name, see InstalledAppsRepository).
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".Norm2Application"
         android:allowBackup="false"

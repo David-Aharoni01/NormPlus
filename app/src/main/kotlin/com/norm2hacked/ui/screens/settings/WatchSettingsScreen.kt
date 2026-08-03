@@ -157,7 +157,7 @@ fun WatchSettingsScreen(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Teal),
                     ) {
                         Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("  Per-App Notification Rules", style = MaterialTheme.typography.bodyMedium)
+                        Text("  Choose Notification Apps", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
