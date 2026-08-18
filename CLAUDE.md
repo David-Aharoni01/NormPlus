@@ -7,7 +7,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Reverse-engineering workspace for the **Norm 2 smartwatch**. The goals are:
 1. Understand the BLE communication protocol between the watch and its companion app (smali in `NORM/`)
 2. Build a custom Android app that replicates/extends the companion app's functionality (`app/`)
-3. Patch or replace the watch firmware via OTA
+3. Patch or replace the watch firmware via OTA — the firmware is now understood in depth;
+   see [`docs/firmware.md`](docs/firmware.md) and "Watch Firmware" below
+
+## Task Tracking — all work goes in the kanban
+
+**From now on, every task is tracked in the kanban board. No exceptions.**
+
+The board is local SQLite at `~/.claude/kanban-dbs/Norm+.db` (no server, no auth). It is the
+single source of truth for what is planned, in progress and done — *not* prose lists in this
+file, and not TODO comments in code.
+
+| Action | Command |
+|---|---|
+| See the board | `/kanban` (markdown) or `/kanban-view` (live web board, auto-refreshes) |
+| Add a task | `/kanban add <title>` |
+| Move a task | `/kanban move <ID> <status>` — follow the Move Protocol matrix |
+| Run the agent pipeline | `/kanban-run <ID>` |
+| Sharpen a vague task | `/kanban-refine` |
+| Session handoff | `/kanban context` / `/kanban context save` |
+
+Rules:
+- **Before starting any non-trivial work, there must be a card for it.** If a request arrives
+  without one, create the card first, then work it.
+- **Discovering follow-up work means filing a card**, not appending to a list here. This file
+  documents *how the system works*; the board tracks *what remains to be done*.
+- **Dependencies are declared in the description** as `Depends on: #ID` on the first non-blank
+  line. The runner parses this and injects upstream context.
+- **Levels:** L1 quick (`todo→impl→done`), L2 standard (adds plan + impl review), L3 full
+  (adds plan review + test). Anything crossing firmware ↔ protocol ↔ app is L3.
+- **Split a card** if it exceeds ~1h, spans two or more layers, is hard to roll back, or has
+  any uncertain requirement.
+- The pending-features and known-gaps lists at the bottom of this file were migrated to the
+  board and are kept only as narrative context. **The board wins on status.**
 
 ## Code Quality Standards
 
@@ -41,9 +73,15 @@ cli/                ← normlink-cli: Windows JVM tool for autonomous BLE testin
 tools/
   emulator/         ← Pixel 8 Android emulator + Bumble HCI bridge for on-device testing
                        (the primary way to run/test :app — see "Testing on the emulator")
+  firmware/         ← query_ota.py (OTA-server queries), image_tool.py (verify/re-seal images)
+docs/
+  firmware.md       ← full analysis of the watch's own firmware — READ BEFORE ANY OTA WORK
 ```
 
 The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
+
+The two factory firmware images ship inside the APK, at `NORM/assets/`:
+`Apollo3_P03B_NORM2_F0.2B01.bin` (the watch OS) and `Picture_P03B_NORM2_0.4.bin` (resources).
 
 ---
 
@@ -531,7 +569,51 @@ Navigation graph: `ui/navigation/AppNavGraph.kt`.
 
 **Key command codes** (from `BluetoothCommandConstant.smali`):
 - `0x02` WATCH_ID, `0x03` DEVICE_VERSION, `0x04` DATETIME, `0x08` BATTERY_POWER
-- `0x0E` UPGRADE_MODE ← triggers OTA bootloader
+- `0x0E` UPGRADE_MODE ← switches the running firmware into upgrade mode (see the correction below)
+
+### Watch Firmware — what actually runs on the device
+
+**Full analysis: [`docs/firmware.md`](docs/firmware.md). Read it before touching OTA.** Summary:
+
+The Norm 2 runs an ODM firmware (Shenzhen Appscomm; the Allview Allwatch H looks like the same
+platform rebranded) on an **Ambiq Apollo3 Blue** — Cortex-M4F, 1 MB flash @0x00000000, 384 KB
+SRAM @0x10000000, integrated BLE 5. Board string `EW_WBT21-A`. The stack is **FreeRTOS 9** +
+the **AmbiqSuite** `ambiq_ble` Cordio host + **LVGL 5.x** for the UI, with a vendor `ew_` HAL.
+Hardware from the driver names: RM67162 AMOLED, WCN1F3549 touch, PixArt PAH8011 HR, CW6303
+PMU, IPUS PSRAM, SPI NAND, P9027LP wireless charging, stepper-driven physical hands.
+
+The image is **unencrypted, unpacked and unobfuscated**, and its 130 `assert()` `__FILE__`
+strings leak the whole source tree — so it is very tractable to analyse and patch.
+
+```
+internal flash  0x00000000–0x0001FFFF   bootloader + config (128 KB reserved)
+                0x00020000–0x000D6693   application
+external NAND   0x0C780000              resources / pictures      (update type 8)
+                0x0FC00000              OTA staging               (update type 1)
+```
+
+**Two corrections to what this file used to say:**
+
+1. **`UPGRADE_MODE` does not reboot into a separate bootloader.** The DFU characteristic
+   strings (`"Characteristic 1531"`/`"1532"`) and the `Upgrading… / Upgrade Failed` LVGL
+   screens are all *inside the application image*, as are `ew_mod_ota_protocol.c` and the
+   `OtaProtocol` FreeRTOS task. `0x0E` is a mode switch within the running firmware.
+   **Consequence: the component that accepts OTA is the component you would be replacing.**
+   A non-booting custom image leaves no BLE recovery path — that needs SWD, whose
+   availability is still unknown.
+2. **There are two CRCs, not one** (see below).
+
+**Image format** — `file[0..3]` is the destination address (the app strips it and puts it in
+the SET header); `file[4..]` is the CRC'd content, which begins with a 44-byte Ambiq
+`am_bootloader_image_t`-shaped header (link address, payload length, image CRC, SP, reset
+vector) before the Cortex-M vector table at file+0x30.
+
+**Tooling:** `tools/firmware/image_tool.py verify|seal` parses the header, checks both CRCs,
+and re-seals a patched image. `tools/firmware/query_ota.py` queries the vendor OTA server.
+
+> ⚠️ The public OTA endpoint (`api.normdenmarkupdate.com`) is the **Telink** channel — it
+> serves Norm 1 firmware for a Telink TC32 SoC (`KNLT` magic), *not* Norm 2. Never push it at
+> this watch. The Apollo channel is `device/queryProductVersion` in `UrlService.smali`.
 
 ### Apollo DFU (Firmware Update)
 
@@ -544,7 +626,7 @@ The Norm 2 uses an **Apollo chipset** with a custom 5-step OTA protocol over a *
 **Firmware binary format:** first 4 bytes = target flash address, remaining bytes = raw firmware.
 
 **OTA sequence** (implemented in `ApolloOtaProtocol.kt`; source: `OtaApolloCommand.smali`):
-1. Send `UPGRADE_MODE` (`0x0E`) on main channel → watch reboots into bootloader
+1. Send `UPGRADE_MODE` (`0x0E`) on main channel → firmware enters upgrade mode (not a separate bootloader)
 2. Re-connect GATT to same MAC → discover `0x1530` service → enable notify on both 0x1531 and 0x1532
 3. Send BT param: `[0x10, 0x02]` → delay 500ms → await ACK byte[1]=0x01
 4. Send INIT: `[0x01] + total_content_length_LE4`
@@ -555,7 +637,19 @@ The Norm 2 uses an **Apollo chipset** with a custom 5-step OTA protocol over a *
 
 **OTA result codes:** `0x64` = success, `0x65` = in-progress, `0x66` = fail (throws `OtaException` immediately).
 
-**CRC algorithm** (from `OtaUtil.smali`): CRC-16/CCITT, init `0xFFFF`. Returns 4 bytes: `[crc_lo, crc_hi, 0x00, 0x00]`.
+**CRC algorithms — there are two, and a patched image needs both to be right:**
+
+1. **Transport CRC-16** (from `OtaUtil.smali`), computed by the phone and sent in the SET
+   header: CRC-16/CCITT, init `0xFFFF`, over `file[4:]`. Returned as 4 bytes
+   `[crc_lo, crc_hi, 0x00, 0x00]`. `ApolloOtaProtocol` computes this at flash time.
+2. **Image CRC** stored at `file+0x10`, checked by the first-stage bootloader: **CRC-32,
+   polynomial `0x1EDC6F41`, MSB-first (NOT reflected), init `0`, no final xor, over
+   `file[48:]`** — exactly the byte count declared at `file+0x0C`. Recovered by parameter
+   search and verified against the factory image (`0xD392D741`). Castagnoli's polynomial but
+   non-reflected with a zero seed, which is why the standard CRC-32C variants all miss it.
+
+Nothing here is cryptographic — no signature, no encryption. **A patched image can be
+re-sealed and will validate**: `python tools/firmware/image_tool.py seal patched.bin --in-place`.
 
 ### Device Version String
 
@@ -813,6 +907,13 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 
 ### Pending features (priority order)
 
+> **Migrated to the kanban board — see "Task Tracking" above. The board is authoritative for
+> status; this list is narrative context only and is not maintained.** Board cards: #1 CHECK
+> commands in `:app`, #2 `DEVICE_VERSION` quirk, #3 warm reconnect, #4 uptime layers,
+> #5 reject-with-SMS, #6 music, #7 GPS, #8 blood pressure, #9 weather.
+> Firmware work: #12–#15 (versions, OTA rehearsal, SWD, Ghidra) and #16–#20 (the
+> notification-delete patch chain).
+
 *(Done ✅ — see "Feature status — verified on-device" above: notifications→watch incl. RTL + junk
 filter, phone calls incl. answer/reject, watch-hands calibration.)*
 
@@ -830,6 +931,9 @@ filter, phone calls incl. answer/reject, watch-hands calibration.)*
 5. **Weather sync** — find command code in `BluetoothCommandConstant.smali`
 
 ### Known gaps
+
+> Also on the board: #10 (BLE-layer tests), #11 (`writeToChar` error surface), #3 (keep-alive probe).
+
 - No unit tests for the BLE layer or `PythonBridgeTransport` — protocol parsing is covered in `:protocol:test`
 - `writeToChar` (fire-and-forget) has no error surface
 - `BleService` keep-alive uses an RSSI read as a generic link probe; whether the watch's idle-drop watchdog actually resets on it is unverified (so far relying on connection supervision) — confirm on-device, switch to a periodic battery CHECK if needed
