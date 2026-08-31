@@ -27,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .peripherals import I2cDevice, SpiDevice
+from .peripherals import BitBangI2cBus, I2cDevice, SpiDevice
 
 # ── SPI NAND ─────────────────────────────────────────────────────────────────
 
@@ -1080,6 +1080,127 @@ class MotionSensor(I2cDevice):
         return (f"  motion : {self.name} at 0x{MOTION_I2C_ADDRESS:02X}, {state}, "
                 f"{self.samples_made} samples made, {self.fifo_bytes_read} bytes read, "
                 f"{len(self.fifo)} queued")
+
+
+#: The battery gauge is not on an IOM at all. ``ew_drv_sim_i2c.c`` clocks it by
+#: hand on two GPIOs, which is why every hardware I2C controller stays idle and
+#: the part went unmodelled for so long -- there was no bus traffic to miss.
+#: Recovered by decoding the waveform: SDA falls while SCL is high (START), then
+#: eight bits give the address byte 0xC4 -> 0x62 write.
+PMU_SCL_PIN = 11
+PMU_SDA_PIN = 13
+PMU_I2C_ADDRESS = 0x62
+#: A second device shares the bus and is not yet modelled; the firmware makes 28
+#: transactions to it per boot. Recorded here so the unanswered count is
+#: explainable rather than mysterious.
+PMU_BUS_OTHER_ADDRESS = 0x09
+
+
+class Cw6303Pmu(I2cDevice):
+    """The battery gauge, on the bit-banged bus at 0x62.
+
+    The map is the firmware's own traffic, decoded off the wire rather than
+    taken from a datasheet. Over a 60M-instruction boot it writes MODE, reads
+    CONFIG, uploads a 64-byte profile starting at 0x10, and then settles into
+    reading 0x02 (twelve times), 0x04, 0x06/0x07, 0x08 and 0x0A. That is the
+    CellWise CW201x layout exactly: a cell voltage and a state-of-charge, each
+    big-endian across a register pair, above a profile table.
+
+    Note this part reports *charge*, not charger state. The driver's charging
+    bits come from a second device at 0x09 on the same bus, which is not
+    modelled yet -- see PMU_BUS_OTHER_ADDRESS.
+    """
+
+    name = "CW201x-class fuel gauge"
+
+    VERSION = 0x00
+    VCELL_H, VCELL_L = 0x02, 0x03
+    SOC_H, SOC_L = 0x04, 0x05
+    RRT_H, RRT_L = 0x06, 0x07
+    CONFIG = 0x08
+    MODE = 0x0A
+    #: The 64-byte battery profile the firmware uploads, 0x10..0x4F.
+    PROFILE_BASE = 0x10
+    PROFILE_END = 0x4F
+
+    #: The cell voltage the firmware sees, in microvolts per LSB. A single-cell
+    #: lithium pack runs 3.3-4.2 V, and 312.5 uV/LSB puts that in range for the
+    #: 14-bit field these parts use.
+    UV_PER_LSB = 312.5
+
+    def __init__(self, *, percent: float = 80.0, charging: bool = False,
+                 log=print) -> None:
+        self.log = log
+        self.percent = max(0.0, min(100.0, float(percent)))
+        self.charging = bool(charging)
+        #: Registers the firmware writes and reads back: CONFIG, MODE and the
+        #: 64-byte profile. Held verbatim so an upload survives a read.
+        self.ram: dict[int, int] = {}
+        self.reads = 0
+        self.writes = 0
+        self.registers_read: set[int] = set()
+
+    # -- derived values ------------------------------------------------------
+
+    @property
+    def millivolts(self) -> float:
+        """Cell voltage, interpolated across the usable range by charge."""
+        return 3300.0 + (4200.0 - 3300.0) * (self.percent / 100.0)
+
+    def _register(self, register: int) -> int:
+        if register == self.VERSION:
+            return 0x63                       # identifies the part; nothing branches on it
+        raw = int(self.millivolts * 1000.0 / self.UV_PER_LSB) & 0x3FFF
+        if register == self.VCELL_H:
+            return raw >> 8
+        if register == self.VCELL_L:
+            return raw & 0xFF
+        if register == self.SOC_H:
+            return int(self.percent) & 0xFF
+        if register == self.SOC_L:
+            return int((self.percent % 1.0) * 256) & 0xFF
+        if register in (self.RRT_H, self.RRT_L):
+            # Remaining run time in minutes; roughly a day from full. The top
+            # bit of the high byte is the alert flag on these parts.
+            minutes = int(self.percent * 14.4)
+            return (minutes >> 8) & 0x1F if register == self.RRT_H else minutes & 0xFF
+        return self.ram.get(register, 0x00)
+
+    # -- the wire ------------------------------------------------------------
+
+    def read(self, register: int, length: int) -> bytes:
+        self.reads += 1
+        self.registers_read.add(register)
+        return bytes(self._register((register + i) & 0xFF) for i in range(length))
+
+    def write(self, register: int, data: bytes) -> None:
+        self.writes += 1
+        for i, byte in enumerate(data):
+            self.ram[(register + i) & 0xFF] = byte
+
+    @property
+    def profile_bytes(self) -> int:
+        """How much of the 64-byte battery profile the firmware has uploaded."""
+        return sum(1 for r in self.ram if self.PROFILE_BASE <= r <= self.PROFILE_END)
+
+    def summary(self) -> str:
+        state = "charging" if self.charging else "discharging"
+        return (f"  battery: {self.name} at 0x{PMU_I2C_ADDRESS:02X} "
+                f"(bit-banged, SCL {PMU_SCL_PIN}/SDA {PMU_SDA_PIN}), "
+                f"{self.percent:.0f}% {state}, {self.millivolts:.0f} mV, "
+                f"{self.profile_bytes}/64 profile bytes, "
+                f"{self.reads} reads, {self.writes} writes")
+
+
+def attach_pmu(machine, *, percent: float = 80.0, charging: bool = False,
+               log=print) -> Cw6303Pmu:
+    """Put the battery gauge on the bit-banged bus the firmware drives by hand."""
+    bus = BitBangI2cBus(machine.gpio, PMU_SCL_PIN, PMU_SDA_PIN)
+    pmu = Cw6303Pmu(percent=percent, charging=charging, log=log)
+    bus.devices[PMU_I2C_ADDRESS] = pmu
+    machine.sim_i2c = bus
+    pmu.bus = bus
+    return pmu
 
 
 def attach_motion_sensor(machine, *, irq_pin=None, log=print) -> MotionSensor:

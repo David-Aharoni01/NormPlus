@@ -15,7 +15,7 @@ from pathlib import Path
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
 from .fw.devices import (attach_mspi_devices, attach_motion_sensor,
-                         attach_touch_panel)
+                         attach_pmu, attach_touch_panel)
 from .fw.machine import Apollo3Machine
 from .fw.patches import force_gestures
 from .fw.rtos import format_tasks
@@ -133,6 +133,8 @@ def cmd_boot(args) -> int:
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
     devices["motion"] = attach_motion_sensor(machine, log=log)
+    devices["battery"] = attach_pmu(machine, percent=getattr(args, "battery", 80.0),
+                                    charging=getattr(args, "charging", False), log=log)
     if args.force_gestures:
         force_gestures(machine, log=print if quiet else log)
 
@@ -251,6 +253,12 @@ def main(argv=None) -> int:
                              "drive the touch panel from the mouse (click and drag)")
     p_boot.add_argument("--scale", type=int, default=1,
                         help="magnify the live window by this factor (default: 1)")
+    p_boot.add_argument("--battery", type=float, default=80.0, metavar="PERCENT",
+                        help="battery charge the gauge reports (default: 80). "
+                             "Below the firmware's threshold the watch raises its "
+                             "own low-battery screens.")
+    p_boot.add_argument("--charging", action="store_true",
+                        help="report the watch as sitting on the charger")
     p_boot.add_argument("--force-gestures", action="store_true",
                         help="suppress the firmware's own gesture cancel so swipes reach "
                              "the UI. A deliberate deviation from the shipped image — see "

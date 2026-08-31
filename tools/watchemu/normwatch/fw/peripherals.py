@@ -364,6 +364,41 @@ class Gpio(Peripheral):
         self.int_status = [0, 0]
         #: Input level per bank, driven by attached models or injected events.
         self.inputs = [0, 0]
+        #: Pins an attached device is actively holding low, per bank.
+        #:
+        #: An open-drain bus -- I2C -- works by every participant either
+        #: releasing the line or pulling it to ground, and a pull always wins.
+        #: ``inputs`` cannot express that, because it is OR-ed with the output:
+        #: once the firmware drives a pin high nothing could contradict it, so a
+        #: bit-banged slave could never ACK.
+        self.pulled_low = [0, 0]
+        #: Callables notified as ``(bank, before, after)`` when an output
+        #: register changes, so a device wired to a pin can react to the edge
+        #: itself. Bit-banging is far finer-grained than the timer tick, so a
+        #: polled model would miss most of the waveform.
+        self.output_watchers: list = []
+
+    def _set_out(self, bank: int, value: int) -> None:
+        before = self.out[bank]
+        if before == value:
+            return
+        self.out[bank] = value
+        for watcher in self.output_watchers:
+            watcher(bank, before, value)
+
+    def pull_low(self, number: int, held: bool) -> None:
+        """Hold *number* at ground (or release it), as an open-drain slave does."""
+        bank, bit = divmod(number, 32)
+        if held:
+            self.pulled_low[bank] |= 1 << bit
+        else:
+            self.pulled_low[bank] &= ~(1 << bit)
+
+    def level(self, number: int) -> int:
+        """The level a reader would actually see on *number*."""
+        bank, bit = divmod(number, 32)
+        merged = (self.out[bank] | self.inputs[bank]) & ~self.pulled_low[bank]
+        return (merged >> bit) & 1
 
     def pin(self, number: int) -> int:
         """Current output level of pin *number* (0-63)."""
@@ -396,9 +431,9 @@ class Gpio(Peripheral):
     def read(self, offset: int, size: int) -> int:
         self.reads[offset] += 1
         if offset == self.RDA:
-            return self.out[0] | self.inputs[0]
+            return (self.out[0] | self.inputs[0]) & ~self.pulled_low[0] & 0xFFFFFFFF
         if offset == self.RDB:
-            return self.out[1] | self.inputs[1]
+            return (self.out[1] | self.inputs[1]) & ~self.pulled_low[1] & 0xFFFFFFFF
         if offset in self.INT_STAT:
             return self.int_status[self.INT_STAT.index(offset)]
         return self.storage.get(offset, 0)
@@ -406,15 +441,15 @@ class Gpio(Peripheral):
     def write(self, offset: int, size: int, value: int) -> None:
         self.writes[offset] += 1
         if offset in (self.WTA, self.WTB):
-            self.out[0 if offset == self.WTA else 1] = value & 0xFFFFFFFF
+            self._set_out(0 if offset == self.WTA else 1, value & 0xFFFFFFFF)
             return
         if offset in (self.WTSA, self.WTSB):
             bank = 0 if offset == self.WTSA else 1
-            self.out[bank] |= value & 0xFFFFFFFF
+            self._set_out(bank, self.out[bank] | (value & 0xFFFFFFFF))
             return
         if offset in (self.WTCA, self.WTCB):
             bank = 0 if offset == self.WTCA else 1
-            self.out[bank] &= ~value & 0xFFFFFFFF
+            self._set_out(bank, self.out[bank] & ~value & 0xFFFFFFFF)
             return
         if offset in self.INT_CLR:
             # Write-one-to-clear. Without this the handler can never dismiss the
@@ -474,6 +509,170 @@ class I2cDevice:
 
     def write(self, register: int, data: bytes) -> None:
         pass
+
+
+class BitBangI2cBus:
+    """An I2C bus the firmware clocks by hand on two GPIO pins.
+
+    Not everything on this watch hangs off an IOM. ``ew_drv_sim_i2c.c`` drives
+    SCL and SDA directly, and the battery gauge is on that bus — which is why it
+    was invisible for so long: all six IOMs stay idle, so there was nothing to
+    notice. Reading GPIO was simply the hottest MMIO in the whole run.
+
+    The model is a slave-side state machine. It watches the two pins change,
+    recognises START and STOP, shifts bits in on each rising clock edge, and
+    pulls SDA low to ACK or to return a byte. That is done at the pin level
+    rather than by intercepting the driver, so the firmware's own timing,
+    clock stretching and bus scanning all behave the way they would on the part.
+    """
+
+    #: Bus states.
+    IDLE, ADDRESS, REGISTER, WRITING, READING = range(5)
+
+    def __init__(self, gpio, scl: int, sda: int) -> None:
+        self.gpio = gpio
+        self.scl = scl
+        self.sda = sda
+        self.devices: dict[int, I2cDevice] = {}
+        self.transactions = 0
+        self.unanswered: collections.Counter = collections.Counter()
+        self._reset()
+        gpio.output_watchers.append(self._on_output_change)
+
+    def _reset(self) -> None:
+        self.state = self.IDLE
+        self.bits: list[int] = []
+        self.address = None
+        self.reading = False
+        self.payload = bytearray()
+        self._tx = bytearray()
+        #: The next rising clock is the acknowledge slot, not a data bit.
+        self._ack_slot = False
+        #: We are currently holding SDA through that slot.
+        self._acking = False
+        #: Whether this slave should acknowledge; False is a NAK.
+        self._owes_ack = False
+        # NOT self.register: the address pointer persists across STOP, which is
+        # how these parts behave and how the firmware reads them -- it sets the
+        # register in one transaction and reads in the next.
+        if not hasattr(self, "register"):
+            self.register = None
+        self.gpio.pull_low(self.sda, False)
+
+    # ── pin-level decoding ──────────────────────────────────────────────────
+
+    def _on_output_change(self, bank: int, before: int, after: int) -> None:
+        changed = before ^ after
+        scl_bank, scl_bit = divmod(self.scl, 32)
+        sda_bank, sda_bit = divmod(self.sda, 32)
+        if bank == sda_bank and changed >> sda_bit & 1:
+            self._sda_edge(after >> sda_bit & 1)
+        if bank == scl_bank and changed >> scl_bit & 1:
+            self._scl_edge(after >> scl_bit & 1)
+
+    def _line(self, pin: int) -> int:
+        bank, bit = divmod(pin, 32)
+        return (self.gpio.out[bank] >> bit) & 1
+
+    def _sda_edge(self, level: int) -> None:
+        if self._line(self.scl) != 1:
+            return                       # data only moves while the clock is low
+        if level == 0:
+            self._start()                # START, or a repeated START
+        else:
+            self._stop()
+
+    def _start(self) -> None:
+        self._flush_write()
+        self.state = self.ADDRESS
+        self.bits = []
+        self.reading = False
+        self.gpio.pull_low(self.sda, False)
+
+    def _stop(self) -> None:
+        self._flush_write()
+        self._reset()
+
+    def _flush_write(self) -> None:
+        """Hand a completed write to its device."""
+        # A zero-length payload means the master only set the address pointer
+        # and then issued a repeated START to read -- there is nothing to write.
+        if self.state == self.WRITING and self.address is not None and self.payload:
+            device = self.devices.get(self.address)
+            if device is not None and self.register is not None:
+                device.write(self.register, bytes(self.payload))
+        self.payload = bytearray()
+
+    def _scl_edge(self, level: int) -> None:
+        if self.state == self.IDLE:
+            return
+        if level:
+            self._sample()
+        else:
+            self._drive()
+
+    def _sample(self) -> None:
+        """Rising clock: latch whatever the master is presenting.
+
+        Every ninth pulse is the acknowledge slot, not data. Counting it as a
+        bit shifts every byte one place right, which is subtle enough to look
+        like a plausible register map -- 0x08 arrives as 4, 0x5F as 0x17.
+        """
+        if self._ack_slot or self.state == self.READING:
+            return
+        self.bits.append(self.gpio.level(self.sda))
+        if len(self.bits) < 8:
+            return
+        byte = int("".join(str(b) for b in self.bits), 2)
+        self.bits = []
+        if self.state == self.ADDRESS:
+            self.address = byte >> 1
+            self.reading = bool(byte & 1)
+            device = self.devices.get(self.address)
+            if device is None:
+                self.unanswered[self.address] += 1
+                self.state = self.IDLE
+                self._owes_ack = False          # NAK: nobody is there
+                self._ack_slot = True
+                return
+            self.transactions += 1
+            if self.reading:
+                # A master reads as many bytes as it likes and NAKs the last
+                # one, so hand over a generous run and let it stop where it will.
+                self._tx = bytearray(device.read(self.register or 0, 32))
+                self.state = self.READING
+            else:
+                self.state = self.REGISTER
+        elif self.state == self.REGISTER:
+            self.register = byte
+            self.state = self.WRITING
+        elif self.state == self.WRITING:
+            self.payload.append(byte)
+        self._owes_ack = True
+        self._ack_slot = True
+
+    def _drive(self) -> None:
+        """Falling clock: present the ACK, or the next bit of a read."""
+        if self._ack_slot and not self._acking:
+            self._acking = True
+            self.gpio.pull_low(self.sda, self._owes_ack)
+            return
+        if self._acking:
+            self._acking = False
+            self._ack_slot = False
+            self.gpio.pull_low(self.sda, False)
+        if self.state == self.READING:
+            if not self.bits:
+                if not self._tx:
+                    self._tx = bytearray(b"\xff")
+                byte = self._tx.pop(0)
+                self.bits = [(byte >> i) & 1 for i in range(7, -1, -1)]
+                self.register = ((self.register or 0) + 1) & 0xFF
+            self.gpio.pull_low(self.sda, self.bits.pop(0) == 0)
+            if not self.bits:
+                # The master drives the acknowledge after a read, so release.
+                self._owes_ack = False
+                self._ack_slot = True
 
 
 class Iom(Peripheral):

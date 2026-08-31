@@ -28,7 +28,9 @@ run to 600M instructions without a fault.
 
 **The watch's sensors answer.** The accelerometer is modelled and receives its
 real configuration — see [No I2C write carried any
-data](#no-i2c-write-carried-any-data), which is the defect that hid it.
+data](#no-i2c-write-carried-any-data), which is the defect that hid it. The
+battery gauge answers too, on a bus the firmware clocks by hand on two GPIOs;
+that is what stopped the low-power dialog churning sixteen times a second.
 
 **The watch navigates.** With `--force-gestures` a drag on the window is recognised as
 a swipe, the page changes, and the next screen draws — the goal ring to the left, the
@@ -386,6 +388,67 @@ So the open question is sharper, and it has moved: not "does the face rebuild it
 obvious suspicion is that the watch believes it is on a flat battery — there is no PMU, no
 charger and no battery model here, so whatever the power manager
 (`system_power_manager_task.c`, `0x0005B610`) would normally read is whatever BSS left it.
+
+### The battery gauge is on a bus the firmware clocks by hand
+
+Every hardware I2C controller on this chip stays idle for the whole boot, and yet
+`pmu_cw6303.c`, `wireless_charge_p9027lp.c` and `system_power_manager_task.c` all
+execute. The gauge is not on an IOM at all: `ew_drv_sim_i2c.c` bit-bangs it on two
+GPIOs. That is why reading GPIO was the hottest MMIO in the run by an order of
+magnitude — 225,148 reads — and why there was no bus traffic to notice missing.
+
+Recovered by decoding the waveform rather than guessing: SDA falls while SCL is
+high, then eight bits give the address byte.
+
+```
+SCL = GPIO 11        SDA = GPIO 13        device 0x62
+```
+
+The register map is the firmware's own traffic. It writes MODE, reads CONFIG,
+uploads a 64-byte profile at 0x10..0x4F, then settles into reading 0x02 (twelve
+times), 0x04, 0x06/0x07, 0x08 and 0x0A — the CellWise CW201x layout, with cell
+voltage and state-of-charge each big-endian across a register pair.
+
+A second device at **0x09** shares the bus, 28 transactions a boot, and is not
+modelled yet. The driver's charging bits come from there, not from the gauge.
+
+Two things had to change to support any of this:
+
+- **GPIO needed open-drain.** `read()` returned `out | inputs`, so once the
+  firmware drove a pin high nothing could contradict it and no slave could ever
+  acknowledge. `Gpio.pull_low` and a `pulled_low` mask fix that.
+- **The bus is decoded at the pin level**, not by intercepting the driver, so the
+  firmware's own timing and framing are exercised. `BitBangI2cBus` watches the two
+  pins, recognises START/STOP, and pulls SDA low to ACK or to return a byte.
+
+**Every ninth clock is the acknowledge, not data.** Counting it shifts each byte
+one place right, and the result is quietly plausible — 0x08 arrives as 4, 0x5F as
+0x17, and a profile that really starts at 0x10 looks like it starts at 0x08. That
+is pinned by a test, because nothing about the wrong answer looks wrong.
+
+### What the battery actually changed
+
+With the gauge answering, `ui_notify_lowpower_dlg.c` goes from 29 executed blocks
+to **zero**, and `ui_delete_object` from 18 calls to **none**. The churn described
+above is gone at its cause, and the firmware completes its full 64-byte profile
+upload, so it is satisfied with the part.
+
+The trigger is specifically the **state-of-charge** register. A device that ACKs
+but returns 0xFF or 0x00 leaves the churn exactly as it was; modelling 0x04 stops
+it. Voltage alone does not.
+
+The screen then goes black, and that appears to be *correct*: the face background
+in the shipped resource blob is 259,200 bytes of zero (see below), the watch has
+physical hands for the time, and the lit pixels seen before were the low-power
+dialog's own text. Touch still reaches the firmware — 37 interrupts, 37 reports,
+and the UI polls the input device three times more often than before.
+
+**Swipes still do not navigate**, though, and that is the open question. Nothing
+cancels the gesture any more, so the cause is no longer the one described above.
+The likely explanation is that the watch now sits in an idle face where a swipe
+does nothing until it is woken, which it could never do before because it had no
+idea what its power state was — `key_irq.c` also runs half again as much once the
+gauge answers. Finding the wake path is the next step.
 
 ### Attributing an address to a source file
 
