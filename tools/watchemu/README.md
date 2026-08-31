@@ -32,9 +32,14 @@ data](#no-i2c-write-carried-any-data), which is the defect that hid it.
 
 **The watch navigates.** With `--force-gestures` a drag on the window is recognised as
 a swipe, the page changes, and the next screen draws — the goal ring to the left, the
-"How to bind to APP" pairing help to the right. The flag is needed because of a firmware
-behaviour the emulator provokes; [Touch reaches the firmware, swipes do not reach the
-UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) is the whole story.
+"How to bind to APP" pairing help to the right. The flag is needed because every swipe is
+cancelled by the low-power notification dialog being built and torn down once per UI
+cycle; [Touch reaches the firmware, swipes do not reach the
+UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) traces the input path and
+[The swipe killer is the low-power dialog, not the watch
+face](#the-swipe-killer-is-the-low-power-dialog-not-the-watch-face) identifies the cause.
+Why that dialog is raised at all is the one thing still open — the prime suspect is the
+missing battery/PMU model.
 
 Throughput is roughly 4.4M instructions/second with `--no-trace` and 3.4M with tracing
 on (~1/10th of real time). Every MMIO access is a Python callback, so tracing, heavy GPIO
@@ -336,13 +341,69 @@ directions work and open four different pages, so everything else on the path is
 That is what `--force-gestures` does (`normwatch/fw/patches.py`), and it is off by
 default because it is **not** what the shipped firmware does.
 
-What is still open is whether the physical watch really rebuilds a face element every UI
-cycle. If it does not — if something we get wrong keeps the face permanently dirty — the
-cancel would be rare on real hardware and swipes would work without any patch. The refresh
-is driven from `0x00077ABC`, which rebuilds when the pending-update count at `0x10002A24`
-is 1, and that queue is fed once per cycle by elements `0x1005`/`0x1006` in the chain at
-`0x00077E5C`. Nothing in the emulated state has been shown to make those elements dirty;
-the alternative is that this is simply what the firmware does.
+### The swipe killer is the low-power dialog, not the watch face
+
+The "the watch face rebuilds an element every cycle" story above was wrong, and a one-line
+experiment disproves it: force the suppression gate at `0x000843DC` to return 1 and
+`ui_delete_object` gets **zero** callers in an entire run. Nothing else in the UI destroys
+objects. It is all one subsystem, and it is not the watch face.
+
+What actually happens, once per UI cycle:
+
+```
+element 0x1005                                     posted by system_watch_task.c
+  -> vtable[0x000CC8D8 + 0x2EC](0x1005) = 3        a static switch at 0x0005BA18
+  -> notify table 0x000BCAE4 + 3*12 = 0x000BCAFC   48 entries of {id, ctor, flag}
+  -> ctor 0x00073FC9                               ui_notify_lowpower_dlg.c
+  -> create a fresh LVGL screen, lv_scr_load it
+  -> ~18,700 instructions (0.4 ms) later, close it and delete it
+```
+
+The dialog is the **low-power notification**, and that is its own assert's `__FILE__`
+rather than a guess: the ctor at `0x00073FC8` asserts `hParent` at line 153 of
+`ui_notify_lowpower_dlg.c`. It is built and destroyed about sixteen times a second, and it
+never stays up long enough to be drawn.
+
+Three things were checked and are *not* the cause:
+
+- **The refresh is not routed to the wrong root.** `0x0007756C` picks `lv_layer_top()`
+  when it has children and `lv_scr_act()` otherwise; the top layer is empty for the whole
+  run, so it is always `lv_scr_act()`. There is no second element-id space to reconcile —
+  the earlier note about `0x20C..0x215` was chasing a dead end.
+- **It is not an unanswered peripheral.** The firmware never touches the ADC, and since
+  the I2C write fix no transfer on any bus goes unanswered.
+- **It is not the gate.** `0x000843DC` returns the byte at `0x10001C00`, and the notify
+  manager skips the dialog when that is 1. It is 0 for the entire run, including all the
+  way through a swipe — written exactly once, to 0, by the window-manager init, and **no
+  code anywhere in the image ever stores 1 to it**.
+
+Forcing that gate is not a fix, incidentally. It suppresses *every* notify screen, and the
+watch face is built through the same path, so the display just stays black. It is useful
+only as the experiment that isolates the cause.
+
+So the open question is sharper, and it has moved: not "does the face rebuild itself" but
+**"why is the low-power dialog raised at all, and what would ever set `0x10001C00`"**. The
+obvious suspicion is that the watch believes it is on a flat battery — there is no PMU, no
+charger and no battery model here, so whatever the power manager
+(`system_power_manager_task.c`, `0x0005B610`) would normally read is whatever BSS left it.
+
+### Attributing an address to a source file
+
+Two independent sources, and the weaker one is misleading on its own.
+
+`SymbolMap` looks for literal-pool words pointing at a `__FILE__` string. That finds only
+the modules whose compiler output actually uses a pool; most of this image passes
+`__FILE__` in a PC-relative `ADR`, so those modules are invisible and their code is
+silently attributed to whichever unrelated neighbour owns the closest pool entry. This is
+not hypothetical — it is why the low-power dialog was written up as
+`ui_notify_skipPairingConfirm_dlg.c` for a while, from a pool entry over a kilobyte away.
+
+`AssertMap` (`normwatch/fw/assertsites.py`) decodes the call sites instead. Every assert
+in this firmware calls the handler at `0x000305B0` with `r0 = __FILE__`, `r1 = line`,
+`r2 = expression`, so reading back the `ADR` that set `r0` gives an exact fact: 467 sites
+across 106 modules, each certain, including `system_power_manager_task.c`,
+`window_manager.c` and `wireless_charge_p9027lp.c` that the pools cannot see at all.
+`SymbolMap.nearest` now answers from whichever of the two sits closer.
 
 ### The panel's coordinates are already the screen's
 

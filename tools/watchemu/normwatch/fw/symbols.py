@@ -18,6 +18,8 @@ import re
 import struct
 from dataclasses import dataclass
 
+from .assertsites import AssertMap
+
 
 @dataclass
 class ModuleRef:
@@ -33,6 +35,9 @@ class SymbolMap:
         self.refs: list[ModuleRef] = []
         self._ref_addrs: list[int] = []
         self._build()
+        #: Assert call sites, which cover the modules whose ``__FILE__`` is
+        #: passed by ``ADR`` rather than a literal pool — most of them.
+        self.asserts = AssertMap(payload, link_address)
 
     def _build(self) -> None:
         # 1. Every printable run that looks like a source path from the ODM tree.
@@ -62,10 +67,10 @@ class SymbolMap:
     def short(module: str) -> str:
         return module.replace("\\", "/").rsplit("/", 1)[-1]
 
-    def nearest(self, address: int, window: int = 0x800) -> str | None:
-        """Module whose assert reference is closest below *address*."""
+    def _nearest_ref(self, address: int, window: int) -> tuple[str | None, int]:
+        """Closest literal-pool reference to *address*, and its distance."""
         if not self._ref_addrs:
-            return None
+            return None, window + 1
         i = bisect.bisect_right(self._ref_addrs, address)
         best, best_distance = None, window + 1
         for j in (i - 1, i):
@@ -73,7 +78,30 @@ class SymbolMap:
                 distance = abs(self.refs[j].address - address)
                 if distance < best_distance:
                     best, best_distance = self.refs[j], distance
-        return self.short(best.module) if best else None
+        return (self.short(best.module) if best else None), best_distance
+
+    def nearest(self, address: int, window: int = 0x800) -> str | None:
+        """Module owning *address*, from whichever evidence sits closest.
+
+        Two independent sources: literal-pool words pointing at a ``__FILE__``
+        string, and the ``ADR`` operands of the assert call sites. The pools
+        miss most modules outright, so consulting only them silently attributes
+        their code to an unrelated neighbour — which is exactly how the
+        low-power dialog came to be reported as ``skipPairingConfirm``.
+        """
+        pool_module, pool_distance = self._nearest_ref(address, window)
+        assert_module = self.asserts.nearest(address, window)
+        if assert_module is None:
+            return pool_module
+        if pool_module is None:
+            return assert_module
+        i = bisect.bisect_right(self.asserts._addrs, address)
+        assert_distance = min(
+            (abs(self.asserts.sites[j].address - address)
+             for j in (i - 1, i) if 0 <= j < len(self.asserts.sites)),
+            default=window + 1,
+        )
+        return assert_module if assert_distance <= pool_distance else pool_module
 
     def describe(self, address: int) -> str:
         module = self.nearest(address)

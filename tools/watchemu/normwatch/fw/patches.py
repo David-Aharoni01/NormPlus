@@ -15,17 +15,19 @@ from __future__ import annotations
 #:     0x000842A4  bic r1, r1, #0x40      ; gesture_ctx.flags &= ~IN_PROGRESS
 #:     0x000842A8  strb r1, [r0, #2]      ; r0 = 0x10001BF8
 #:
-#: The watch face rebuilds one of its elements on every UI cycle, so that cancel
-#: fires ~16 times a second. The gesture recogniser at 0x00084B78 only measures
-#: the travel since the last cancel, which is the few pixels the finger moves
-#: between two consecutive LVGL indev reads -- never the 30 px it wants at
-#: 0x00084E38 -- so a swipe is always discarded at the release.
+#: That cancel fires ~16 times a second. The gesture recogniser at 0x00084B78
+#: only measures the travel since the last cancel, which is the few pixels the
+#: finger moves between two consecutive LVGL indev reads -- never the 30 px it
+#: wants at 0x00084E38 -- so a swipe is always discarded at the release.
 #:
-#: Whether the watch face really rebuilds itself that often on the physical
-#: device is not known (see the emulator README, "Touch reaches the firmware,
-#: swipes do not reach the UI"). Suppressing the cancel is how you drive the
-#: emulated UI in the meantime: with it, a drag produces the direction event
-#: the firmware expects, the page navigates, and the next screen draws.
+#: What destroys an object that often is NOT the watch face redrawing itself.
+#: It is the notification-screen manager creating and tearing down the
+#: low-power dialog (notify id 3, ``ui_notify_lowpower_dlg.c``) once per UI
+#: cycle -- forcing the suppression gate at 0x000843DC leaves this cancel with
+#: zero callers in a whole run. See the emulator README, "The swipe killer is
+#: the low-power dialog, not the watch face". Why that dialog is raised at all
+#: is still open; suppressing the cancel is how you drive the emulated UI in
+#: the meantime, and it treats the symptom rather than the cause.
 GESTURE_CANCEL_ADDRESS = 0x000842A4
 GESTURE_CANCEL_EXPECTED = bytes.fromhex("21f04001")   # bic.w r1, r1, #0x40
 THUMB_NOP2 = b"\x00\xbf\x00\xbf"
