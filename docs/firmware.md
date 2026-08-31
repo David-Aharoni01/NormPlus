@@ -107,8 +107,83 @@ sacrificial unit.
 | **IDT / Renesas P9027LP** wireless-charging RX | `wireless_charge_p9027lp.c` |
 | Stepper motors driving the physical hands | `..\..\Device\Watch\watch_cb.c` — `targetDegree`, `curDegree`, `deltDegree`, `restore` |
 | Crown + button | `..\..\Device\Key\key_irq.c`; UI text "Rotate the crown to set …" |
-| Accelerometer | only `ew_dev_sensor.c` — the concrete chip driver has no assert strings, **chip unidentified** |
+| Accelerometer, **InvenSense family** (MPU-6xxx / ICM-206xx) at I2C **0x68** on IOM1 | `ew_dev_sensor.c` names no chip, but its register map is unmistakable — the driver writes SMPLRT_DIV 0x19, CONFIG 0x1A, GYRO/ACCEL_CONFIG 0x1B/0x1C/0x1D, FIFO_EN 0x23, INT_PIN_CFG/INT_ENABLE 0x37/0x38, USER_CTRL 0x6A, PWR_MGMT 0x6B/0x6C and reads WHO_AM_I 0x75 (observed under `tools/watchemu`) |
 | `ew_dev_ots.c` | **unidentified** (temperature sensor? object transfer?) |
+
+### The I2C bus, decoded by running the firmware
+
+Driver filenames say what the parts are; running the image under `tools/watchemu` says
+where they are and how they are spoken to. Both of these were read off the executing
+firmware, not from a datasheet.
+
+| | Touch panel | Motion sensor |
+|---|---|---|
+| Controller | IOM2 (`0x50006000`) | IOM1 (`0x50005000`) |
+| I2C address | `0x20` | `0x68` |
+| Interrupt | **GPIO 28** | not yet identified |
+
+GPIO 28 was found by pulsing each of the six interrupt-enabled pins (2, 3, 10, 24, 28, 38)
+in turn and seeing which one made the watch talk to a sensor.
+
+**WCN1F3549 touch report.** On each edge the driver reads eight bytes from register
+`0x8000` and two more from `0x8400` into one buffer, then parses:
+
+```
+buffer[4:6]  X, little endian      buffer[9]  event flags
+buffer[6:8]  Y, little endian                 bits 0-1 = contact, bit 3 = lift
+```
+
+It bounds-checks both coordinates against 360 and stores **`359 - value`**, so the panel's
+axes run opposite to the screen's. A byte written to register `0x03` acknowledges the
+interrupt. The parsed state lands at `0x10011D00`: `+0x0C` X, `+0x0E` Y, `+0x10` pressed.
+
+**IOM `CMD` bits[1:0] are `1` = write, `2` = read** — the opposite of the natural guess, and
+worth stating because getting it backwards makes every sensor read look like a write and
+nothing on the bus can ever answer. The register address is up to three bytes: the low one
+in `CMD[31:24]`, the rest in `OFFSETHI`, with only the bottom `OFFSETCNT` on the wire.
+
+### The display window is in panel coordinates, not screen coordinates
+
+The RM67162's memory is larger than the glass. This watch maps its 360x360 visible area at
+**(20, 16)**, so every window the firmware sets is `20..379` by `16..375`, and a frame is
+four 64,800-byte DMA stripes of 90 rows each. Treating those addresses as screen
+coordinates clips each row to 340 pixels and shears the picture into diagonal noise.
+
+### The resource partition, and how the firmware reads it
+
+Recovered by running the firmware under `tools/watchemu` and watching the bus; every
+address below is from the image itself.
+
+**Images are files whose names are addresses.** `snprintf(buf, 20, "0x%x", addr)` at
+`0x0006F5D4` turns a resource address into a path, `lv_img_set_src` copies it to the LVGL
+heap, and `lv_fs_open` (`0x000A4FA4`) maps the leading `0` to drive letter `F`. The `F`
+driver at `0x1005377C` parses the rest of the path back into an address and reads through
+`ew_dev_spinand.c` at `0x0003E2F8`.
+
+**The headers are LVGL 5.3's packed `lv_img_header_t`** — `cf:5, always_zero:3,
+reserved:2, w:11, h:11`. The object at `0x0C780000` is the face background: 360x360
+`TRUE_COLOR`, followed by exactly 259,200 bytes of payload, and in the shipped
+`Picture_P03B_NORM2_0.4.bin` every one of those bytes is zero — the background really is
+black. The glyphs are `TRUE_COLOR_ALPHA`, three bytes a pixel.
+
+**Commands reach the part bit-expanded.** The driver keeps the MSPI in quad mode, so it
+cannot clock a one-lane command; the packer at `0x00053788` fills the frame with `0xEE`
+and ORs each command bit into bit 0 of a nibble, MSB first. `0xEE` holds DQ1..DQ3 high and
+drives the bit on DQ0/SI, which is what a standard SPI slave samples. So `0x13` PAGE READ
+goes out as `EE EF EE FF`, and `0F C0` (GET FEATURE, status) as `EE EE FF FF FF EE EE EE`.
+Replies come back on DQ1/SO, one bit in bit 1 of each nibble; the un-packer at
+`0x000534EC` rebuilds a byte from bit 5 and bit 1 of four received bytes. `0x6B` READ FROM
+CACHE x4 is a genuine four-lane data phase, so only its command frame is expanded.
+
+**The part is two 1 Gbit dies** and the resources are on the second. `0xC2` DIE SELECT
+picks it, and row addresses after that are die-relative: page 36,608 of die 1 is
+`0x0C780000`.
+
+**Transfers go through the MSPI hardware command queue**, not the PIO FIFO. `am_hal_cmdq`
+keeps a ring of `(register, value)` pairs in SRAM; `CQADDR` reads back the controller's
+own fetch pointer (the sync helper at `0x000B85BC` copies it into `pRead`), an entry that
+writes `CQADDR` is a jump back to the base of the ring, and `CQCURIDX`/`CQENDIDX` are
+eight-bit indices.
 
 ### Memory / flash map
 

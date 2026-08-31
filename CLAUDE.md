@@ -74,6 +74,10 @@ tools/
   emulator/         ← Pixel 8 Android emulator + Bumble HCI bridge for on-device testing
                        (the primary way to run/test :app — see "Testing on the emulator")
   firmware/         ← query_ota.py (OTA-server queries), image_tool.py (verify/re-seal images)
+  watchemu/         ← emulator for the WATCH itself: runs the real Apollo3 firmware image on
+                       the PC under Unicorn. FreeRTOS boots and schedules, LVGL draws to a
+                       modelled RM67162 panel, and `boot --live` shows that screen in a window
+                       with the mouse driving the touch panel. See its README.md
 docs/
   firmware.md       ← full analysis of the watch's own firmware — READ BEFORE ANY OTA WORK
 ```
