@@ -1,0 +1,1101 @@
+"""The chips wired to the MSPI bus: SPI NAND, PSRAM and the AMOLED display.
+
+The Apollo3 drives three parts over one shared bus, selected by GPIO chip selects
+(active low). Which pin belongs to which part was read off the running firmware
+rather than assumed — each device's traffic is unmistakable once the bus is
+decoded:
+
+===========  ===  ================================================================
+Device       Pin  Opening traffic
+===========  ===  ================================================================
+PSRAM        12   ``F5``, ``66`` (reset enable), ``99`` (reset), ``9F`` (read id)
+Display      19   ``02 00 FE 00 01``, ``02 00 36 00 C0``, ``02 00 3A 00 75`` …
+SPI NAND      7   ``FF`` (reset), then ``0F C0`` (get feature: status)
+===========  ===  ================================================================
+
+The board asserts several of these lines together, so selection is priority
+ordered (most specific first) in :func:`attach_mspi_devices`.
+
+**Transaction shape.** The MSPI model issues a command transfer (bytes out) and
+then, separately, a data transfer (bytes in). So a device here treats a call with
+outbound bytes as "a new command starts" and a subsequent read-only call as
+"continue returning this command's data".
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from .peripherals import I2cDevice, SpiDevice
+
+# ── SPI NAND ─────────────────────────────────────────────────────────────────
+
+CMD_RESET = 0xFF
+CMD_READ_ID = 0x9F
+CMD_GET_FEATURE = 0x0F
+CMD_SET_FEATURE = 0x1F
+CMD_WRITE_ENABLE = 0x06
+CMD_WRITE_DISABLE = 0x04
+CMD_PAGE_READ = 0x13
+CMD_READ_CACHE = 0x03
+CMD_READ_CACHE_FAST = 0x0B
+CMD_READ_CACHE_X2 = 0x3B
+CMD_READ_CACHE_X4 = 0x6B
+CMD_PROGRAM_LOAD = 0x02
+CMD_PROGRAM_LOAD_X4 = 0x32
+CMD_PROGRAM_LOAD_RANDOM = 0x84
+CMD_PROGRAM_EXECUTE = 0x10
+CMD_BLOCK_ERASE = 0xD8
+#: Die select — this part is two 1 Gbit dies in one package, and the driver
+#: switches between them, so row addresses are relative to the selected die.
+CMD_DIE_SELECT = 0xC2
+
+#: Feature register addresses.
+FEATURE_BLOCK_LOCK = 0xA0
+FEATURE_CONFIG = 0xB0
+FEATURE_STATUS = 0xC0
+FEATURE_DIE_SELECT = 0xD0
+
+#: Status register bits. OIP is the one that matters most: the driver polls
+#: ``GET FEATURE 0xC0`` in a loop and only proceeds once it reads back clear.
+STATUS_OIP = 0x01  # operation in progress
+STATUS_WEL = 0x02  # write enable latch
+STATUS_E_FAIL = 0x04
+STATUS_P_FAIL = 0x08
+
+
+#: Fill byte of a bit-expanded command frame: nibble 0b1110 holds DQ1..DQ3
+#: high and drives DQ0 low.
+EXPANDED_FILL = 0xEE
+
+
+def is_expanded_frame(tx: bytes) -> bool:
+    """True if *tx* is a command bit-expanded for a quad-configured bus.
+
+    The storage driver keeps the MSPI in quad mode, so it cannot clock a plain
+    one-lane command; it expands each command bit into a nibble instead. The
+    packer is at 0x00053788 in the firmware: fill the frame with 0xEE, then OR
+    the bit into bit 0 of each nibble, most significant bit first. 0xEE holds
+    DQ1..DQ3 high and puts the bit on DQ0/SI -- exactly what a standard SPI
+    slave samples -- so the part still sees an ordinary command.
+
+    Every byte of such a frame is therefore one of 0xEE/0xEF/0xFE/0xFF and the
+    frame is a whole number of commands long. No NAND opcode is 0xEE or 0xFE, so
+    this cannot be confused with a raw command.
+    """
+    return bool(tx) and len(tx) % 4 == 0 and all(b & EXPANDED_FILL == EXPANDED_FILL for b in tx)
+
+
+def unexpand_command(tx: bytes) -> bytes:
+    """Recover the real command bytes from a bit-expanded frame."""
+    out = bytearray()
+    for i in range(0, len(tx), 4):
+        value = 0
+        for byte in tx[i : i + 4]:
+            value = (value << 2) | (((byte >> 4) & 1) << 1) | (byte & 1)
+        out.append(value)
+    return bytes(out)
+
+
+def expand_reply(data: bytes) -> bytes:
+    """Put *data* on the wire the way a one-lane reply reaches the controller.
+
+    A standard SPI slave answers on DQ1/SO, so each output bit lands in bit 1 of
+    its nibble. The firmware's own un-packer at 0x000534EC confirms the layout:
+    it rebuilds a byte from bit 5 and bit 1 of four consecutive received bytes,
+    most significant bit first.
+    """
+    out = bytearray()
+    for byte in data:
+        for shift in (6, 4, 2, 0):
+            pair = (byte >> shift) & 3
+            out.append(((pair >> 1) << 5) | ((pair & 1) << 1))
+    return bytes(out)
+
+
+class SpiNand(SpiDevice):
+    """A SPI NAND flash holding the watch's resources and OTA staging area.
+
+    Geometry defaults to a 2 Gbit part with 2048-byte pages plus 64 spare bytes,
+    64 pages per block — which covers the addresses the firmware and the OTA
+    protocol use (resources at ``0x0C780000``, OTA staging at ``0x0FC00000``).
+
+    Storage is sparse: only pages that are written (or preloaded) are held, and
+    everything else reads back as erased (``0xFF``), exactly like real flash.
+    """
+
+    name = "SPI NAND"
+
+    #: Manufacturer / device ID returned by READ ID.
+    #:
+    #: Not a guess: the firmware carries a table of the three parts it supports at
+    #: 0x000CDF88, and the driver rejects anything else. The entries are
+    #: ``EF AA 21`` (1 Gbit), ``EF AB 21`` (2 Gbit) and ``E5 72 E5``. This is the
+    #: 2 Gbit one, which is the only size that fits the addresses the firmware
+    #: actually uses — OTA staging at 0x0FC00000 is 252 MB in.
+    DEFAULT_ID = bytes([0xEF, 0xAB, 0x21])
+
+    def __init__(
+        self,
+        *,
+        page_size: int = 2048,
+        spare_size: int = 64,
+        pages_per_block: int = 64,
+        blocks: int = 2048,  # 2048 x 64 x 2048 = 256 MB, matching the table entry
+        device_id: bytes = DEFAULT_ID,
+        dies: int = 2,
+        log=print,
+    ) -> None:
+        self.page_size = page_size
+        self.spare_size = spare_size
+        self.pages_per_block = pages_per_block
+        self.blocks = blocks
+        self.device_id = device_id
+        self.log = log
+
+        self.pages: dict[int, bytearray] = {}
+        self.features = {
+            FEATURE_BLOCK_LOCK: 0x00,  # all blocks unlocked
+            FEATURE_CONFIG: 0x10,  # ECC enabled
+            FEATURE_STATUS: 0x00,  # ready, no errors
+            FEATURE_DIE_SELECT: 0x00,
+        }
+        self.cache = bytearray(b"\xff" * (page_size + spare_size))
+        self.write_enabled = False
+        self.dies = dies
+        self.die = 0
+        self.response = bytearray()
+        self.command_count = 0
+        self.pages_read = 0
+        self.pages_written = 0
+        self.unknown_commands: dict[int, int] = {}
+        # Partially received command, for opcodes whose arguments arrive in a
+        # later transfer (see _feed).
+        self._opcode: Optional[int] = None
+        self._args = bytearray()
+        #: Set while the current command arrived bit-expanded, which also means
+        #: the controller is clocking four lanes at a part answering on one.
+        self.expanded = False
+        #: Opcode of the last command executed, used to tell a one-lane reply
+        #: (GET FEATURE, READ ID) from a genuine quad data phase (0x6B).
+        self._last_opcode: Optional[int] = None
+        self.expanded_frames = 0
+
+    # ── geometry helpers ─────────────────────────────────────────────────────
+
+    @property
+    def total_pages(self) -> int:
+        return self.blocks * self.pages_per_block
+
+    @property
+    def capacity(self) -> int:
+        return self.total_pages * self.page_size
+
+    @property
+    def pages_per_die(self) -> int:
+        return self.total_pages // self.dies
+
+    def _row_to_page(self, row: int) -> int:
+        """Absolute page number for a die-relative row address."""
+        return (self.die * self.pages_per_die + row) % self.total_pages
+
+    def _page(self, number: int) -> bytearray:
+        page = self.pages.get(number)
+        if page is None:
+            page = bytearray(b"\xff" * (self.page_size + self.spare_size))
+            self.pages[number] = page
+        return page
+
+    # ── loading real content ─────────────────────────────────────────────────
+
+    def load(self, data: bytes, byte_address: int) -> None:
+        """Place *data* at a byte offset in the data area (spare bytes untouched).
+
+        This is how the watch's genuine resource blob gets mounted: the addresses
+        come from the OTA protocol's own header, so the emulated part is laid out
+        the way the real one is.
+        """
+        if byte_address % self.page_size:
+            raise ValueError(f"0x{byte_address:08X} is not page aligned")
+        first = byte_address // self.page_size
+        for i in range(0, len(data), self.page_size):
+            chunk = data[i : i + self.page_size]
+            page = self._page(first + i // self.page_size)
+            page[: len(chunk)] = chunk
+        self.log(
+            f"  [nand] loaded {len(data)} bytes at 0x{byte_address:08X} "
+            f"(pages {first}..{first + (len(data) - 1) // self.page_size})"
+        )
+
+    # ── the wire protocol ────────────────────────────────────────────────────
+
+    #: Bytes of argument each command takes after the opcode. Commands not listed
+    #: take a variable-length payload and are executed with whatever has arrived.
+    ARG_LENGTHS = {
+        CMD_RESET: 0,
+        CMD_READ_ID: 0,
+        CMD_WRITE_ENABLE: 0,
+        CMD_WRITE_DISABLE: 0,
+        CMD_GET_FEATURE: 1,
+        CMD_SET_FEATURE: 2,
+        CMD_DIE_SELECT: 1,
+        CMD_PAGE_READ: 3,
+        CMD_READ_CACHE: 3,
+        CMD_READ_CACHE_FAST: 3,
+        CMD_READ_CACHE_X2: 3,
+        CMD_READ_CACHE_X4: 3,
+        CMD_PROGRAM_EXECUTE: 3,
+        CMD_BLOCK_ERASE: 3,
+    }
+
+    #: Opcodes whose data phase really is four-lane, so the part drives all
+    #: of DQ0..DQ3 and the reply needs no expansion.
+    QUAD_DATA_COMMANDS = frozenset({CMD_READ_CACHE_X4, CMD_PROGRAM_LOAD_X4})
+
+    def exchange(self, tx: bytes, rx_len: int) -> bytes:
+        if tx:
+            if is_expanded_frame(tx):
+                self.expanded = True
+                self.expanded_frames += 1
+                self._feed(unexpand_command(tx))
+            else:
+                self.expanded = False
+                self._feed(tx)
+        if not rx_len:
+            return b""
+        if self.expanded and self._last_opcode not in self.QUAD_DATA_COMMANDS:
+            # A one-lane reply on a four-lane clock: four bytes arrive per
+            # real byte. Round up so a request that is not a multiple of
+            # four still gets the leading bytes it expects.
+            need = (rx_len + 3) // 4
+            raw = bytes(self.response[:need]).ljust(need, b"\xff")
+            del self.response[:need]
+            return expand_reply(raw)[:rx_len].ljust(rx_len, b"\x00")
+        out = bytes(self.response[:rx_len]).ljust(rx_len, b"\xff")
+        del self.response[:rx_len]
+        return out
+
+    def _feed(self, tx: bytes) -> None:
+        """Accept command bytes, which may be split across several transfers.
+
+        The driver routinely sends the opcode in one transfer and its argument in
+        the next — ``1F A0`` followed by ``00`` is a SET FEATURE with the value in
+        a second transfer. Treating every transfer as a fresh command turns those
+        continuation bytes into bogus opcodes, so arguments accumulate here until
+        the command has as many as it needs.
+        """
+        if self._opcode is None:
+            self.command_count += 1
+            self._opcode = tx[0]
+            self._args = bytearray(tx[1:])
+            self.response.clear()
+        else:
+            self._args.extend(tx)
+
+        needed = self.ARG_LENGTHS.get(self._opcode)
+        if needed is not None and len(self._args) < needed:
+            return  # still waiting for the rest
+
+        opcode, args = self._opcode, bytes(self._args)
+        self._opcode, self._args = None, bytearray()
+        self._command(opcode, args)
+
+    def _command(self, opcode: int, args: bytes) -> None:
+        self._last_opcode = opcode
+
+        if opcode == CMD_RESET:
+            self.features[FEATURE_STATUS] = 0x00
+            self.write_enabled = False
+            return
+
+        if opcode == CMD_READ_ID:
+            # The driver issues a bare 0x9F, reads four bytes, discards the first
+            # as a dummy cycle and packs the remaining three little-endian:
+            # ``b1 | b2<<8 | b3<<16``. So the reply is [dummy][mfg][dev_h][dev_l],
+            # which for this part gives 0x0021ABEF — the second entry of the
+            # firmware's own part table at 0x000CDF88.
+            self.response.extend(b"\x00" + self.device_id)
+            return
+
+        if opcode == CMD_GET_FEATURE:
+            address = args[0] if args else FEATURE_STATUS
+            self.response.append(self.features.get(address, 0x00))
+            return
+
+        if opcode == CMD_SET_FEATURE:
+            if len(args) >= 2:
+                self.features[args[0]] = args[1]
+            return
+
+        if opcode == CMD_WRITE_ENABLE:
+            self.write_enabled = True
+            self.features[FEATURE_STATUS] |= STATUS_WEL
+            return
+
+        if opcode == CMD_WRITE_DISABLE:
+            self.write_enabled = False
+            self.features[FEATURE_STATUS] &= ~STATUS_WEL
+            return
+
+        if opcode == CMD_PAGE_READ:
+            # 24-bit row (page) address, big endian, and relative to the
+            # selected die: this part is two 1 Gbit dies and the resources
+            # live on the second one (0x0C780000). Decoding the row without
+            # _row_to_page reads the wrong half of the part, which comes
+            # back erased, so every image decode fails.
+            row = int.from_bytes(args[:3].rjust(3, b"\x00"), "big")
+            self.cache = bytearray(self._page(self._row_to_page(row)))
+            self.pages_read += 1
+            # The operation completes instantly here, so status stays "ready" and
+            # the driver's OIP poll exits on its first read.
+            self.features[FEATURE_STATUS] &= ~STATUS_OIP
+            return
+
+        if opcode in (CMD_READ_CACHE, CMD_READ_CACHE_FAST, CMD_READ_CACHE_X2, CMD_READ_CACHE_X4):
+            # 16-bit column address then at least one dummy byte.
+            column = int.from_bytes(args[:2].rjust(2, b"\x00"), "big") & 0x0FFF
+            self.response.extend(self.cache[column:])
+            return
+
+        if opcode in (CMD_PROGRAM_LOAD, CMD_PROGRAM_LOAD_X4, CMD_PROGRAM_LOAD_RANDOM):
+            column = int.from_bytes(args[:2].rjust(2, b"\x00"), "big") & 0x0FFF
+            payload = args[2:]
+            if opcode != CMD_PROGRAM_LOAD_RANDOM:
+                self.cache = bytearray(b"\xff" * (self.page_size + self.spare_size))
+            self.cache[column : column + len(payload)] = payload
+            return
+
+        if opcode == CMD_PROGRAM_EXECUTE:
+            row = self._row_to_page(int.from_bytes(args[:3].rjust(3, b"\x00"), "big"))
+            if self.write_enabled:
+                self._page(row)[:] = self.cache
+                self.pages_written += 1
+            self.features[FEATURE_STATUS] &= ~(STATUS_OIP | STATUS_WEL)
+            self.write_enabled = False
+            return
+
+        if opcode == CMD_DIE_SELECT:
+            self.die = (args[0] if args else 0) % max(1, self.dies)
+            self.features[FEATURE_DIE_SELECT] = self.die
+            return
+
+        if opcode == CMD_BLOCK_ERASE:
+            row = self._row_to_page(int.from_bytes(args[:3].rjust(3, b"\x00"), "big"))
+            if self.write_enabled:
+                first = (row // self.pages_per_block) * self.pages_per_block
+                for page in range(first, first + self.pages_per_block):
+                    self.pages.pop(page, None)
+            self.features[FEATURE_STATUS] &= ~(STATUS_OIP | STATUS_WEL)
+            self.write_enabled = False
+            return
+
+        self.unknown_commands[opcode] = self.unknown_commands.get(opcode, 0) + 1
+
+    def summary(self) -> str:
+        out = [
+            f"  SPI NAND: {self.command_count} commands, "
+            f"{self.pages_read} page reads, {self.pages_written} page writes, "
+            f"{len(self.pages)} pages resident, die {self.die}, "
+            f"{self.expanded_frames} bit-expanded frames"
+        ]
+        if self.unknown_commands:
+            unknown = ", ".join(f"0x{op:02X}x{n}" for op, n in self.unknown_commands.items())
+            out.append(f"    unhandled commands: {unknown}")
+        return "\n".join(out)
+
+
+# ── PSRAM ────────────────────────────────────────────────────────────────────
+
+
+class Psram(SpiDevice):
+    """External PSRAM — LVGL's frame buffer lives here.
+
+    Kept deliberately simple: it is a big writable array with a handful of
+    identification commands, which is all the driver needs from it.
+    """
+
+    name = "PSRAM"
+
+    #: APS/IPUS-style identification. The driver reads 8 bytes after ``9F``.
+    DEFAULT_ID = bytes([0x0D, 0x5D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    CMD_READ = 0x03
+    CMD_FAST_READ = 0x0B
+    CMD_WRITE = 0x02
+    CMD_QUAD_READ = 0xEB
+    CMD_QUAD_WRITE = 0x38
+    CMD_RESET_ENABLE = 0x66
+    CMD_RESET = 0x99
+    CMD_READ_ID = 0x9F
+    CMD_ENTER_QUAD = 0x35
+    CMD_EXIT_QUAD = 0xF5
+    CMD_MODE_REGISTER = 0xC0
+
+    def __init__(self, size: int = 8 << 20, device_id: bytes = DEFAULT_ID, log=print) -> None:
+        self.size = size
+        self.device_id = device_id
+        self.log = log
+        self.data = bytearray(size)
+        self.response = bytearray()
+        self.command_count = 0
+        self.bytes_written = 0
+        self.unknown_commands: dict[int, int] = {}
+
+    def exchange(self, tx: bytes, rx_len: int) -> bytes:
+        if tx:
+            self._command(tx)
+        if rx_len:
+            out = bytes(self.response[:rx_len]).ljust(rx_len, b"\x00")
+            del self.response[:rx_len]
+            return out
+        return b""
+
+    def _command(self, tx: bytes) -> None:
+        self.command_count += 1
+        opcode = tx[0]
+        args = tx[1:]
+
+        if opcode in (
+            self.CMD_RESET_ENABLE,
+            self.CMD_RESET,
+            self.CMD_ENTER_QUAD,
+            self.CMD_EXIT_QUAD,
+            self.CMD_MODE_REGISTER,
+        ):
+            # Mode changes have no observable effect here: the MSPI model already
+            # hands over whole byte strings rather than modelling lane widths.
+            self.response.clear()
+            return
+        if opcode == self.CMD_READ_ID:
+            self.response.clear()
+            self.response.extend(self.device_id)
+            return
+        if opcode in (self.CMD_READ, self.CMD_FAST_READ, self.CMD_QUAD_READ):
+            address = int.from_bytes(args[:3].rjust(3, b"\x00"), "big") % self.size
+            self.response.clear()
+            self.response.extend(self.data[address : address + 4096])
+            return
+        if opcode in (self.CMD_WRITE, self.CMD_QUAD_WRITE):
+            address = int.from_bytes(args[:3].rjust(3, b"\x00"), "big") % self.size
+            payload = args[3:]
+            self.data[address : address + len(payload)] = payload
+            self.bytes_written += len(payload)
+            return
+        self.unknown_commands[opcode] = self.unknown_commands.get(opcode, 0) + 1
+
+    def summary(self) -> str:
+        out = [f"  PSRAM: {self.command_count} commands, {self.bytes_written} bytes written"]
+        if self.unknown_commands:
+            unknown = ", ".join(f"0x{op:02X}x{n}" for op, n in self.unknown_commands.items())
+            out.append(f"    unhandled commands: {unknown}")
+        return "\n".join(out)
+
+
+# ── display ──────────────────────────────────────────────────────────────────
+
+
+class Rm67162Display(SpiDevice):
+    """The AMOLED panel, with a real framebuffer.
+
+    The wire protocol was read off the running firmware. Commands use the Raydium
+    QSPI framing ``02 00 <cmd> 00 <params…>``; pixel writes are announced with
+    ``32 00 2C 00`` (memory write) or ``32 00 3C 00`` (continue) and the payload
+    then arrives as bulk MSPI DMA::
+
+        02 00 2A 00 00 14 01 7B     column address set: x 20..379
+        02 00 2B 00 00 10 01 77     page address set:   y 16..375
+        32 00 2C 00                 memory write
+        <64800 bytes>               360 x 90 pixels, RGB565
+        32 00 3C 00                 memory write continue
+        <64800 bytes>               ... four stripes make one 360x360 frame
+
+    ``02 00 3A 00 75`` earlier in the stream selects 16 bits per pixel, which is
+    what fixes the format as RGB565.
+    """
+
+    name = "RM67162"
+
+    WRITE_COMMAND = 0x02
+    WRITE_PIXELS = 0x32
+
+    CMD_COLUMN_ADDRESS = 0x2A
+    CMD_PAGE_ADDRESS = 0x2B
+    CMD_MEMORY_WRITE = 0x2C
+    CMD_MEMORY_WRITE_CONTINUE = 0x3C
+
+    #: Transfers shorter than this are control traffic (DMA descriptors and the
+    #: like) rather than pixels, and must not be painted into the framebuffer.
+    MIN_PIXEL_TRANSFER = 256
+
+    #: The controller's memory is bigger than the glass, and this watch maps its
+    #: 360x360 visible area at (20, 16) inside it -- every window the firmware
+    #: sets is 20..379 by 16..375. So the addresses on the wire are *panel*
+    #: coordinates and have to be translated before they index the framebuffer.
+    #: Treating them as framebuffer coordinates clips each row to 340 pixels
+    #: instead of 360, and the picture shears a little further on every row
+    #: until the screen is diagonal noise. Re-derived at runtime from any
+    #: full-width / full-height window (see _command).
+    DEFAULT_OFFSET = (20, 16)
+
+    #: The panel's tearing-effect line, and the shape of the pulse on it.
+    #:
+    #: The RM67162 raises TE once per internal refresh, and the firmware
+    #: busy-waits for that edge before it starts a frame: the loop at
+    #: 0x00024006 in display_amoled_rm67162.c reads the pin through
+    #: am_hal_gpio_state_read and gives up after 100,000 tries. With nothing
+    #: driving the pin every frame ran that timeout to the end -- ~4M
+    #: instructions, more than half of everything the watch executed, and enough
+    #: to stretch one UI cycle to 153ms of watch time.
+    TE_PIN = 18
+    TE_PERIOD_CYCLES = 800_000   # 60 Hz at 48 MHz
+    TE_HIGH_CYCLES = 48_000      # ~1 ms of vertical blanking
+
+    def __init__(self, width: int = 360, height: int = 360, log=print) -> None:
+        self.width = width
+        self.height = height
+        self.log = log
+        self.commands: list[tuple[int, bytes]] = []
+        self.pixel_bytes = 0
+        self.frames = 0
+        self.sleeping = True
+        self.display_on = False
+
+        #: RGB565, two bytes per pixel, row-major.
+        self.framebuffer = bytearray(width * height * 2)
+        #: Window in *panel* coordinates, exactly as the firmware set it.
+        self.window = (0, 0, width - 1, height - 1)
+        self.offset_x, self.offset_y = self.DEFAULT_OFFSET
+        self._x = 0
+        self._y = 0
+        self._writing = False
+        #: Bumped whenever pixels land, so a viewer can repaint only on change.
+        self.revision = 0
+        #: Bytes painted since the last memory-write restart. One full frame is
+        #: width * height * 2, which is the check that the DMA path is sane.
+        self.frame_bytes = 0
+        self.last_frame_bytes = 0
+        #: Tearing-effect line state, set up by :meth:`attach_te`.
+        self._te_machine = None
+        self._te_pin = self.TE_PIN
+        self._te_phase = 0
+        self._te_level = -1
+        self.te_pulses = 0
+
+    # ── the tearing-effect line ──────────────────────────────────────────────
+
+    def attach_te(self, machine, pin: int = TE_PIN) -> None:
+        """Drive the panel's TE pin from the emulated clock."""
+        self._te_machine = machine
+        self._te_pin = pin
+        machine.add_timer(self)
+
+    def advance(self, cycles: int) -> None:
+        if self._te_machine is None:
+            return
+        self._te_phase = (self._te_phase + cycles) % self.TE_PERIOD_CYCLES
+        level = 1 if self._te_phase < self.TE_HIGH_CYCLES else 0
+        if level != self._te_level:
+            self._te_level = level
+            self.te_pulses += level
+            self._te_machine.gpio.set_input(self._te_pin, level)
+
+    # ── wire protocol ────────────────────────────────────────────────────────
+
+    def exchange(self, tx: bytes, rx_len: int) -> bytes:
+        if not tx:
+            return b"\x00" * rx_len
+
+        # Bulk pixel payloads are tested for first, and by length. They arrive as
+        # raw DMA with no header, so a stripe that happens to begin with 0x02 or
+        # 0x32 would otherwise be mistaken for a panel command -- which rewrites
+        # the window from image data and loses the rest of the frame.
+        if self._writing and len(tx) >= self.MIN_PIXEL_TRANSFER:
+            self._paint(tx)
+        elif tx[0] == self.WRITE_COMMAND and len(tx) >= 3:
+            self._command(tx[2], tx[4:])
+        elif tx[0] == self.WRITE_PIXELS and len(tx) >= 3:
+            command = tx[2]
+            if command == self.CMD_MEMORY_WRITE:
+                self._begin_write(restart=True)
+            elif command == self.CMD_MEMORY_WRITE_CONTINUE:
+                self._begin_write(restart=False)
+            else:
+                self._command(command, tx[4:])
+        return b"\x00" * rx_len
+
+    def _command(self, command: int, params: bytes) -> None:
+        self.commands.append((command, bytes(params)))
+        if command == 0x11:
+            self.sleeping = False
+        elif command == 0x10:
+            self.sleeping = True
+        elif command == 0x29:
+            self.display_on = True
+        elif command == 0x28:
+            self.display_on = False
+        elif command == self.CMD_COLUMN_ADDRESS and len(params) >= 4:
+            x0 = (params[0] << 8) | params[1]
+            x1 = (params[2] << 8) | params[3]
+            self.window = (x0, self.window[1], x1, self.window[3])
+            # A window exactly as wide as the glass must start at the left edge
+            # of it, so its origin is the panel offset. Derived rather than
+            # hard-coded, so a different panel or rotation still lands square.
+            if x1 - x0 + 1 == self.width:
+                self.offset_x = x0
+        elif command == self.CMD_PAGE_ADDRESS and len(params) >= 4:
+            y0 = (params[0] << 8) | params[1]
+            y1 = (params[2] << 8) | params[3]
+            self.window = (self.window[0], y0, self.window[2], y1)
+            if y1 - y0 + 1 == self.height:
+                self.offset_y = y0
+
+    def _begin_write(self, *, restart: bool) -> None:
+        self._writing = True
+        if restart:
+            self._x = self.window[0] - self.offset_x
+            self._y = self.window[1] - self.offset_y
+            if self.frame_bytes:
+                self.last_frame_bytes = self.frame_bytes
+            self.frame_bytes = 0
+            self.frames += 1
+
+    def _paint(self, data: bytes) -> None:
+        """Write RGB565 pixels into the active window, row-major with wrap.
+
+        Coordinates are translated from panel space to framebuffer space and
+        clipped, but the *stream* still advances by the window's full logical
+        width, so clipping can never shift the pixels that follow it.
+
+        Copied a row-segment at a time rather than pixel by pixel: a frame is
+        260 KB, so a per-pixel Python loop costs hundreds of thousands of
+        iterations per frame and dominates the whole emulator's runtime.
+        """
+        self.pixel_bytes += len(data)
+        self.frame_bytes += len(data)
+
+        x0 = self.window[0] - self.offset_x
+        x1 = self.window[2] - self.offset_x
+        y1 = self.window[3] - self.offset_y
+        # A degenerate window (nothing ever set it, or the parse went wrong)
+        # would otherwise walk the whole height one row at a time per transfer.
+        if x1 < x0:
+            return
+        left, right = max(x0, 0), min(x1, self.width - 1)
+        bottom = min(y1, self.height - 1)
+
+        framebuffer = self.framebuffer
+        pixels = len(data) // 2
+        position = 0
+        while position < pixels and self._y <= bottom:
+            if self._x > x1:
+                self._x = x0
+                self._y += 1
+                continue
+            take = min(x1 - self._x + 1, pixels - position)
+            start = max(self._x, left)
+            stop = min(self._x + take - 1, right)
+            if self._y >= 0 and stop >= start:
+                source = (position + start - self._x) * 2
+                destination = (self._y * self.width + start) * 2
+                framebuffer[destination : destination + (stop - start + 1) * 2] = data[
+                    source : source + (stop - start + 1) * 2
+                ]
+            position += take
+            self._x += take
+        self.revision += 1
+
+    # ── output ───────────────────────────────────────────────────────────────
+
+    def to_rgb(self) -> bytes:
+        """Expand the RGB565 framebuffer to packed 8-bit RGB."""
+        out = bytearray(self.width * self.height * 3)
+        fb = self.framebuffer
+        for i in range(self.width * self.height):
+            value = (fb[i * 2] << 8) | fb[i * 2 + 1]
+            r = (value >> 11) & 0x1F
+            g = (value >> 5) & 0x3F
+            b = value & 0x1F
+            out[i * 3] = (r << 3) | (r >> 2)
+            out[i * 3 + 1] = (g << 2) | (g >> 4)
+            out[i * 3 + 2] = (b << 3) | (b >> 2)
+        return bytes(out)
+
+    def save_png(self, path) -> None:
+        """Write the framebuffer as a PNG (stdlib only — no image library)."""
+        import struct
+        import zlib
+
+        rgb = self.to_rgb()
+        stride = self.width * 3
+        raw = bytearray()
+        for y in range(self.height):
+            raw.append(0)  # filter type 0
+            raw += rgb[y * stride : (y + 1) * stride]
+
+        def chunk(tag: bytes, payload: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(payload))
+                + tag
+                + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+            )
+
+        png = b"\x89PNG\r\n\x1a\n"
+        png += chunk(b"IHDR", struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0))
+        png += chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+        png += chunk(b"IEND", b"")
+        Path(path).write_bytes(png)
+        self.log(f"  [display] wrote {self.width}x{self.height} screenshot to {path}")
+
+    def is_blank(self) -> bool:
+        return not any(self.framebuffer)
+
+    def summary(self) -> str:
+        state = "on" if self.display_on else "off"
+        awake = "awake" if not self.sleeping else "asleep"
+        recent = ", ".join(f"0x{c:02X}" for c, _ in self.commands[-8:])
+        expected = self.width * self.height * 2
+        frame = self.last_frame_bytes or self.frame_bytes
+        health = "" if frame in (0, expected) else f" (expected {expected}!)"
+        return (
+            f"  display: {self.width}x{self.height}, {len(self.commands)} commands, "
+            f"panel {awake}/{state}, {self.frames} frames, {self.pixel_bytes} pixel bytes"
+            f"{' (framebuffer still blank)' if self.is_blank() else ''}"
+            f"\n    panel origin ({self.offset_x}, {self.offset_y}); "
+            f"last full frame {frame} bytes{health}"
+            f"\n    last commands: {recent}"
+        )
+
+
+# ── wiring ───────────────────────────────────────────────────────────────────
+
+#: Chip-select GPIO pins, determined by decoding the bus traffic (see module docs).
+CS_PSRAM = 12
+CS_DISPLAY = 19
+CS_NAND = 7
+
+#: Where the watch keeps its resource partition and OTA staging area in the NAND
+#: (``docs/firmware.md`` §4, and the destination addresses in the image headers).
+RESOURCE_ADDRESS = 0x0C780000
+OTA_STAGING_ADDRESS = 0x0FC00000
+
+
+def attach_mspi_devices(
+    machine,
+    *,
+    resource_blob: Optional[Path] = None,
+    log=print,
+) -> dict[str, SpiDevice]:
+    """Hang the SPI NAND, PSRAM and display off the MSPI and return them.
+
+    If *resource_blob* is given it is loaded into the NAND at the resource
+    partition address, so the firmware reads its genuine artwork and fonts.
+    """
+    nand = SpiNand(log=log)
+    psram = Psram(log=log)
+    display = Rm67162Display(log=log)
+
+    if resource_blob is not None and Path(resource_blob).exists():
+        data = Path(resource_blob).read_bytes()
+        # The blob carries the same 4-byte destination address prefix the OTA
+        # path strips off; the content proper starts after it.
+        address = int.from_bytes(data[:4], "little")
+        if address == RESOURCE_ADDRESS:
+            nand.load(data[4:], RESOURCE_ADDRESS)
+        else:
+            log(f"  [nand] {Path(resource_blob).name} targets 0x{address:08X}, not the "
+                f"resource partition — loading it there anyway")
+            nand.load(data[4:], address)
+
+    mspi = machine.bus.by_base[0x50014000]
+    # Order matters: the board drives several selects low at once, so the most
+    # specific line is tested first.
+    mspi.chip_selects = [(CS_PSRAM, psram), (CS_DISPLAY, display), (CS_NAND, nand)]
+    mspi.device = nand
+    display.attach_te(machine)
+    return {"nand": nand, "psram": psram, "display": display}
+
+
+# -- the touch panel ---------------------------------------------------------
+
+#: The touch controller sits on IOM2 at I2C address 0x20 and signals through
+#: GPIO 28. All three were read off the running firmware: pulsing each of the
+#: six interrupt-enabled pins in turn, only 28 made the watch talk to a sensor,
+#: and the driver it went through is the one next to the ``touch_wcn1f3549.c``
+#: path string in the image.
+TOUCH_IOM_BASE = 0x50006000
+TOUCH_I2C_ADDRESS = 0x20
+TOUCH_IRQ_PIN = 28
+
+
+class TouchPanel(I2cDevice):
+    """The WCN1F3549 capacitive panel -- one finger, reported on an interrupt.
+
+    The report format comes from the driver's own parser, not from a datasheet.
+    On each edge on GPIO 28 the driver reads eight bytes from register 0x8000
+    and two more from 0x8400 into one buffer, and then reads::
+
+        buffer[4:6]  X, little endian
+        buffer[6:8]  Y, little endian
+        buffer[9]    event flags: bits 0-1 = contact, bit 3 = lift
+
+    It bounds-checks both coordinates against 360 and stores ``359 - value``.
+    That is *not* a reason to mirror here: the axis-transform stage right above
+    it (0x0003F250, configured ``{1,1,0}`` at 0x10001875) rotates the point 180
+    degrees, so the two cancel and the panel's raw coordinates reach LVGL
+    unchanged. Mirroring in the model as well sent every touch to the opposite
+    corner and reversed the direction of every swipe. Finally the driver writes
+    a byte to register 0x03, which is the interrupt acknowledge.
+    """
+
+    name = "WCN1F3549 touch"
+
+    REPORT_REGISTER = 0x8000
+    EVENT_REGISTER = 0x8400
+    ACK_REGISTER = 0x03
+
+    EVENT_CONTACT = 0x01
+    EVENT_LIFT = 0x08
+
+    def __init__(self, machine=None, *, width: int = 360, height: int = 360,
+                 irq_pin: int = TOUCH_IRQ_PIN, log=print) -> None:
+        self.machine = machine
+        self.width = width
+        self.height = height
+        self.irq_pin = irq_pin
+        self.log = log
+
+        self.x = 0
+        self.y = 0
+        self.event = 0
+        self.touching = False
+        #: Counters, for the boot report.
+        self.reports = 0
+        self.interrupts = 0
+        self.acks = 0
+
+    # -- the wire ------------------------------------------------------------
+
+    def read(self, register: int, length: int) -> bytes:
+        if register == self.REPORT_REGISTER:
+            report = bytearray(length)
+            if length >= 8:
+                report[4:6] = self.x.to_bytes(2, "little")
+                report[6:8] = self.y.to_bytes(2, "little")
+            self.reports += 1
+            return bytes(report)
+        if register == self.EVENT_REGISTER:
+            # Lands at buffer[8:10], so the flags the driver reads at [9] are
+            # the second byte.
+            return bytes((0, self.event)).ljust(length, bytes(1))[:length]
+        return bytes(length)
+
+    def write(self, register: int, data: bytes) -> None:
+        if register == self.ACK_REGISTER:
+            self.acks += 1
+
+    # -- the finger ----------------------------------------------------------
+
+    def press(self, x: int, y: int) -> None:
+        self._report(x, y, self.EVENT_CONTACT)
+
+    def move(self, x: int, y: int) -> None:
+        self._report(x, y, self.EVENT_CONTACT)
+
+    def release(self) -> None:
+        if not self.touching:
+            return
+        self._report(self.x, self.y, self.EVENT_LIFT)
+
+    def _report(self, x: int, y: int, event: int) -> None:
+        self.x = min(max(int(x), 0), self.width - 1)
+        self.y = min(max(int(y), 0), self.height - 1)
+        self.event = event
+        self.touching = event != self.EVENT_LIFT
+        if self.machine is None:
+            return
+        # The panel holds its interrupt line asserted while a finger is down.
+        self.machine.gpio.set_input(self.irq_pin, 1 if self.touching else 0)
+        self.machine.gpio.raise_interrupt(self.irq_pin)
+        self.interrupts += 1
+
+    def summary(self) -> str:
+        state = f"({self.x}, {self.y})" if self.touching else "up"
+        return (f"  touch  : {self.name} at 0x{TOUCH_I2C_ADDRESS:02X}, finger {state}, "
+                f"{self.interrupts} interrupts, {self.reports} reports read, "
+                f"{self.acks} acknowledged")
+
+
+# -- the motion sensor -------------------------------------------------------
+
+#: The accelerometer sits on IOM1 at I2C address 0x68 and is an InvenSense
+#: MPU-6500-class part. Nothing here is guessed: the firmware's bring-up at
+#: 0x000522FC reads WHO_AM_I (0x75), resets through PWR_MGMT_1 (0x6B) = 0x80,
+#: waits 100 ms and then walks a 16-entry (register, value) table at 0x000CE058:
+#:
+#:     6C=3F  19=13  1A=01  1B=00  1C=10  1D=08  23=08  37=00
+#:     38=10  39=40  60=00  61=C8  6A=04  6A=44  6B=28  6C=07
+#:
+#: which is accelerometer-only (PWR_MGMT_2 = 0x07), 50 Hz (SMPLRT_DIV = 19),
+#: +/-8 g (ACCEL_CONFIG = 0x10), streaming into the FIFO with its interrupt
+#: enabled. The read side is at 0x00052000: INT_STATUS (0x3A), then FIFO_COUNTH
+#: and FIFO_COUNTL (0x72/0x73) big-endian and clamped to 200, then a burst from
+#: FIFO_R_W (0x74) of "count & ~7" bytes, parsed as 8-byte samples whose first
+#: three big-endian int16s are X, Y and Z.
+MOTION_IOM_BASE = 0x50005000
+MOTION_I2C_ADDRESS = 0x68
+
+
+class MotionSensor(I2cDevice):
+    """The wrist's accelerometer: a FIFO that fills on the clock.
+
+    The watch never polls this part. It configures it once and then waits for a
+    line to be pulled, so a model that only answers register reads is still
+    silent -- the FIFO has to fill in real time and the interrupt has to fire.
+    """
+
+    name = "MPU-6500-class motion"
+
+    WHO_AM_I_REG = 0x75
+    SMPLRT_DIV = 0x19
+    INT_STATUS = 0x3A
+    FIFO_COUNTH = 0x72
+    FIFO_COUNTL = 0x73
+    FIFO_R_W = 0x74
+    USER_CTRL = 0x6A
+    PWR_MGMT_1 = 0x6B
+
+    #: MPU-6500's id. The bring-up reads WHO_AM_I but does not branch on it --
+    #: 0x0005221E only packs it into a version word with CONFIG and PWR_MGMT_1 --
+    #: so this identifies the part rather than gating anything.
+    WHO_AM_I = 0x70
+
+    #: 8 bytes per FIFO sample, because the reader strides by 8: "bic r2, r5, #7"
+    #: then "lsr fp, r5, #3" at 0x0005204E. X, Y, Z, then two bytes it reads past.
+    SAMPLE_BYTES = 8
+    #: The reader clamps the count to 200 bytes, so there is no point holding
+    #: much more than that; a real part's FIFO is 512.
+    FIFO_CAPACITY = 512
+    #: Raise the interrupt once this many samples are waiting. The init table
+    #: writes 0xC8 = 200 to register 0x61, the same figure as the reader's clamp,
+    #: which is 25 of these samples.
+    WATERMARK_SAMPLES = 25
+
+    #: +/-8 g at 16 bits is 4096 LSB per g (ACCEL_CONFIG = 0x10).
+    LSB_PER_G = 4096
+
+    def __init__(self, machine=None, *, irq_pin=None, log=print) -> None:
+        self.machine = machine
+        self.irq_pin = irq_pin
+        self.log = log
+        self.registers: dict[int, int] = {}
+        self.fifo = bytearray()
+        #: Acceleration in g, as the watch feels it lying still face up.
+        self.acceleration = (0.0, 0.0, 1.0)
+        self._phase = 0
+        self._asserted = False
+        self.enabled = False
+        self.samples_made = 0
+        self.fifo_bytes_read = 0
+        self.reads = 0
+        self.writes = 0
+
+    # -- the wire ------------------------------------------------------------
+
+    def read(self, register: int, length: int) -> bytes:
+        self.reads += 1
+        if register == self.FIFO_R_W:
+            take = min(length, len(self.fifo))
+            data = bytes(self.fifo[:take])
+            del self.fifo[:take]
+            self.fifo_bytes_read += take
+            self._refresh_interrupt()
+            return data.ljust(length, bytes(1))
+        if register == self.WHO_AM_I_REG:
+            return bytes([self.WHO_AM_I]) * max(1, length)
+        if register == self.FIFO_COUNTH:
+            return bytes([(len(self.fifo) >> 8) & 0xFF]) * max(1, length)
+        if register == self.FIFO_COUNTL:
+            return bytes([len(self.fifo) & 0xFF]) * max(1, length)
+        if register == self.INT_STATUS:
+            # Bit 4 is the FIFO interrupt the firmware enables (INT_ENABLE=0x10).
+            return bytes([0x10 if self._asserted else 0x00]) * max(1, length)
+        return bytes([self.registers.get(register, 0)]) * max(1, length)
+
+    def write(self, register: int, data: bytes) -> None:
+        self.writes += 1
+        value = data[0] if data else 0
+        self.registers[register] = value
+        if register == self.PWR_MGMT_1 and value & 0x80:      # DEVICE_RESET
+            self.fifo.clear()
+            self.registers.clear()
+            self.enabled = False
+            self._refresh_interrupt()
+            return
+        if register == self.USER_CTRL:
+            if value & 0x04:                                   # FIFO_RST
+                self.fifo.clear()
+            self.enabled = bool(value & 0x40)                  # FIFO_EN
+            self._refresh_interrupt()
+
+    # -- the clock -----------------------------------------------------------
+
+    @property
+    def sample_period_cycles(self) -> int:
+        divider = self.registers.get(self.SMPLRT_DIV, 19)
+        return 48_000_000 * (1 + divider) // 1000
+
+    def advance(self, cycles: int) -> None:
+        if not self.enabled:
+            return
+        self._phase += cycles
+        period = self.sample_period_cycles
+        while self._phase >= period:
+            self._phase -= period
+            self._push_sample()
+        self._refresh_interrupt()
+
+    def _push_sample(self) -> None:
+        if len(self.fifo) + self.SAMPLE_BYTES > self.FIFO_CAPACITY:
+            del self.fifo[:self.SAMPLE_BYTES]        # a real FIFO drops the oldest
+        for axis in self.acceleration:
+            raw = max(-32768, min(32767, int(axis * self.LSB_PER_G)))
+            self.fifo.extend((raw & 0xFFFF).to_bytes(2, "big"))
+        self.fifo.extend(bytes(2))                   # the pair the reader strides past
+        self.samples_made += 1
+
+    def _refresh_interrupt(self) -> None:
+        want = len(self.fifo) >= self.WATERMARK_SAMPLES * self.SAMPLE_BYTES
+        if want == self._asserted:
+            return
+        self._asserted = want
+        if self.machine is None or self.irq_pin is None:
+            return
+        self.machine.gpio.set_input(self.irq_pin, 1 if want else 0)
+        self.machine.gpio.raise_interrupt(self.irq_pin)
+
+    def summary(self) -> str:
+        state = "streaming" if self.enabled else "idle"
+        return (f"  motion : {self.name} at 0x{MOTION_I2C_ADDRESS:02X}, {state}, "
+                f"{self.samples_made} samples made, {self.fifo_bytes_read} bytes read, "
+                f"{len(self.fifo)} queued")
+
+
+def attach_motion_sensor(machine, *, irq_pin=None, log=print) -> MotionSensor:
+    """Hang the motion sensor off IOM1 and drive it from the clock."""
+    sensor = MotionSensor(machine, irq_pin=irq_pin, log=log)
+    iom = machine.bus.by_base.get(MOTION_IOM_BASE)
+    if iom is not None:
+        iom.devices[MOTION_I2C_ADDRESS] = sensor
+    machine.add_timer(sensor)
+    return sensor
+
+
+def attach_touch_panel(machine, *, log=print) -> TouchPanel:
+    """Hang the touch panel off IOM2 and return it."""
+    touch = TouchPanel(machine, log=log)
+    iom = machine.bus.by_base.get(TOUCH_IOM_BASE)
+    if iom is not None:
+        iom.devices[TOUCH_I2C_ADDRESS] = touch
+    return touch
