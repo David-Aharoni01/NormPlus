@@ -409,8 +409,9 @@ uploads a 64-byte profile at 0x10..0x4F, then settles into reading 0x02 (twelve
 times), 0x04, 0x06/0x07, 0x08 and 0x0A — the CellWise CW201x layout, with cell
 voltage and state-of-charge each big-endian across a register pair.
 
-A second device at **0x09** shares the bus, 28 transactions a boot, and is not
-modelled yet. The driver's charging bits come from there, not from the gauge.
+A second device at **0x09** shares the bus — the charger, described below. It is
+not a separate driver: `pmu_cw6303.c` owns both addresses, which is why hunting
+for a second module talking to it found nothing.
 
 Two things had to change to support any of this:
 
@@ -485,6 +486,50 @@ reach it. The remaining question is what makes the power manager raise element
 0x100B at boot, and the strongest suspect is the unmodelled device at 0x09 on
 the bit-banged bus — the charger — since the driver's charging bits come from
 there and it NAKs 28 times a boot.
+
+### The charger is the other half of the same part
+
+The device at 0x09 makes 28 transactions a boot and used to NAK every one, which
+hides everything: a NAK aborts the transfer before the register byte, so there is
+nothing to decode. Putting a device there that acknowledges makes the whole
+conversation visible. Bring-up, 175k instructions in:
+
+```
+0x01 = 0xB7   0x02 = 0x87   0x03 = 0x00   0x04 = 0xFF
+0x0A..0x0D = 0xBD           0x00 = 0x00
+```
+
+0x01 and 0x02 are packed at `0x0004E9C8` out of two lookup tables — 32 halfwords
+at `0x000CE008` and 8 at `0x000CE048` — as `mode << 6 | flag << 5 | index` and
+`0x80 | index`. That is the charge current and the charge voltage.
+
+**0x03 is the status register.** `0x0004E6B6` reads it into `0x10001555` and
+decodes it; `0x04` is a latch written 0x5F before the read and 0xFF after, and
+0x03 is written 0 after every read — so a real part re-asserts rather than
+staying cleared, and the model regenerates the byte on each read.
+
+Rather than name the bits from a datasheet, feed the firmware each value and
+watch the code the driver returns at `0x0004E6F4`:
+
+| register 3 | driver codes | power event |
+|---|---|---|
+| absent | 0, then 4 | 0x03 |
+| 0x00 | 0, then 4 | 0x03 |
+| 0x10 | 5, then 4 | 0x03 |
+| 0x20 | 2, then 3 | 0x18 (no screen) |
+| 0x80 | 2, then 4 | 0x03 |
+| 0xA0 | 2, then 3 | 0x18 (no screen) |
+
+Bit 5 is what the steady query distinguishes, bit 7 additionally raises the
+one-shot code 2, and bit 4 gives codes 5 and 6. Which of 3 and 4 the firmware
+*calls* "on the charger" is still unproven; the model follows the only inference
+the evidence supports — a part that is absent, so every read fails, is a watch
+that is not charging — and `--charger-status` exists so the question stays open
+to experiment.
+
+**It does not explain the power-off screen.** Every one of those status values
+still leaves the watch opening notify id 4 and staying there. The charger was
+the strongest suspect and it is now ruled out.
 
 ### Which pin is which
 

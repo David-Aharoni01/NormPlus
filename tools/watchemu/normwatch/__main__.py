@@ -136,8 +136,10 @@ def cmd_boot(args) -> int:
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
     devices["motion"] = attach_motion_sensor(machine, log=log)
-    devices["battery"] = attach_pmu(machine, percent=getattr(args, "battery", 80.0),
-                                    charging=getattr(args, "charging", False), log=log)
+    devices["battery"], devices["charger"] = attach_pmu(
+        machine, percent=getattr(args, "battery", 80.0),
+        charging=getattr(args, "charging", False),
+        charger_status=getattr(args, "charger_status", None), log=log)
     if args.force_gestures:
         force_gestures(machine, log=print if quiet else log)
 
@@ -262,6 +264,12 @@ def main(argv=None) -> int:
                              "own low-battery screens.")
     p_boot.add_argument("--charging", action="store_true",
                         help="report the watch as sitting on the charger")
+    p_boot.add_argument("--charger-status", type=lambda s: int(s, 0), default=None,
+                        metavar="BYTE",
+                        help="override the charger's status register (0x09 reg 3) "
+                             "instead of deriving it from --charging. Bit 5 is what "
+                             "the driver's steady query tests, bit 7 raises its "
+                             "one-shot code, bit 4 reads as a fault.")
     p_boot.add_argument("--force-gestures", action="store_true",
                         help="suppress the firmware's own gesture cancel so swipes reach "
                              "the UI. A deliberate deviation from the shipped image — see "

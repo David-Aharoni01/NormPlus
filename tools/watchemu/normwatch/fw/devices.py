@@ -1090,10 +1090,10 @@ class MotionSensor(I2cDevice):
 PMU_SCL_PIN = 11
 PMU_SDA_PIN = 13
 PMU_I2C_ADDRESS = 0x62
-#: A second device shares the bus and is not yet modelled; the firmware makes 28
-#: transactions to it per boot. Recorded here so the unanswered count is
-#: explainable rather than mysterious.
-PMU_BUS_OTHER_ADDRESS = 0x09
+#: The charger shares that bus at 0x09. It is not a separate driver -- the same
+#: pmu_cw6303.c owns both addresses -- which is why looking for a second module
+#: talking to it found nothing.
+CHARGER_I2C_ADDRESS = 0x09
 
 
 class Cw6303Pmu(I2cDevice):
@@ -1106,9 +1106,9 @@ class Cw6303Pmu(I2cDevice):
     CellWise CW201x layout exactly: a cell voltage and a state-of-charge, each
     big-endian across a register pair, above a profile table.
 
-    Note this part reports *charge*, not charger state. The driver's charging
-    bits come from a second device at 0x09 on the same bus, which is not
-    modelled yet -- see PMU_BUS_OTHER_ADDRESS.
+    Note this part reports *charge*, not charger state. The charger bits come
+    from the other half of the PMU, at 0x09 on the same bus -- see
+    :class:`Cw6303Charger`.
     """
 
     name = "CW201x-class fuel gauge"
@@ -1192,15 +1192,128 @@ class Cw6303Pmu(I2cDevice):
                 f"{self.reads} reads, {self.writes} writes")
 
 
+class Cw6303Charger(I2cDevice):
+    """The charger half of the PMU, at 0x09 on the same bit-banged bus.
+
+    Both addresses belong to ``pmu_cw6303.c``; there is no second driver. At
+    bring-up, 175k instructions into boot, it writes::
+
+        0x01 = 0xB7   0x02 = 0x87   0x03 = 0x00   0x04 = 0xFF
+        0x0A..0x0D = 0xBD           0x00 = 0x00
+
+    0x01 and 0x02 are packed at 0x0004E9C8 from two lookup tables -- 32 halfwords
+    at 0x000CE008 and 8 at 0x000CE048 -- as ``mode << 6 | flag << 5 | index`` and
+    ``0x80 | index``, which is the charge current and voltage setting.
+
+    **0x03 is the status register.** The read at 0x0004E6B6 pulls it into
+    0x10001555 and decodes it, and 0x04 is a latch written 0x5F before the read
+    and 0xFF after. Every read is followed by a write of 0 to 0x03, so a real
+    part clearly re-asserts rather than staying cleared: reads here are always
+    generated from the modelled state, and writes to 0x03 are accepted and
+    ignored.
+
+    What each bit produces, measured by feeding the firmware each value and
+    watching the code the driver returns at 0x0004E6F4:
+
+    ==========  ===================  =======================
+    register 3  driver status codes  power event raised
+    ==========  ===================  =======================
+    absent      0, then 4            0x03
+    0x00        0, then 4            0x03
+    0x10        5, then 4            0x03
+    0x20        2, then 3            0x18  (no screen)
+    0x80        2, then 4            0x03
+    0xA0        2, then 3            0x18  (no screen)
+    ==========  ===================  =======================
+
+    So bit 5 is what the steady-state query at 0x0004E6B6 tests (3 with, 4
+    without), bit 7 additionally raises the one-shot code 2, and bit 4 gives the
+    codes 5 and 6. Which of 3 and 4 the firmware *calls* "on the charger" is not
+    established -- the naming below follows the only inference the evidence
+    supports, that a part which is absent (all reads fail, status 0) is a watch
+    that is not charging. Nothing in the emulator branches on the names.
+    """
+
+    name = "CW6303 charger"
+
+    CHARGE_CURRENT = 0x01
+    CHARGE_VOLTAGE = 0x02
+    STATUS = 0x03
+    LATCH = 0x04
+
+    #: Bit 5: the state the steady query distinguishes. See the table above.
+    STATUS_CHARGE = 0x20
+    #: Bit 7: additionally produces the one-shot code 2.
+    STATUS_CHARGE_EVENT = 0x80
+    #: Bit 4: produces codes 5 and 6, which read as a fault.
+    STATUS_FAULT = 0x10
+
+    def __init__(self, *, charging: bool = False, status: int | None = None,
+                 log=print) -> None:
+        self.log = log
+        self.charging = bool(charging)
+        self._status_override = status
+        self.ram: dict[int, int] = {}
+        self.reads = 0
+        self.writes = 0
+        self.registers_read: set = set()
+
+    @property
+    def status(self) -> int:
+        if self._status_override is not None:
+            return self._status_override & 0xFF
+        return self.STATUS_CHARGE if self.charging else 0x00
+
+    def _register(self, register: int) -> int:
+        if register == self.STATUS:
+            return self.status
+        return self.ram.get(register, 0x00)
+
+    def read(self, register: int, length: int) -> bytes:
+        self.reads += 1
+        self.registers_read.add(register)
+        return bytes(self._register((register + i) & 0xFF) for i in range(length))
+
+    def write(self, register: int, data: bytes) -> None:
+        self.writes += 1
+        for i, byte in enumerate(data):
+            reg = (register + i) & 0xFF
+            if reg == self.STATUS:
+                continue          # the firmware clears it after every read
+            self.ram[reg] = byte
+
+    @property
+    def configured(self) -> bool:
+        """True once the firmware has written the charge current and voltage."""
+        return self.CHARGE_CURRENT in self.ram and self.CHARGE_VOLTAGE in self.ram
+
+    def summary(self) -> str:
+        state = "charging" if self.charging else "not charging"
+        setting = (f"I=0x{self.ram[self.CHARGE_CURRENT]:02X} "
+                   f"V=0x{self.ram[self.CHARGE_VOLTAGE]:02X}"
+                   if self.configured else "unconfigured")
+        return (f"  charger: {self.name} at 0x{CHARGER_I2C_ADDRESS:02X} "
+                f"(bit-banged, SCL {PMU_SCL_PIN}/SDA {PMU_SDA_PIN}), "
+                f"{state}, status 0x{self.status:02X}, {setting}, "
+                f"{self.reads} reads, {self.writes} writes")
+
+
 def attach_pmu(machine, *, percent: float = 80.0, charging: bool = False,
-               log=print) -> Cw6303Pmu:
-    """Put the battery gauge on the bit-banged bus the firmware drives by hand."""
+               charger_status: int | None = None, log=print):
+    """Put both halves of the PMU on the bus the firmware drives by hand.
+
+    Returns ``(gauge, charger)``. They share one bus and one driver; the gauge
+    at 0x62 reports charge, the charger at 0x09 reports charger state.
+    """
     bus = BitBangI2cBus(machine.gpio, PMU_SCL_PIN, PMU_SDA_PIN)
     pmu = Cw6303Pmu(percent=percent, charging=charging, log=log)
+    charger = Cw6303Charger(charging=charging, status=charger_status, log=log)
     bus.devices[PMU_I2C_ADDRESS] = pmu
+    bus.devices[CHARGER_I2C_ADDRESS] = charger
     machine.sim_i2c = bus
     pmu.bus = bus
-    return pmu
+    charger.bus = bus
+    return pmu, charger
 
 
 def attach_motion_sensor(machine, *, irq_pin=None, log=print) -> MotionSensor:
