@@ -350,6 +350,12 @@ class Gpio(Peripheral):
         0x210: "INT1EN", 0x214: "INT1STAT", 0x218: "INT1CLR", 0x21C: "INT1SET",
     }
 
+    #: PADREG A..M, one byte per pad: PULL@0, INPEN@1, STRNG@2, FNCSEL@3..5.
+    PADREG_BASE = 0x000
+    #: CFG A..H, one nibble per pin: INCFG@0, OUTCFG@1..2, INTD@3.
+    #: INTD picks the edge the pin interrupts on -- 0 low-to-high, 1 high-to-low.
+    CFG_BASE = 0x040
+
     # Interrupt registers, one set per bank.
     INT_EN = (0x200, 0x210)
     INT_STAT = (0x204, 0x214)
@@ -403,6 +409,30 @@ class Gpio(Peripheral):
     def pin(self, number: int) -> int:
         """Current output level of pin *number* (0-63)."""
         return (self.out[number // 32] >> (number % 32)) & 1
+
+    def interrupt_edge(self, number: int) -> int:
+        """0 if *number* interrupts low-to-high, 1 if high-to-low (INTD)."""
+        cfg = self.storage.get(self.CFG_BASE + (number // 8) * 4, 0)
+        return (cfg >> ((number % 8) * 4 + 3)) & 1
+
+    def resting_level(self, number: int) -> int:
+        """The level *number* sits at when nothing is pressing it.
+
+        A line that interrupts on the falling edge has to rest high to have an
+        edge to fall from, and none of this board's interrupt pins enable the
+        chip's internal pull-up, so the resistor is on the board. Reading that
+        back out of the firmware's own pad configuration is the only evidence
+        there is for which way round each button is wired.
+        """
+        return self.interrupt_edge(number)
+
+    def interrupt_pins(self) -> list:
+        """Pins the firmware has enabled a GPIO interrupt on."""
+        out = []
+        for bank in (0, 1):
+            enabled = self.storage.get(self.INT_EN[bank], 0)
+            out.extend(bank * 32 + bit for bit in range(32) if (enabled >> bit) & 1)
+        return out
 
     def raise_interrupt(self, number: int) -> None:
         """Latch an edge on *number*, as a button press or sensor line would.

@@ -305,18 +305,27 @@ class Apollo3Machine:
     def press_button(self, pin: int, at_instructions: int, hold: int | None = None) -> None:
         """Schedule a press and release of the button wired to *pin*.
 
+        The direction is taken from the pin's own interrupt configuration rather
+        than assumed: a pin the firmware set to interrupt on the falling edge is
+        wired active-low and rests high, so driving it *high* to mean "pressed"
+        is backwards, and leaves it reading as held down for the whole run. Five
+        of this watch's six interrupt pins are that way round; the button on pin
+        3 is the exception.
+
         Default hold is 3 seconds of watch time — long enough to register as a
         power-on long-press rather than a tap.
         """
         if hold is None:
             hold = 3 * self.CYCLES_PER_SECOND
+        resting = self.gpio.resting_level(pin)
+        active = 1 - resting
 
         def down():
-            self.gpio.set_input(pin, 1)
+            self.gpio.set_input(pin, active)
             self.gpio.raise_interrupt(pin)
 
         def up():
-            self.gpio.set_input(pin, 0)
+            self.gpio.set_input(pin, resting)
             self.gpio.raise_interrupt(pin)
 
         self.schedule(at_instructions, down, f"press pin {pin}")

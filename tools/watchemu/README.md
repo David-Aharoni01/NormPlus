@@ -443,12 +443,78 @@ physical hands for the time, and the lit pixels seen before were the low-power
 dialog's own text. Touch still reaches the firmware — 37 interrupts, 37 reports,
 and the UI polls the input device three times more often than before.
 
-**Swipes still do not navigate**, though, and that is the open question. Nothing
-cancels the gesture any more, so the cause is no longer the one described above.
-The likely explanation is that the watch now sits in an idle face where a swipe
-does nothing until it is woken, which it could never do before because it had no
-idea what its power state was — `key_irq.c` also runs half again as much once the
-gauge answers. Finding the wake path is the next step.
+Swipes still did not navigate at that point, and the reason turned out to have
+nothing to do with waking. See below.
+
+### The swipe works; there is no watch face to swipe on
+
+The gesture pipeline is healthy now, end to end, on the shipped firmware with no
+patch. Traced through a 240 px drag:
+
+```
+   153,484,755  press-begin   state=1 pt=(300,180) flags=0x00 -> sets bit 0x40
+   153,585,957  drag          state=1 pt=(293,180) flags=0x40  start=(300,180)
+   155,192,178  drag x42      state=1 pt=(272,180) flags=0x41  last=(279,180)
+   170,715,729  release       state=0 pt=( 60,180) flags=0x41  start=(300,180)
+                              -> dispatched into the active screen's handler
+```
+
+The release arrives with the in-progress bit still set and the full travel
+recorded, and window_manager hands it to the screen that is up. Nothing is lost.
+
+What is up is not the watch face. **The only screen the watch ever opens is
+notify id 4, `ui_notify_poweroff_dlg.c`**, 158 ms into boot, and it never leaves
+it:
+
+```
+0x00077BB8  notify_entry(id) -> 0x000BCAE4 + 12*(id-1)     48 entries {id, ctor, flag}
+  called exactly once in a 20M-instruction boot, with id = 4
+0x0005BA18  system_power_manager_task.c maps a power event to that id
+  element 0x100B -> 4        (the same mapper that turns element 0x1005 into 3)
+```
+
+So the swipe lands on the power-off dialog, which has nothing to navigate to. The
+LVGL tree agrees: `lv_scr_act()` holds one window_manager container whose two
+children are both empty and one of which has no style at all. There is no face,
+no labels, no images — which is also why the screen is black, and why every
+attempt to make the gesture "work" was aimed at the wrong thing.
+
+Neither a three-second hold of the button nor reporting the watch as charging
+changes this; the decision is made at 7.57M instructions, before any input can
+reach it. The remaining question is what makes the power manager raise element
+0x100B at boot, and the strongest suspect is the unmodelled device at 0x09 on
+the bit-banged bus — the charger — since the driver's charging bits come from
+there and it NAKs 28 times a boot.
+
+### Which pin is which
+
+The firmware configures its own interrupt pins, and that configuration is the
+only evidence there is for how the board is wired. Read back after boot:
+
+```
+INT0EN = 0x1001040C   INT1EN = 0x00000040      -> pins 2, 3, 10, 16, 28, 38
+every pad 0x1A        FNCSEL=GPIO, INPEN=1, PULL=0   -> no internal pull-up
+CFG nibble 8 on all of them except pin 3, which is 0  -> INTD, the interrupt edge
+```
+
+Pressing each in turn and diffing module coverage against an idle run names two
+of them:
+
+| pin | edge | what it is |
+|---|---|---|
+| 3 | low→high | **the button** — wakes `key_irq.c`, `gpio_irq.c`, `ew_drv_gpio_irq.c`, `system_vibrator_buzzer_task.c` and `ui_notify_poweroff_dlg.c` |
+| 16 | high→low | **the accelerometer** — `system_step_task.c` 47 → 92 blocks, `i2c.c` 133 → 167 |
+| 28 | high→low | the touch panel (already modelled) |
+| 2, 10, 38 | high→low | still unidentified |
+
+Since no internal pull-up is enabled, a pin that interrupts on the *falling* edge
+must be held high by a resistor on the board and pulled to ground by whatever
+drives it. `press_button` used to drive every pin high to mean "pressed", which
+is backwards for five of the six, and leaves the line reading as held down for
+the whole run. It now takes the direction from `Gpio.resting_level`, which reads
+the pin's own INTD bit. (It made no behavioural difference here — the firmware
+never samples those levels while idle — but it is the sort of thing that is
+invisible until it is not.)
 
 ### Attributing an address to a source file
 

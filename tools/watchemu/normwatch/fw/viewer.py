@@ -156,15 +156,18 @@ class WatchWindow:
     def _on_key_press(self, event) -> None:
         pin = self.buttons.get(event.keysym.lower())
         if pin is not None:
-            self.machine.post(lambda: self._button(pin, 1), f"button pin {pin} down")
+            self.machine.post(lambda: self._button(pin, True), f"button pin {pin} down")
 
     def _on_key_release(self, event) -> None:
         pin = self.buttons.get(event.keysym.lower())
         if pin is not None:
-            self.machine.post(lambda: self._button(pin, 0), f"button pin {pin} up")
+            self.machine.post(lambda: self._button(pin, False), f"button pin {pin} up")
 
-    def _button(self, pin: int, level: int) -> None:
-        self.machine.gpio.set_input(pin, level)
+    def _button(self, pin: int, pressed: bool) -> None:
+        # Which level means "pressed" is the pin's own business — see
+        # Gpio.resting_level. Most of these lines are active-low.
+        resting = self.machine.gpio.resting_level(pin)
+        self.machine.gpio.set_input(pin, 1 - resting if pressed else resting)
         self.machine.gpio.raise_interrupt(pin)
 
     # -- output --------------------------------------------------------------

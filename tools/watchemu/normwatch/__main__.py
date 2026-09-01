@@ -60,9 +60,12 @@ def cmd_modules(args) -> int:
 
 
 #: Keys 1-5 in the live window drive the GPIO pins the firmware enables interrupts
-#: on, minus 28 which is the touch panel. Which of them is the crown and which the
-#: side button is not yet known, so they are offered for experiment rather than named.
-LIVE_KEYS = {"1": 2, "2": 3, "3": 10, "4": 24, "5": 38}
+#: on (2, 3, 10, 16, 38), minus 28 which is the touch panel. Pin 3 is the button:
+#: it is the only one of the six configured for the rising edge, and pressing it
+#: is what wakes key_irq.c, gpio_irq.c, the vibrator task and the power-off dialog.
+#: Pin 16 looks like the accelerometer -- pressing it doubles system_step_task.c's
+#: coverage and adds I2C traffic. Pins 2, 10 and 38 are still unidentified.
+LIVE_KEYS = {"1": 2, "2": 3, "3": 10, "4": 16, "5": 38}
 
 
 def _run_live(machine, devices, args, *, log=print):
