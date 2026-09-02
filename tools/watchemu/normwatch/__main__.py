@@ -115,6 +115,33 @@ def _run_live(machine, devices, args, *, log=print):
     return stats
 
 
+#: The boot animation's state block. ``[+0x04]`` is its frame count and
+#: ``[+0x10]`` is the frame it has reached; the dialog closes when they meet
+#: (0x00075A82). At about 60 ms a frame that is roughly eight seconds of watch
+#: time, and the whole UI is behind it — which is why a short run shows nothing
+#: but a black screen and reads as a broken emulator.
+BOOT_ANIMATION_STATE = 0x10000114
+
+
+def boot_animation_note(machine) -> str:
+    try:
+        total = machine.uc.mem_read(BOOT_ANIMATION_STATE + 0x04, 1)[0]
+        frame = int.from_bytes(
+            machine.uc.mem_read(BOOT_ANIMATION_STATE + 0x10, 4), "little")
+    except Exception:
+        return ""
+    if not total or frame > total:
+        return ""
+    if frame >= total:
+        return f"  boot animation: finished ({total} frames)"
+    per_frame = 2_950_000
+    needed = machine._instructions + (total - frame) * per_frame
+    return (f"  boot animation: still playing, frame {frame} of {total} — the UI is "
+            f"behind it.\n"
+            f"                  Try --seconds {needed / 48_000_000:.0f} "
+            f"(about {needed:,} instructions).")
+
+
 def cmd_boot(args) -> int:
     img = _load(args.image)
     quiet = args.json
@@ -177,6 +204,7 @@ def cmd_boot(args) -> int:
             "display_commands": len(devices["display"].commands),
             "display_frames": devices["display"].frames,
             "display_pixel_bytes": devices["display"].pixel_bytes,
+            "boot_animation": boot_animation_note(machine).strip(),
         }, indent=2))
         if args.screenshot:
             devices["display"].save_png(args.screenshot)
@@ -202,6 +230,7 @@ def cmd_boot(args) -> int:
     print(format_tasks(machine, symbols))
     print(machine.bootrom.summary())
     print(machine.bus.unknown_report())
+    print(boot_animation_note(machine))
     if args.screenshot:
         devices["display"].save_png(args.screenshot)
     if console is not None:
@@ -235,7 +264,13 @@ def main(argv=None) -> int:
     p_boot = sub.add_parser("boot", help="run the firmware and print a boot triage report")
     add_image(p_boot)
     p_boot.add_argument("--max-instructions", type=int, default=30_000_000,
-                        help="instruction budget (default: 30M)")
+                        help="instruction budget (default: 30M, which is 0.6s of "
+                             "watch time — see --seconds)")
+    p_boot.add_argument("--seconds", type=float, default=None, metavar="N",
+                        help="run for N seconds of watch time instead "
+                             "(48M instructions each). The watch plays a 134-frame "
+                             "boot animation lasting about 8s, so anything shorter "
+                             "than that never gets to the UI.")
     p_boot.add_argument("--slice", type=int, default=25_000,
                         help="instructions between timer/interrupt checks (default: 25000)")
     p_boot.add_argument("--stall", type=int, default=3_000_000,
@@ -280,6 +315,8 @@ def main(argv=None) -> int:
     p_boot.set_defaults(func=cmd_boot)
 
     args = parser.parse_args(argv)
+    if getattr(args, "seconds", None):
+        args.max_instructions = int(args.seconds * Apollo3Machine.CYCLES_PER_SECOND)
     if getattr(args, "live", False) and "--max-instructions" not in (argv or sys.argv[1:]):
         # A live session runs until the window is closed, not for a fixed budget.
         args.max_instructions = 1 << 62

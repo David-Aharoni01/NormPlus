@@ -589,6 +589,41 @@ for instructions, block_pc, before, after in point.changes:
     ...
 ```
 
+### The watch was never stuck. Every run was too short
+
+`ui_notify_poweroff_dlg.c` is a **134-frame boot animation**, and the whole UI is
+behind it:
+
+```
+0x00075A7C  r0 = [r4+0x10] ; r0 += 1 ; [r4+0x10] = r0     the frame counter
+0x00075A82  r1 = [r4+4]                                    the frame count, 0x86
+0x00075A86  bhs 0x00075AE0                                 finished -> tear down
+```
+
+A frame takes about 2.95M instructions, so the animation runs for roughly 400M —
+**8.3 seconds of watch time**. The default budget is 30M, which is 0.6s, and
+every investigation of "the black screen" had been looking at frame 8 of 134.
+
+Run it for long enough and the watch simply boots:
+
+```
+      5,167,124  notify id 4          the animation starts
+    397,018,898  animation finished (frame 134 of 134)
+    398,447,529  ui_delete_object     torn down
+    398,926,501  notify id 5          "Select a Language"
+```
+
+Tap a row of that list — the rows are at y 205..274, 295..364 and 385..454, and
+a tap at (180,180) lands in the gap below the title, which is how the first
+attempt looked like no response — and it advances to a QR code carrying
+`A0.2(R.T0.0H0.0B01)` and `Norm2#00000`. That is the firmware version and the
+serial, rendered by the watch's own UI, with the `N` (Nordic) component absent
+exactly as you would expect on a machine with no BLE modelled.
+
+`normwatch boot` now takes `--seconds N` and, when a run ends mid-animation,
+says so and prints the budget that would get past it, rather than leaving a
+black screenshot to be misread as a broken emulator.
+
 ### Why the watch shows the power-off screen
 
 The chain, end to end, all of it found with those watchpoints:
@@ -635,10 +670,10 @@ watch that has ever finished an upgrade reads back −1 on its next boot, which 
 lives, and posting element 0x100B to open notify id 4 is what a normal boot
 does.
 
-Which moves the question again, and to a better place: not "what record are we
-missing" but **"what dismisses that screen and moves on to the face"**. The
-constructor branches on a mode byte at 0x10006C4C, which is 3 when it runs, and
-takes an animation path that stores the marker 0x0288B517.
+Which moved the question again — and the answer turned out to be "nothing needs
+to dismiss it, it dismisses itself after 134 frames". See above. The screen is a
+boot animation, mode 3 at 0x10006C4C selects which one, and every run had been
+stopping a fraction of the way into it.
 
 `ui_notify_poweroff_dlg.c` hosts exactly one notify screen, id 4, so this is
 genuinely the power-off dialog rather than a boot animation sharing a file —
