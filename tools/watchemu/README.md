@@ -531,6 +531,31 @@ to experiment.
 still leaves the watch opening notify id 4 and staying there. The charger was
 the strongest suspect and it is now ruled out.
 
+### The accelerometer needed its interrupt before it was ever read
+
+The sensor was modelled, configured by the firmware's own 16-entry init table,
+and streaming into its FIFO — and the firmware read **zero bytes** of it for an
+entire boot. The driver is interrupt-driven and never polls, and the model's
+`irq_pin` had never been given a value.
+
+Wiring it to pin 16 is the whole fix:
+
+```
+irq_pin=None   58 samples made,   0 bytes read, 464 queued
+irq_pin=16     58 samples made, 400 bytes read,  64 queued
+               system_step_task.c  50 -> 93 blocks
+               i2c.c              134 -> 169 blocks
+```
+
+Which pin is decided by the firmware's configuration, not by the device: an
+interrupt line is asserted by driving it to the level its `INTD` bit implies,
+so a falling-edge pin rests high and is *pulled down* to signal. Both the
+sensor and the touch panel used to drive their line high to mean "asserted",
+which is backwards for both. `Gpio.assert_irq` now decides that in one place.
+It changed no behaviour — the edge is latched either way, and neither driver
+samples the level — but it is the kind of thing that is invisible until
+something does read the level and then makes no sense at all.
+
 ### Never use a Unicorn memory hook here
 
 Registering a `UC_HOOK_MEM_WRITE` over SRAM does not merely miss writes — it
@@ -670,7 +695,7 @@ of them:
 | pin | edge | what it is |
 |---|---|---|
 | 3 | low→high | **the button** — wakes `key_irq.c`, `gpio_irq.c`, `ew_drv_gpio_irq.c`, `system_vibrator_buzzer_task.c` and `ui_notify_poweroff_dlg.c` |
-| 16 | high→low | **the accelerometer** — `system_step_task.c` 47 → 92 blocks, `i2c.c` 133 → 167 |
+| 16 | high→low | **the accelerometer** — `system_step_task.c` 47 → 92 blocks, `i2c.c` 133 → 167. Wired up; see below |
 | 28 | high→low | the touch panel (already modelled) |
 | 2, 10, 38 | high→low | still unidentified |
 

@@ -916,8 +916,7 @@ class TouchPanel(I2cDevice):
         if self.machine is None:
             return
         # The panel holds its interrupt line asserted while a finger is down.
-        self.machine.gpio.set_input(self.irq_pin, 1 if self.touching else 0)
-        self.machine.gpio.raise_interrupt(self.irq_pin)
+        self.machine.gpio.assert_irq(self.irq_pin, self.touching)
         self.interrupts += 1
 
     def summary(self) -> str:
@@ -945,6 +944,13 @@ class TouchPanel(I2cDevice):
 #: three big-endian int16s are X, Y and Z.
 MOTION_IOM_BASE = 0x50005000
 MOTION_I2C_ADDRESS = 0x68
+#: The sensor's interrupt line. Identified by pressing each of the six pins the
+#: firmware enables a GPIO interrupt on and diffing module coverage against an
+#: idle run: pin 16 is the only one that moves system_step_task.c (47 -> 92
+#: executed blocks) and adds I2C traffic (i2c.c 133 -> 167). Without it the
+#: firmware configures the part, waits, and never reads a byte of the FIFO --
+#: the driver is interrupt-driven and does not poll.
+MOTION_IRQ_PIN = 16
 
 
 class MotionSensor(I2cDevice):
@@ -985,7 +991,7 @@ class MotionSensor(I2cDevice):
     #: +/-8 g at 16 bits is 4096 LSB per g (ACCEL_CONFIG = 0x10).
     LSB_PER_G = 4096
 
-    def __init__(self, machine=None, *, irq_pin=None, log=print) -> None:
+    def __init__(self, machine=None, *, irq_pin=MOTION_IRQ_PIN, log=print) -> None:
         self.machine = machine
         self.irq_pin = irq_pin
         self.log = log
@@ -1072,8 +1078,7 @@ class MotionSensor(I2cDevice):
         self._asserted = want
         if self.machine is None or self.irq_pin is None:
             return
-        self.machine.gpio.set_input(self.irq_pin, 1 if want else 0)
-        self.machine.gpio.raise_interrupt(self.irq_pin)
+        self.machine.gpio.assert_irq(self.irq_pin, want)
 
     def summary(self) -> str:
         state = "streaming" if self.enabled else "idle"
@@ -1316,7 +1321,7 @@ def attach_pmu(machine, *, percent: float = 80.0, charging: bool = False,
     return pmu, charger
 
 
-def attach_motion_sensor(machine, *, irq_pin=None, log=print) -> MotionSensor:
+def attach_motion_sensor(machine, *, irq_pin=MOTION_IRQ_PIN, log=print) -> MotionSensor:
     """Hang the motion sensor off IOM1 and drive it from the clock."""
     sensor = MotionSensor(machine, irq_pin=irq_pin, log=log)
     iom = machine.bus.by_base.get(MOTION_IOM_BASE)

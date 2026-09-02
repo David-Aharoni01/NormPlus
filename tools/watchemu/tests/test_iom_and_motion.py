@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from normwatch.fw.devices import MotionSensor
+from normwatch.fw.devices import MOTION_IRQ_PIN, MotionSensor
 from normwatch.fw.peripherals import I2cDevice, Iom
 
 ADDRESS = 0x68
@@ -127,6 +127,90 @@ def test_it_stays_silent_until_the_fifo_is_switched_on():
     sensor.advance(48_000_000)
     assert sensor.samples_made == 0
     assert sensor.read(sensor.WHO_AM_I_REG, 1) == bytes([MotionSensor.WHO_AM_I])
+
+
+# ── the interrupt line ───────────────────────────────────────────────────────
+#
+# The driver is interrupt-driven and never polls: with the line unwired the
+# firmware configures the part, waits, and reads nothing at all. Pin 16 was
+# identified by pressing each of the six pins the firmware enables an interrupt
+# on and diffing coverage -- it is the only one that moves system_step_task.c.
+
+
+class FakeGpio:
+    """Records what a device does to its interrupt line."""
+
+    def __init__(self, falling=True):
+        self.falling = falling
+        self.level = None
+        self.edges = 0
+
+    def resting_level(self, number):
+        return 1 if self.falling else 0
+
+    def set_input(self, number, level):
+        self.level = level
+
+    def raise_interrupt(self, number):
+        self.edges += 1
+
+    def assert_irq(self, number, asserted):
+        from normwatch.fw.peripherals import Gpio
+        Gpio.assert_irq(self, number, asserted)
+
+
+class FakeMachine:
+    def __init__(self, gpio):
+        self.gpio = gpio
+
+    def add_timer(self, source):
+        pass
+
+
+def test_the_sensor_interrupt_is_pin_16():
+    assert MOTION_IRQ_PIN == 16
+    # And it is one of the six the firmware actually enables.
+    assert MOTION_IRQ_PIN in (2, 3, 10, 16, 28, 38)
+
+
+def test_the_sensor_pulls_its_line_down_to_signal():
+    # Pin 16 interrupts on the falling edge, so it rests high and is pulled to
+    # ground to assert. Driving it high to mean "asserted" is backwards.
+    gpio = FakeGpio(falling=True)
+    sensor = configured_sensor()
+    sensor.machine = FakeMachine(gpio)
+    sensor.irq_pin = MOTION_IRQ_PIN
+    sensor.advance(48_000_000)                      # fill well past the watermark
+    assert gpio.edges > 0, "the sensor never signalled"
+    assert gpio.level == 0, "asserted should pull the line to ground"
+
+
+def test_the_line_returns_to_rest_once_the_fifo_is_drained():
+    gpio = FakeGpio(falling=True)
+    sensor = configured_sensor()
+    sensor.machine = FakeMachine(gpio)
+    sensor.irq_pin = MOTION_IRQ_PIN
+    sensor.advance(48_000_000)
+    assert gpio.level == 0
+    sensor.read(sensor.FIFO_R_W, len(sensor.fifo))
+    sensor.advance(0)
+    assert gpio.level == 1, "the line should be released after a drain"
+
+
+def test_a_rising_edge_line_is_driven_the_other_way():
+    gpio = FakeGpio(falling=False)
+    from normwatch.fw.peripherals import Gpio
+    Gpio.assert_irq(gpio, 3, True)
+    assert gpio.level == 1
+    Gpio.assert_irq(gpio, 3, False)
+    assert gpio.level == 0
+
+
+def test_an_unwired_sensor_does_not_reach_for_a_machine():
+    sensor = configured_sensor()
+    sensor.machine = None
+    sensor.advance(48_000_000)          # must not raise
+    assert sensor.samples_made > 0
 
 
 if __name__ == "__main__":

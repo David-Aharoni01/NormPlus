@@ -445,6 +445,19 @@ class Gpio(Peripheral):
         bank, bit = divmod(number, 32)
         self.int_status[bank] |= 1 << bit
 
+    def assert_irq(self, number: int, asserted: bool) -> None:
+        """Drive *number* to its active or resting level and latch the edge.
+
+        Which level is "active" is the pin's own business: a line the firmware
+        set to interrupt on the falling edge rests high on a board pull-up and
+        is pulled down to signal. Every device that signals through GPIO goes
+        through here so the polarity is decided in one place from the firmware's
+        own configuration, rather than each model guessing.
+        """
+        resting = self.resting_level(number)
+        self.set_input(number, (1 - resting) if asserted else resting)
+        self.raise_interrupt(number)
+
     def set_input(self, number: int, level: int) -> None:
         bank, bit = divmod(number, 32)
         if level:
