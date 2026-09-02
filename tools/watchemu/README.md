@@ -556,6 +556,55 @@ It changed no behaviour — the edge is latched either way, and neither driver
 samples the level — but it is the kind of thing that is invisible until
 something does read the level and then makes no sense at all.
 
+### Speed: 70% of a boot is the idle task spinning
+
+Reaching the UI takes ~441M instructions, which is 9.2 seconds on the watch. The
+emulator was taking 80 of them — about **8.7x slower than real time**.
+
+A PC sample every 40,000 instructions across the whole run says where it goes:
+
+```
+tasks.c                    70.2%     two adjacent 64-byte regions
+?                          17.2%
+display_amoled_rm67162.c    3.0%
+lv_vdb.c                    2.4%
+everything else            ~7%
+```
+
+Those two regions are FreeRTOS's idle task, and `halts` is **zero** for the
+entire run: this build never executes WFI, so the core spins at full speed with
+nothing to do. The watch really behaves this way — it is not an emulator
+artefact — but there is no reason to reproduce a busy-wait cycle for cycle.
+
+Two changes, and together they are 2.9x:
+
+- **Tracing is off by default** (`--trace` brings it back). It costs 27%.
+- **`--idle-skip`** fast-forwards the clocks through that loop instead of
+  emulating it, in the same spirit as the existing WFI handling.
+
+```
+                         instr/s     to reach the UI
+default, before          5.4M        80s
+--no-trace (now default) 7.6M        58s
++ --idle-skip           16.0M        28s     (71% of the run not executed)
+```
+
+That is 3.0x slower than the watch instead of 8.7x.
+
+**Idle-skip is opt-in because it is not bit-identical.** Totals agree to within
+100 instructions in 20M and the boot animation lands on exactly the same frame,
+but the STIMER interrupt count moves by about 4% (338 -> 352) because a tick the
+fully emulated run coalesced can be delivered separately. Finer steps do not
+close the gap — 2000, 1000, 500, 250 and 100 all converge on 352 — so it is a
+real difference in delivery, not sampling error. `tests/test_idle_skip.py` pins
+what does hold: same animation frame, clock within a rounding error, PendSV and
+MSPI counts exact, and STIMER allowed to move a few percent and no more.
+
+Detection is deliberately narrow. The skip only engages on the second
+consecutive arrival at the loop head within 200 instructions — meaning the loop
+went round and nothing else ran — and it refuses to engage at all unless the
+bytes at `0x000B2F22` are the loop it was measured on.
+
 ### Never use a Unicorn memory hook here
 
 Registering a `UC_HOOK_MEM_WRITE` over SRAM does not merely miss writes — it

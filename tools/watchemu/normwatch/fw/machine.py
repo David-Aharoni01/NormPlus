@@ -50,6 +50,27 @@ FLASH_SIZE = 0x00100000
 SRAM_BASE = 0x10000000
 SRAM_SIZE = 0x00060000
 
+#: The head of FreeRTOS's idle-task busy-wait, and the bytes that have to be
+#: there for it to be that loop. A PC sample every 40,000 instructions across the
+#: 440M it takes to reach the UI puts **70%** of the whole boot in the two
+#: 64-byte regions around here, and ``halts`` is zero for the entire run: this
+#: build never executes WFI, so the core spins at full speed with nothing to do.
+#: The watch really does behave this way -- it is not an emulator artefact -- but
+#: there is no reason for us to pay to reproduce a busy-wait cycle for cycle.
+#:
+#:     0x000B2F22  ldr r0, [r5] ; cmp r0, #1 ; bls +
+#:     0x000B2F28  str r6, [r7]          ICSR.PENDSVSET -- yield to a ready task
+#:     0x000B2F2A  dsb sy ; isb sy
+#:
+#: It is a branch target from both 0x000B2F4C and 0x000B2F58, so it is a basic
+#: block start and the block hook sees it every time round.
+IDLE_LOOP_HEAD = 0x000B2F22
+IDLE_LOOP_EXPECTED = bytes.fromhex("28680128 04d93e60 bff34f8f bff36f8f".replace(" ", ""))
+#: A whole trip round that loop is ~14 instructions. If two consecutive arrivals
+#: at the head are further apart than this, something else ran in between and the
+#: core was not idle, so it is not safe to skip.
+IDLE_LOOP_MAX_ITERATION = 200
+
 MMIO_WINDOWS = (
     (0x40000000, 0x10000000),
     (0x50000000, 0x10000000),
@@ -121,6 +142,7 @@ class Apollo3Machine:
         log=print,
         trace=None,
         chiprev: Optional[int] = None,
+        idle_skip: bool = False,
     ) -> None:
         self.image = img
         self.log = log
@@ -134,6 +156,13 @@ class Apollo3Machine:
         self.faults: collections.deque[str] = collections.deque(maxlen=32)
         #: Number of times the core parked on WFI/WFE waiting for an interrupt.
         self.halts = 0
+        #: Opt-in: fast-forward through the FreeRTOS idle task's busy-wait
+        #: instead of emulating it. See _skip_idle_spin.
+        self.idle_skip = bool(idle_skip)
+        self.idle_skips = 0
+        self.idle_instructions_skipped = 0
+        self._idle_last_head = None
+        self._idle_pending = False
         #: Scheduled external stimulus: [instruction_count, callable, description].
         self._events: list[list] = []
         #: Stimulus handed in from another thread -- the live viewer runs its UI
@@ -165,6 +194,13 @@ class Apollo3Machine:
         # cannot tell "erased" from "all zeros" if the emulator hands it zeros.
         self.uc.mem_write(FLASH_BASE, b"\xff" * FLASH_SIZE)
         self.uc.mem_write(img.link_address, img.payload)
+
+        if self.idle_skip:
+            found = bytes(self.uc.mem_read(IDLE_LOOP_HEAD, len(IDLE_LOOP_EXPECTED)))
+            if found != IDLE_LOOP_EXPECTED:
+                self.idle_skip = False
+                log(f"  [idle] --idle-skip disabled: 0x{IDLE_LOOP_HEAD:08X} holds "
+                    f"{found.hex(' ')}, not the idle loop this image was measured on")
 
         self.bus: Bus = build_apollo3_bus(self)
         if chiprev is not None:
@@ -446,6 +482,17 @@ class Apollo3Machine:
         self._instructions += count
         self._quantum_cycles += count
 
+        if self.idle_skip and address == IDLE_LOOP_HEAD:
+            # Only skip once we have seen the loop go round: arriving here twice
+            # in a handful of instructions means the loop condition said "keep
+            # spinning" and nothing else ran. Arriving here for the first time,
+            # or after a task has run, is not evidence of an idle core.
+            last, self._idle_last_head = self._idle_last_head, self._instructions
+            if last is not None and self._instructions - last <= IDLE_LOOP_MAX_ITERATION:
+                self._idle_pending = True
+                uc.emu_stop()
+                return
+
         if self._watchpoints:
             self._check_watchpoints(address)
 
@@ -537,6 +584,14 @@ class Apollo3Machine:
             try:
                 self.uc.emu_start(pc | 1, 0, count=budget)
                 pc = self.uc.reg_read(UC_ARM_REG_PC)
+
+                if self._idle_pending:
+                    # Parked at the head of the idle busy-wait, which has not
+                    # executed yet, so resuming at the same PC is correct.
+                    self._idle_pending = False
+                    self._idle_last_head = None
+                    self._skip_idle_spin()
+                    continue
 
                 if self._is_wait_instruction(pc):
                     # Halted on WFI/WFE. Unicorn leaves PC *on* the instruction,
@@ -643,6 +698,45 @@ class Apollo3Machine:
             self._advance_time(step)
             skipped += step
         self.halts += 1
+        return skipped
+
+    def _skip_idle_spin(self, step: int = 500, limit: int = 32_000) -> int:
+        """Run the clocks forward through the idle task's busy-wait.
+
+        The invariant that makes this safe is that ``_instructions`` *is* the
+        emulated clock: every cycle skipped is still counted and still advances
+        the timers, so a timer fires at exactly the same emulated instant either
+        way. Only wall time changes. Scheduled stimulus is fired as we go, for
+        the same reason — a tap scheduled inside a skipped window has to land
+        when it was asked for, not whenever the core next executes something.
+
+        The core can only leave the idle task on an interrupt (nothing else is
+        running to ready a task), so advancing to the next pending exception is
+        where it would have got to anyway. Bounded, so that an idle loop with
+        every source disabled cannot hang the run.
+
+        **It is not bit-identical, which is why it is opt-in.** Over a 20M
+        instruction run the totals match to within 100 instructions and the boot
+        animation reaches exactly the same frame, but the STIMER interrupt count
+        moves by about 4% (338 -> 352) because the moments at which pending
+        interrupts are noticed differ, and a tick that the fully emulated run
+        coalesced can be delivered separately here. Making ``step`` finer does
+        not close the gap — 2000, 1000, 500, 250 and 100 all converge on 352 —
+        so it is a real difference in delivery, not sampling error. Nothing that
+        depends on exact interrupt counts should be measured with this on.
+        """
+        start = self._instructions
+        for _ in range(limit):
+            if self.cortexm.pending_exception() is not None:
+                break
+            if self._instructions >= self._instruction_budget or self.stop_requested:
+                break
+            self._advance_time(step)
+            self._instructions += step
+            self._fire_due_events(self._instructions)
+        skipped = self._instructions - start
+        self.idle_skips += 1
+        self.idle_instructions_skipped += skipped
         return skipped
 
     def _advance_time(self, cycles: int) -> None:

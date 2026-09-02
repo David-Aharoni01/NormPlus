@@ -152,13 +152,19 @@ def cmd_boot(args) -> int:
         print()
 
     symbols = SymbolMap(img.payload, img.link_address)
+    # Tracing is off by default: it costs about 27% (5.4M vs 6.9M instructions a
+    # second) and the runs that matter are now hundreds of millions of
+    # instructions long. --trace brings back coverage and the stall detector.
+    #
     # In a live session the stall heuristic must not stop the CPU: the window
     # would go on showing the last frame and ignoring every touch, which reads
     # as "the emulator is slow and unresponsive" rather than "it ended".
-    tracer = None if args.no_trace else Tracer(
+    tracing = args.trace and not args.no_trace
+    tracer = Tracer(
         symbols, stall_window=args.stall, watch_for_stall=not args.live, log=log
-    )
-    machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev)
+    ) if tracing else None
+    machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
+                             idle_skip=args.idle_skip)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
@@ -230,6 +236,11 @@ def cmd_boot(args) -> int:
     print(format_tasks(machine, symbols))
     print(machine.bootrom.summary())
     print(machine.bus.unknown_report())
+    if machine.idle_skips:
+        print(f"  idle skip: {machine.idle_skips:,} times, "
+              f"{machine.idle_instructions_skipped:,} instructions "
+              f"({100.0 * machine.idle_instructions_skipped / max(1, stats.instructions):.0f}% "
+              f"of the run) not executed")
     print(boot_animation_note(machine))
     if args.screenshot:
         devices["display"].save_png(args.screenshot)
@@ -309,8 +320,19 @@ def main(argv=None) -> int:
                         help="suppress the firmware's own gesture cancel so swipes reach "
                              "the UI. A deliberate deviation from the shipped image — see "
                              "normwatch/fw/patches.py")
+    p_boot.add_argument("--trace", action="store_true",
+                        help="collect coverage and watch for stalls. Costs about "
+                             "27% of the run rate, so it is off by default.")
     p_boot.add_argument("--no-trace", action="store_true",
-                        help="disable tracing (faster, no coverage or stall detection)")
+                        help=argparse.SUPPRESS)      # now the default; kept working
+    p_boot.add_argument("--idle-skip", action="store_true",
+                        help="fast-forward through the FreeRTOS idle task's "
+                             "busy-wait instead of emulating it. About 70%% of a "
+                             "boot is spent there and this build never sleeps, so "
+                             "this is most of the run time. The emulated clock is "
+                             "unaffected — every skipped cycle is still counted — "
+                             "but it is off by default because it reasons about "
+                             "when the core has nothing to do.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 
