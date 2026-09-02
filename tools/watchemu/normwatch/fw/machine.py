@@ -159,6 +159,11 @@ class Apollo3Machine:
 
         self.uc.mem_map(FLASH_BASE, FLASH_SIZE)
         self.uc.mem_map(SRAM_BASE, SRAM_SIZE)
+        # Erased flash reads 0xFF, and the firmware relies on it: the region
+        # below the application at 0x20000 holds the bootloader and a settings
+        # area it reads back at boot, and code that checks for a blank record
+        # cannot tell "erased" from "all zeros" if the emulator hands it zeros.
+        self.uc.mem_write(FLASH_BASE, b"\xff" * FLASH_SIZE)
         self.uc.mem_write(img.link_address, img.payload)
 
         self.bus: Bus = build_apollo3_bus(self)
@@ -235,12 +240,33 @@ class Apollo3Machine:
             return self.cortexm.reg_name(addr)
         return self.bus.describe(addr)
 
-    def write_flash(self, addr: int, data: bytes) -> None:
-        """Programming path used by the boot ROM flash helpers."""
+    #: Programs that tried to set a bit flash can only clear. Counted rather
+    #: than refused, because the interesting case is a firmware bug we want to
+    #: see, not one we want to hide.
+    flash_programs_without_erase = 0
+
+    def write_flash(self, addr: int, data: bytes, *, erase: bool = False) -> None:
+        """Programming path used by the boot ROM flash helpers.
+
+        Programming NOR flash can only clear bits; setting one needs a page
+        erase first. Modelling that as a plain overwrite makes a missing erase
+        invisible here and a corrupt page on the watch, which is the worst place
+        to find out — so a program ANDs with what is already there, and a
+        program that needed a bit it could not set is counted.
+        """
         if not (FLASH_BASE <= addr < FLASH_BASE + FLASH_SIZE):
             self.log(f"  [flash] refusing a write outside internal flash at 0x{addr:08X}")
             return
-        self.uc.mem_write(addr, data)
+        if erase:
+            self.uc.mem_write(addr, data)
+            return
+        current = bytes(self.uc.mem_read(addr, len(data)))
+        merged = bytes(c & d for c, d in zip(current, data))
+        if merged != bytes(data):
+            self.flash_programs_without_erase += 1
+            self.log(f"  [flash] program at 0x{addr:08X} needed bits the page does "
+                     f"not have set — it was not erased first")
+        self.uc.mem_write(addr, merged)
 
     def request_reset(self) -> None:
         self.reset_requested = True

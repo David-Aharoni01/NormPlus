@@ -584,22 +584,74 @@ ui_task.c 0x0007A5A8          xQueueGenericSend
 ```
 
 **The byte at 0x10007529 is never written in an entire boot.** It is zero from
-BSS, and zero is the fallback. The record it should be restored from is an
-upgrade result: force the stored word to 1 or 3 and the watch shows *"Upgrade
-Success"* instead, which is the first thing the emulated display has ever drawn
-— 5,349 lit pixels against a lifetime of zero. Force 2 and it shows the other
-outcome.
+BSS, and zero is the branch taken. Force the stored word to 1 or 3 and the watch
+shows *"Upgrade Success"* instead, which was the first thing the emulated
+display ever drew — 5,349 lit pixels against a lifetime of zero. Force 2 and it
+shows the other outcome.
 
-So the watch is not deciding to shut down, and it is not asleep. It boots,
-looks for a record that our storage does not have, and takes the branch for
-"none of the above". Holding the button across the decision changes nothing —
-every earlier button test pressed at 20M instructions, and the decision is made
-at 7.57M.
+So the watch is not deciding to shut down, and it is not asleep. Holding the
+button across the decision changes nothing — every earlier button test pressed
+at 20M instructions, and the decision is made at 7.57M.
+
+**But a missing record is not the anomaly, and the paragraph above used to say
+it was.** The save path settles it. Straight after reading the record, the
+firmware writes −1 into `+0x28` and stores it back:
+
+```
+0x0003C93C  mov.w r0, #-1
+0x0003C940  str r0, [sp, #0x28]
+0x0003C942  ...  blx [storage+0]      erase(0x1E000)
+0x0003C952  ...  blx [storage+4]      write(0x1E000, record, 0x2C)
+```
+
+It is a **one-shot notice**: an upgrade result, consumed once and cleared. A
+watch that has ever finished an upgrade reads back −1 on its next boot, which is
+"none of the above" — the same branch. So state 0 is where a settled watch
+lives, and posting element 0x100B to open notify id 4 is what a normal boot
+does.
+
+Which moves the question again, and to a better place: not "what record are we
+missing" but **"what dismisses that screen and moves on to the face"**. The
+constructor branches on a mode byte at 0x10006C4C, which is 3 when it runs, and
+takes an animation path that stores the marker 0x0288B517.
 
 `ui_notify_poweroff_dlg.c` hosts exactly one notify screen, id 4, so this is
 genuinely the power-off dialog rather than a boot animation sharing a file —
 nine other modules in that table do host several dialogs each, so it was worth
 checking.
+
+### Internal flash, and where the watch keeps its settings
+
+The application links at 0x20000 and is 747,156 bytes, so it occupies
+0x20000..0xD6693. Everything else in the 1 MB flash window is the bootloader
+below it and storage above and below — and the emulator only ever loaded the
+application, leaving the rest reading as zeros.
+
+**Erased flash reads 0xFF.** Firmware that checks for a blank record cannot tell
+"erased" from "all zeros" if the emulator hands it zeros, and the settings the
+watch restores at boot live at 0x1E000, outside the image. The flash window is
+now filled with 0xFF before the application is written into it.
+
+The storage object it goes through is a three-slot vtable — `[+0]` erase, `[+4]`
+write, `[+8]` read — reached from `ew_mod_storage.c` and served by the internal
+flash driver, not the SPI NAND: the read takes 92 instructions and moves no NAND
+pages and no MSPI DMA.
+
+**Programming can only clear bits.** `write_flash` now ANDs with what is already
+there and counts any program that needed a bit the page did not have set,
+because a missing page erase is invisible if you model programming as an
+overwrite — and then it is a corrupt page on the watch instead. A clean boot
+reports zero, so the firmware's own erase discipline is sound.
+
+The page geometry is confirmed against this image rather than assumed. Every
+`nv_program_main` destination in a boot lands exactly on a page a preceding
+`nv_page_erase` cleared, with `instance * 0x80000 + page * 0x2000`:
+
+| erase | address | matching program |
+|---|---|---|
+| `(0, 0x0E)` | 0x1C000 | `nv_program_main(src, 0x1C000, 0x800 words)` |
+| `(0, 0x0C)` | 0x18000 | `nv_program_main(src, 0x18000, 0x130 words)` |
+| `(1, 0x3D)` | 0xFA000 | `nv_program_main(src, 0xFA000, 0x130 words)` |
 
 ### Which pin is which
 

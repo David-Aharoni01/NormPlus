@@ -212,10 +212,17 @@ class BootRom:
         self.machine.write_flash(dst, bytes(data))
         return 0
 
+    #: Apollo3 flash pages are 8 KB and each instance covers 512 KB. Confirmed
+    #: against this image rather than assumed: every ``nv_program_main``
+    #: destination in a boot lands exactly on a page a preceding
+    #: ``nv_page_erase`` cleared -- (0, 0x0E) then 0x1C000, (0, 0x0C) then
+    #: 0x18000, (1, 0x3D) then 0xFA000.
+    PAGE_SIZE = 0x2000
+    INSTANCE_SIZE = 0x80000
+
     def _rom_nv_page_erase(self, _value, instance, page, *_args):
-        # Apollo3 flash pages are 8 KB.
-        addr = (instance * 0x80000) + page * 0x2000
-        self.machine.write_flash(addr, b"\xff" * 0x2000)
+        addr = (instance * self.INSTANCE_SIZE) + page * self.PAGE_SIZE
+        self.machine.write_flash(addr, b"\xff" * self.PAGE_SIZE, erase=True)
         return 0
 
     def _rom_nv_valid_address(self, addr, *_args):
