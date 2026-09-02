@@ -89,6 +89,30 @@ class RunStats:
     stop: Optional[StopReason] = None
 
 
+class Watchpoint:
+    """A memory location being watched, checked once per basic block.
+
+    See :meth:`Apollo3Machine.watch` for why this exists rather than a Unicorn
+    memory hook.
+    """
+
+    __slots__ = ("address", "size", "label", "on_change", "value", "changes")
+
+    def __init__(self, address: int, size: int, label: str = "", on_change=None):
+        self.address = address
+        self.size = size
+        self.label = label
+        self.on_change = on_change
+        self.value: Optional[bytes] = None
+        #: ``(instructions, block_pc, before, after)`` for each observed change.
+        self.changes: list = []
+
+    def __repr__(self) -> str:
+        name = f" {self.label}" if self.label else ""
+        return (f"<Watchpoint 0x{self.address:08X}+{self.size}{name}, "
+                f"{len(self.changes)} changes>")
+
+
 class Apollo3Machine:
     def __init__(
         self,
@@ -160,6 +184,10 @@ class Apollo3Machine:
         self._instructions = 0
         self._quantum_cycles = 0
         self._instruction_budget = 0
+        #: Memory locations being watched. See :meth:`watch` -- these are checked
+        #: from the block hook because Unicorn's own memory hooks cannot be used
+        #: here at all.
+        self._watchpoints: list = []
         self.uc.hook_add(UC_HOOK_BLOCK, self._on_block_timing)
 
         self._timers = [p for p in self.bus.peripherals if hasattr(p, "advance")]
@@ -296,6 +324,53 @@ class Apollo3Machine:
         self._events.append([at_instructions, action, description])
         self._events.sort(key=lambda e: e[0])
 
+    def watch(self, address: int, size: int = 4, *, label: str = "", on_change=None):
+        """Report changes to a memory location, checked once per basic block.
+
+        **Do not use ``UC_HOOK_MEM_WRITE`` on this machine.** Registering one
+        over SRAM does not merely miss writes — it derails the run: the firmware
+        dies at ~155k instructions on an unmapped fetch of 0x10060000 (one past
+        the end of SRAM) with a PC of 0, against a clean 8M-instruction run with
+        no hook. It also reports the same ~103,659 writes whatever the length of
+        the run, which is what makes it so convincing and so wrong. Two separate
+        investigations have concluded "nothing writes this address" from a hook
+        that had already killed the run before the write happened.
+
+        This is checked from the block hook instead, which is the machine's own
+        and is known good. The cost is one ``mem_read`` per watchpoint per basic
+        block, so it is a debugging tool, not something to leave switched on; a
+        run with no watchpoints pays nothing. Resolution is a basic block rather
+        than an instruction, so a change is attributed to the block that
+        contained the store — enough to disassemble and name it.
+
+        Returns a ``Watchpoint`` whose ``changes`` list collects
+        ``(instructions, block_pc, before, after)``.
+        """
+        point = Watchpoint(address, size, label, on_change)
+        try:
+            point.value = bytes(self.uc.mem_read(address, size))
+        except UcError:
+            point.value = None
+        self._watchpoints.append(point)
+        return point
+
+    def unwatch(self, point) -> None:
+        if point in self._watchpoints:
+            self._watchpoints.remove(point)
+
+    def _check_watchpoints(self, block_pc: int) -> None:
+        for point in self._watchpoints:
+            try:
+                now = bytes(self.uc.mem_read(point.address, point.size))
+            except UcError:
+                continue
+            if now == point.value:
+                continue
+            before, point.value = point.value, now
+            point.changes.append((self._instructions, block_pc, before, now))
+            if point.on_change is not None:
+                point.on_change(point, block_pc, before, now)
+
     #: The core runs at 48 MHz, so this many instructions is roughly one second
     #: of watch time. Button holds have to be expressed in these terms: a
     #: power-on long-press is seconds long, and a "press" of a few tens of
@@ -344,6 +419,9 @@ class Apollo3Machine:
         count = size >> 1 or 1
         self._instructions += count
         self._quantum_cycles += count
+
+        if self._watchpoints:
+            self._check_watchpoints(address)
 
         if self.trace is not None:
             self.trace.on_block(address)

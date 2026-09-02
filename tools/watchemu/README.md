@@ -531,6 +531,76 @@ to experiment.
 still leaves the watch opening notify id 4 and staying there. The charger was
 the strongest suspect and it is now ruled out.
 
+### Never use a Unicorn memory hook here
+
+Registering a `UC_HOOK_MEM_WRITE` over SRAM does not merely miss writes — it
+derails the run. Same firmware, same budget, the only difference being a hook
+whose callback increments a counter:
+
+```
+                 no memory hook                    with memory hook
+stop             budget, ran the full 8,000,000    fault, unmapped fetch of
+                                                   0x10060000 from pc=0
+instructions     8,000,038                         154,758
+frames           1                                 0
+```
+
+0x10060000 is one byte past the end of SRAM, and the PC is zero; neither is
+something the firmware did. Worse, the hook reports the same ~103,659 writes
+whatever the length of the run, so it looks like it is working. Two separate
+investigations concluded "nothing writes this address" from a hook that had
+already killed the run several million instructions before the write happened.
+
+`machine.watch(address, size)` checks from the block hook instead — the
+machine's own, and known good. It costs one `mem_read` per watchpoint per basic
+block, so it is a debugging tool rather than something to leave on, and a run
+with no watchpoints pays nothing. Resolution is a basic block rather than an
+instruction, which is enough to disassemble and name the store.
+
+```python
+point = machine.watch(0x10007529, 1, label="power state")
+machine.run(max_instructions=20_000_000)
+for instructions, block_pc, before, after in point.changes:
+    ...
+```
+
+### Why the watch shows the power-off screen
+
+The chain, end to end, all of it found with those watchpoints:
+
+```
+ew_mod_storage.c 0x0003C8DE   read 0x2C bytes from storage address 0x1E000
+                 0x0003C8EC   look at the word at +0x28
+                                2      -> power-state byte = 1
+                                1 or 3 -> power-state byte = 2
+                                else   -> power-state byte = 0
+                              the byte lives at 0x10006BCC + 0x95D = 0x10007529
+0x0005BF70                    branch on it; 0 posts elements 0x1010 then 0x100B
+                              to the UI task's queue at 0x1000D318
+ui_task.c 0x0007A5A8          xQueueGenericSend
+0x0005BA18                    element 0x100B -> notify id 4
+0x00077BB8                    table 0x000BCAE4 + 12*3 -> ctor 0x00075B09
+                              ui_notify_poweroff_dlg.c
+```
+
+**The byte at 0x10007529 is never written in an entire boot.** It is zero from
+BSS, and zero is the fallback. The record it should be restored from is an
+upgrade result: force the stored word to 1 or 3 and the watch shows *"Upgrade
+Success"* instead, which is the first thing the emulated display has ever drawn
+— 5,349 lit pixels against a lifetime of zero. Force 2 and it shows the other
+outcome.
+
+So the watch is not deciding to shut down, and it is not asleep. It boots,
+looks for a record that our storage does not have, and takes the branch for
+"none of the above". Holding the button across the decision changes nothing —
+every earlier button test pressed at 20M instructions, and the decision is made
+at 7.57M.
+
+`ui_notify_poweroff_dlg.c` hosts exactly one notify screen, id 4, so this is
+genuinely the power-off dialog rather than a boot animation sharing a file —
+nine other modules in that table do host several dialogs each, so it was worth
+checking.
+
 ### Which pin is which
 
 The firmware configures its own interrupt pins, and that configuration is the
