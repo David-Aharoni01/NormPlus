@@ -239,6 +239,30 @@ class CortexM:
         return 0
 
     def write(self, addr: int, size: int, value: int) -> None:
+        """PPB write, then re-tell the native hook what is pending.
+
+        This is the only thing that can change the pending set *during* a slice
+        — everything else (the tick, exception entry and return, a device
+        raising an IRQ) happens between slices, where the run loop refreshes it
+        anyway. Wrapping rather than appending to _write because that method has
+        a dozen early returns and one of them would eventually be missed.
+        """
+        self._write(addr, size, value)
+        native = self.machine.native_hook
+        if native is not None:
+            self.refresh_native_pending()
+
+    def refresh_native_pending(self) -> None:
+        native = self.machine.native_hook
+        if native is None:
+            return
+        exc, priority = self.best_candidate()
+        if exc is None or not self.preempts(priority):
+            native.set_pending(None)
+        else:
+            native.set_pending(priority, is_nmi=(exc == EXC_NMI))
+
+    def _write(self, addr: int, size: int, value: int) -> None:
         if 0xE000E010 <= addr <= 0xE000E01F:
             self._systick_write(addr, value)
             return
@@ -451,10 +475,44 @@ class CortexM:
             return True
         return False
 
+    def best_candidate(self):
+        """The highest-priority pending, enabled exception, ignoring the masks.
+
+        Split out so the native hook can be told what to watch for without
+        holding a second copy of this selection. It only needs the priority; the
+        choice of exception stays here and is made once, after it stops us.
+        """
+        best_exc = None
+        best_priority = 256
+
+        icsr = self.icsr
+        if icsr & 0x04000000:  # PENDSTSET
+            priority = self.shpr[EXC_SYSTICK - 4]
+            if priority < best_priority:
+                best_priority, best_exc = priority, EXC_SYSTICK
+        if icsr & 0x10000000:  # PENDSVSET
+            priority = self.shpr[EXC_PENDSV - 4]
+            if priority < best_priority:
+                best_priority, best_exc = priority, EXC_PENDSV
+
+        ready = self.irq_pending & self.irq_enabled
+        while ready:
+            lowest = ready & -ready
+            irq = lowest.bit_length() - 1
+            ready ^= lowest
+            priority = self.irq_priority[irq]
+            if priority < best_priority:
+                best_priority, best_exc = priority, EXC_IRQ0 + irq
+        return best_exc, best_priority
+
+    def preempts(self, priority: int) -> bool:
+        """Whether *priority* may interrupt whatever is running."""
+        return not (self.active_stack and priority >= self._active_priority)
+
     def pending_exception(self) -> Optional[int]:
         """Highest-priority pending, enabled and unmasked exception, or ``None``.
 
-        Called once per basic block, so it is written to allocate nothing and to
+        Called once per basic block on the Python hook path, so it is written to
         touch the CPU's mask registers only when there is actually a candidate.
         """
         best_exc = None
@@ -575,6 +633,13 @@ class CortexM:
         # stack pointer, and leaving PC pointing into the interrupted code while
         # those change lets the CPU resume from a stale translation.
         uc.reg_write(UC_ARM_REG_PC, handler & 0xFFFFFFFE)
+        # Entry has just consumed the pending bit and pushed an active priority,
+        # so the native hook's idea of what to watch for is now stale. Leaving it
+        # stale makes the hook stop on the handler's very first block, and the
+        # poll that follows re-arms the interrupt before the handler has had a
+        # chance to clear its source -- which is every peripheral IRQ taken
+        # exactly twice.
+        self.refresh_native_pending()
         return handler
 
     def exception_return(self, exc_return: int) -> int:
@@ -618,6 +683,9 @@ class CortexM:
         # Publish the restored PC so the CPU's view matches the caller's, even if
         # the caller never gets as far as resuming execution.
         uc.reg_write(UC_ARM_REG_PC, pc & 0xFFFFFFFE)
+        # Popping an active priority can make something deliverable that was not
+        # a moment ago, so the native hook has to be told before it runs again.
+        self.refresh_native_pending()
         return pc
 
     # ── reporting ────────────────────────────────────────────────────────────

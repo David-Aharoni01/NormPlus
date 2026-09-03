@@ -143,6 +143,7 @@ class Apollo3Machine:
         trace=None,
         chiprev: Optional[int] = None,
         idle_skip: bool = False,
+        fast_hook: bool = False,
     ) -> None:
         self.image = img
         self.log = log
@@ -163,6 +164,13 @@ class Apollo3Machine:
         self.idle_instructions_skipped = 0
         self._idle_last_head = None
         self._idle_pending = False
+        #: The native block hook, if one was asked for and could be loaded.
+        #: While it is in use the Python block hook is not registered at all,
+        #: which is the whole point — and also why tracing and watchpoints,
+        #: which need per-block Python, are incompatible with it.
+        self.native_hook = None
+        self._want_fast_hook = bool(fast_hook)
+        self._native_instructions = 0
         #: Scheduled external stimulus: [instruction_count, callable, description].
         self._events: list[list] = []
         #: Stimulus handed in from another thread -- the live viewer runs its UI
@@ -229,7 +237,21 @@ class Apollo3Machine:
         #: from the block hook because Unicorn's own memory hooks cannot be used
         #: here at all.
         self._watchpoints: list = []
-        self.uc.hook_add(UC_HOOK_BLOCK, self._on_block_timing)
+        if self._want_fast_hook:
+            if trace is not None:
+                log("  [native] --fast-hook needs per-block Python for tracing to "
+                    "work; running with the Python hook instead")
+            else:
+                from .fasthook import load as _load_native
+
+                self.native_hook = _load_native(self.uc, log=log)
+                if self.native_hook is not None:
+                    self.native_hook.set_time_quantum(self.time_quantum)
+                    self.native_hook.set_idle_loop(
+                        IDLE_LOOP_HEAD if self.idle_skip else None,
+                        IDLE_LOOP_MAX_ITERATION)
+        if self.native_hook is None:
+            self.uc.hook_add(UC_HOOK_BLOCK, self._on_block_timing)
 
         self._timers = [p for p in self.bus.peripherals if hasattr(p, "advance")]
         self.uarts = [p for p in self.bus.peripherals if isinstance(p, Uart)]
@@ -408,6 +430,10 @@ class Apollo3Machine:
         Returns a ``Watchpoint`` whose ``changes`` list collects
         ``(instructions, block_pc, before, after)``.
         """
+        if self.native_hook is not None:
+            raise RuntimeError(
+                "watchpoints need the Python block hook; build the machine "
+                "without fast_hook to use them")
         point = Watchpoint(address, size, label, on_change)
         try:
             point.value = bytes(self.uc.mem_read(address, size))
@@ -580,10 +606,15 @@ class Apollo3Machine:
 
             # The block hook drives the clocks and stops emulation the moment an
             # interrupt is deliverable, so this count is only a safety cap.
+            # The native hook keeps the quantum in its own units and stops us
+            # when it expires, so the slice here stays a safety cap either way.
             budget = slice_size
             try:
                 self.uc.emu_start(pc | 1, 0, count=budget)
                 pc = self.uc.reg_read(UC_ARM_REG_PC)
+
+                if self.native_hook is not None and self._service_native():
+                    continue
 
                 if self._idle_pending:
                     # Parked at the head of the idle busy-wait, which has not
@@ -699,6 +730,42 @@ class Apollo3Machine:
             skipped += step
         self.halts += 1
         return skipped
+
+    def _service_native(self) -> bool:
+        """The clock work the Python hook used to do per block.
+
+        Returns True if the caller should go straight round the run loop again,
+        which is how an idle fast-forward is taken.
+        """
+        native = self.native_hook
+        seen = native.state.instructions
+        advanced = seen - self._native_instructions
+        self._native_instructions = seen
+        if advanced:
+            self._instructions += advanced
+            self._advance_time(advanced)
+            self._fire_due_events(self._instructions)
+            # The quantum restarts from here, exactly as it does in the Python
+            # hook, where advancing the clocks and zeroing the counter are the
+            # same statement. Leaving it running across a stop that was not a
+            # quantum expiry makes the next one land a handful of instructions
+            # into whatever we stopped for -- and polling the IRQ sources four
+            # instructions into a handler re-arms the interrupt the handler has
+            # not cleared yet, so every peripheral IRQ gets taken twice.
+            native.state.quantum_cycles = 0
+
+        from .fasthook import REASON_IDLE
+
+        reason = native.take_stop_reason()
+        native.take_idle_hit()
+        self.cortexm.refresh_native_pending()
+
+        if reason == REASON_IDLE:
+            native.forget_idle_position()
+            self._skip_idle_spin()
+            self.cortexm.refresh_native_pending()
+            return True
+        return False
 
     def _skip_idle_spin(self, step: int = 500, limit: int = 32_000) -> int:
         """Run the clocks forward through the idle task's busy-wait.

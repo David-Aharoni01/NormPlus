@@ -556,6 +556,69 @@ It changed no behaviour — the edge is latched either way, and neither driver
 samples the level — but it is the kind of thing that is invisible until
 something does read the level and then makes no sense at all.
 
+### What Python was costing, and what was done about it
+
+Unicorn is already C, so "rewrite the emulator in C++" would not touch the CPU
+emulation. Measured on a synthetic loop with the block size this firmware
+averages:
+
+```
+no hook at all (Unicorn's ceiling)   285,000,000 instr/s     21 ns/block
+empty Python hook                     21,500,000 instr/s    279 ns/block
+hook + one uc.reg_read                 3,800,000 instr/s  1,580 ns/block
+```
+
+A 40M-instruction run taking 8.99s broke down as:
+
+| | | share |
+|---|---|---|
+| Unicorn's JIT | 0.14 s | **1.6%** |
+| Python crossings, block hook (7.39M) | ~2.1 s | 23% |
+| Interrupt-mask register reads | ~3.2 s | 36% |
+| Everything else Python | ~3.5 s | 39% |
+
+**Under 2% of the wall clock was emulating the CPU.** Two changes, no rewrite:
+
+- **`_masked` stopped going through the binding.** It reads FAULTMASK, PRIMASK
+  and BASEPRI on nearly every block while FreeRTOS holds a critical section —
+  1,094,454 times per 40M. `uc.reg_read` is 1,161 ns and almost none of it is
+  the call; the binding resolves a register class through a generator every
+  time. Straight to `uc_reg_read` with a preallocated buffer it is 279 ns.
+  (`reg_read_batch` was tried first and is *slower*: 4,892 ns for three against
+  3,477 ns individually.)
+- **`--fast-hook` runs the block hook in C** (`native/watchemu_hook.c`), which
+  is where the 23% went. Unicorn's C API takes a plain function pointer, so it
+  is registered through ctypes; everything else — devices, probes, tests — stays
+  in Python.
+
+```
+                                        instr/s     boot to the UI
+default, at the start of this           5.4M        80s
+--no-trace, now the default             7.6M        58s
++ fast register reads                   7.6M        24s   (with --idle-skip)
++ --fast-hook                          35.0M        12.6s
+```
+
+**1.4x slower than the watch, from 8.7x.**
+
+The C hook is held to exact equivalence — same exception counts, not close ones
+— and that caught two bugs that never looked like crashes:
+
+- Unicorn's `count` argument counts *instructions* while the emulator's clock
+  counts halfwords. Letting `count` end the slice ran the clock 30% fast, which
+  surfaced as twice the timer interrupts.
+- After `enter()` consumed a pending IRQ nothing told the C side, so it stopped
+  on the handler's first block, and the poll that followed re-armed the
+  interrupt before the handler had cleared its source. **Every peripheral IRQ
+  was taken exactly twice** — 338 STIMER against 674 — while PendSV, SVCall and
+  the instruction count all matched perfectly. Refreshing on entry and return
+  fixes it.
+
+It needs `native/watchemu_hook.dll` (`py -3.11 tools/watchemu/native/build.py`)
+and falls back to the Python hook when that is missing, when a rebuild changes
+the shared struct, when `--trace` is on, or when a watchpoint is asked for —
+those three need per-block Python by definition.
+
 ### Speed: 70% of a boot is the idle task spinning
 
 Reaching the UI takes ~441M instructions, which is 9.2 seconds on the watch. The

@@ -164,7 +164,7 @@ def cmd_boot(args) -> int:
         symbols, stall_window=args.stall, watch_for_stall=not args.live, log=log
     ) if tracing else None
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
-                             idle_skip=args.idle_skip)
+                             idle_skip=args.idle_skip, fast_hook=args.fast_hook)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
@@ -236,6 +236,8 @@ def cmd_boot(args) -> int:
     print(format_tasks(machine, symbols))
     print(machine.bootrom.summary())
     print(machine.bus.unknown_report())
+    if machine.native_hook is not None:
+        print(f"  block hook: native, {machine.native_hook.state.blocks:,} blocks")
     if machine.idle_skips:
         print(f"  idle skip: {machine.idle_skips:,} times, "
               f"{machine.idle_instructions_skipped:,} instructions "
@@ -325,6 +327,13 @@ def main(argv=None) -> int:
                              "27% of the run rate, so it is off by default.")
     p_boot.add_argument("--no-trace", action="store_true",
                         help=argparse.SUPPRESS)      # now the default; kept working
+    p_boot.add_argument("--fast-hook", action="store_true",
+                        help="run the per-block timing hook in C instead of "
+                             "Python (about 2.5x). Needs native/watchemu_hook.dll "
+                             "— build it with native/build.py — and falls back to "
+                             "the Python hook if it is missing. Incompatible with "
+                             "--trace and with watchpoints, which need per-block "
+                             "Python.")
     p_boot.add_argument("--idle-skip", action="store_true",
                         help="fast-forward through the FreeRTOS idle task's "
                              "busy-wait instead of emulating it. About 70%% of a "
