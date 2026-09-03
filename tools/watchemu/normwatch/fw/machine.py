@@ -239,8 +239,8 @@ class Apollo3Machine:
         self._watchpoints: list = []
         if self._want_fast_hook:
             if trace is not None:
-                log("  [native] --fast-hook needs per-block Python for tracing to "
-                    "work; running with the Python hook instead")
+                log("  [native] tracing needs per-block Python, so the C hook "
+                    "is off for this run")
             else:
                 from .fasthook import load as _load_native
 

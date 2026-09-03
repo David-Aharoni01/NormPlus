@@ -71,8 +71,13 @@ def build() -> int:
 
     command = [str(cl), "/nologo", "/O2", "/LD", str(SOURCE),
                "/Fe:" + str(OUTPUT), "/Fo:" + str(HERE / "watchemu_hook.obj")]
-    print("  " + cl.name + " /O2 /LD " + SOURCE.name)
-    result = subprocess.run(command, cwd=HERE, env=env)
+    # Quiet unless it goes wrong: this runs on demand from fasthook.load, and
+    # the linker's chatter in the middle of a boot report is just noise.
+    result = subprocess.run(command, cwd=HERE, env=env,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stdout, file=sys.stderr)
+        print(result.stderr, file=sys.stderr)
     for junk in ("watchemu_hook.obj", "watchemu_hook.exp", "watchemu_hook.lib"):
         (HERE / junk).unlink(missing_ok=True)
     return result.returncode

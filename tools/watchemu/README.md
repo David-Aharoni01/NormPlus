@@ -614,10 +614,34 @@ The C hook is held to exact equivalence — same exception counts, not close one
   the instruction count all matched perfectly. Refreshing on entry and return
   fixes it.
 
-It needs `native/watchemu_hook.dll` (`py -3.11 tools/watchemu/native/build.py`)
-and falls back to the Python hook when that is missing, when a rebuild changes
-the shared struct, when `--trace` is on, or when a watchpoint is asked for —
-those three need per-block Python by definition.
+It builds itself. `fasthook.load` compiles `native/watchemu_hook.c` when the
+library is missing *or older than its source*, because a stale library is worse
+than a missing one — it loads and runs. It falls back to the Python hook when
+there is no compiler, when a rebuild changes the shared struct (checked against
+the C `sizeof`), when `--trace` is on, or when a watchpoint is asked for; the
+last two need per-block Python by definition.
+
+**It is the default for `normwatch boot`** (`--no-fast-hook` opts out), on the
+strength of a wider comparison than the unit test does. Every observable that
+could be captured — exception counts, notify screens opened, boot-animation
+frame, lit pixels, frames, pixel bytes, NAND pages, touch reports, motion FIFO
+bytes, the active LVGL screen pointer and the gesture flags — over three
+workloads:
+
+| | `--idle-skip` off | on |
+|---|---|---|
+| full boot to the UI (445M) | identical | STIMER only, −7% |
+| boot + a swipe | identical | STIMER only, −7% |
+| boot + select a language | identical | STIMER only, −7% |
+
+So the C hook on its own is indistinguishable, including through the gesture
+path, which is the part of the firmware most sensitive to interrupt latency.
+The remaining difference belongs to `--idle-skip`, which was already known not
+to be bit-identical, and that is why *it* is still opt-in.
+
+The library default (`Apollo3Machine(fast_hook=...)`) stays **off**, so probes
+and tests keep watchpoints. It is the CLI — where the runs are long and the
+watchpoints are not — that turns it on.
 
 ### Speed: 70% of a boot is the idle task spinning
 

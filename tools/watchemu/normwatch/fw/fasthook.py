@@ -134,12 +134,61 @@ class NativeHook:
         return hit
 
 
-def load(uc, log=print) -> Optional[NativeHook]:
-    """Load and register the native hook, or return None and say why."""
+_SOURCE = _LIBRARY.with_suffix(".c")
+
+
+def _needs_build() -> Optional[str]:
+    """Why the library has to be built, or None if it is good to go."""
     if not _LIBRARY.exists():
-        log(f"  [native] {_LIBRARY.name} not built — using the Python hook "
-            f"(py -3.11 tools/watchemu/native/build.py)")
-        return None
+        return "not built yet"
+    if _SOURCE.exists() and _SOURCE.stat().st_mtime > _LIBRARY.stat().st_mtime:
+        return "older than watchemu_hook.c"
+    return None
+
+
+def _build(log) -> bool:
+    """Compile the library. Returns False and explains rather than raising.
+
+    Building it on demand matters more than it sounds: a stale library is worse
+    than a missing one, because it loads and runs. Rebuilding whenever the
+    source is newer means editing the C cannot leave a run silently using the
+    previous version.
+    """
+    import importlib.util
+
+    script = _LIBRARY.parent / "build.py"
+    if not script.exists():
+        log(f"  [native] {script.name} is missing — using the Python hook")
+        return False
+    try:
+        spec = importlib.util.spec_from_file_location("_watchemu_native_build", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.build() == 0
+    except Exception as exc:
+        log(f"  [native] could not build it ({exc}) — using the Python hook")
+        return False
+
+
+def load(uc, log=print, build: bool = True) -> Optional[NativeHook]:
+    """Load and register the native hook, or return None and say why.
+
+    Builds the library first if it is missing or older than its source, so
+    --fast-hook works without anyone having to know a build step exists.
+    """
+    reason = _needs_build()
+    if reason is not None:
+        if not build:
+            log(f"  [native] watchemu_hook is {reason} — using the Python hook")
+            return None
+        log(f"  [native] watchemu_hook is {reason} — building it")
+        if not _build(log):
+            return None
+        if _needs_build() is not None:
+            log("  [native] the build reported success but produced nothing — "
+                "using the Python hook")
+            return None
+
     try:
         library = ctypes.CDLL(str(_LIBRARY))
     except OSError as exc:
@@ -148,9 +197,8 @@ def load(uc, log=print) -> Optional[NativeHook]:
 
     size = library.watchemu_state_size()
     if size != ctypes.sizeof(State):
-        log(f"  [native] {_LIBRARY.name} is stale: it describes a "
-            f"{size}-byte state, this build expects {ctypes.sizeof(State)}. "
-            f"Rebuild it. Using the Python hook.")
+        log(f"  [native] {_LIBRARY.name} describes a {size}-byte state and this "
+            f"build expects {ctypes.sizeof(State)} — using the Python hook")
         return None
 
     try:
