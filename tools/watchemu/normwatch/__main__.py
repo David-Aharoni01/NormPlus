@@ -165,7 +165,8 @@ def cmd_boot(args) -> int:
     ) if tracing else None
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
                              idle_skip=args.idle_skip,
-                             fast_hook=not args.no_fast_hook)
+                             fast_hook=not args.no_fast_hook,
+                             deadline_quantum=not args.fixed_quantum)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
@@ -325,7 +326,7 @@ def main(argv=None) -> int:
                              "normwatch/fw/patches.py")
     p_boot.add_argument("--trace", action="store_true",
                         help="collect coverage and watch for stalls. Costs about "
-                             "27% of the run rate, so it is off by default.")
+                             "27%% of the run rate, so it is off by default.")
     p_boot.add_argument("--no-trace", action="store_true",
                         help=argparse.SUPPRESS)      # now the default; kept working
     p_boot.add_argument("--no-fast-hook", action="store_true",
@@ -342,6 +343,12 @@ def main(argv=None) -> int:
                              "unaffected — every skipped cycle is still counted — "
                              "but it is off by default because it reasons about "
                              "when the core has nothing to do.")
+    p_boot.add_argument("--fixed-quantum", action="store_true",
+                        help="advance the clocks on a fixed 256-cycle grid "
+                             "instead of running to the next deadline. The "
+                             "deadline is the default and is about 1.7x faster; "
+                             "this is here to reproduce a measurement taken "
+                             "before it, or to check one against it.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 

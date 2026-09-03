@@ -590,6 +590,19 @@ class Rm67162Display(SpiDevice):
         self._te_pin = pin
         machine.add_timer(self)
 
+    def next_deadline(self):
+        """Cycles until the TE line next changes level.
+
+        The pulse is 48,000 cycles out of an 800,000-cycle period, so neither
+        half is narrow — but the *edge* is what the panel driver waits for, and
+        landing on it exactly is what keeps the frame timing honest.
+        """
+        if self._te_machine is None:
+            return None
+        if self._te_phase < self.TE_HIGH_CYCLES:
+            return self.TE_HIGH_CYCLES - self._te_phase
+        return self.TE_PERIOD_CYCLES - self._te_phase
+
     def advance(self, cycles: int) -> None:
         if self._te_machine is None:
             return
@@ -1051,6 +1064,12 @@ class MotionSensor(I2cDevice):
     def sample_period_cycles(self) -> int:
         divider = self.registers.get(self.SMPLRT_DIV, 19)
         return 48_000_000 * (1 + divider) // 1000
+
+    def next_deadline(self):
+        """Cycles until the next sample lands in the FIFO."""
+        if not self.enabled:
+            return None
+        return max(1, self.sample_period_cycles - self._phase)
 
     def advance(self, cycles: int) -> None:
         if not self.enabled:

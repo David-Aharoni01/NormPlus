@@ -264,6 +264,18 @@ class CtimerBlock(Peripheral):
 
     # ── time ─────────────────────────────────────────────────────────────────
 
+    def next_deadline(self) -> Optional[int]:
+        """Cycles until the counters next move.
+
+        The next 32.768 kHz tick, deliberately not "the next compare crossing":
+        ``STTMR`` is readable and every ``am_util_delay_*`` in this firmware
+        spins on it, so a slice that ran past a tick without advancing would
+        hand a delay loop a stale counter and let it overshoot. Stopping on the
+        tick keeps the counter and the compares both exact, and 1464 cycles is
+        still 5.7x the fixed quantum it replaces.
+        """
+        return self.CYCLES_PER_TICK - self._acc
+
     def advance(self, cycles: int) -> None:
         self._acc += cycles
         ticks, self._acc = divmod(self._acc, self.CYCLES_PER_TICK)
@@ -308,13 +320,19 @@ class CtimerBlock(Peripheral):
                 self.counter = 0
             return
         if offset == self.STMINTEN:
+            # Enabling over an already-latched status makes an interrupt
+            # deliverable now, which no deadline could have predicted.
             self.stim_int_enable = value
+            if self.machine is not None:
+                self.machine.cut_slice()
             return
         if offset == self.STMINTCLR:
             self.stim_int_status &= ~value & 0xFFFFFFFF
             return
         if offset == self.STMINTSET:
             self.stim_int_status |= value
+            if self.machine is not None:
+                self.machine.cut_slice()
             return
         if self.SCMPR0 <= offset < self.SCMPR0 + 32:
             # Apollo3 quirk: software writes a *delta*, and the hardware latches
@@ -444,6 +462,11 @@ class Gpio(Peripheral):
         """
         bank, bit = divmod(number, 32)
         self.int_status[bank] |= 1 << bit
+        # An edge can be latched from inside a register access — a device
+        # re-asserting its line during an I2C read, say — and then it is not on
+        # any clock, so no deadline saw it coming.
+        if self.machine is not None:
+            self.machine.cut_slice()
 
     def assert_irq(self, number: int, asserted: bool) -> None:
         """Drive *number* to its active or resting level and latch the edge.
@@ -464,6 +487,25 @@ class Gpio(Peripheral):
             self.inputs[bank] |= 1 << bit
         else:
             self.inputs[bank] &= ~(1 << bit)
+
+    #: How often an asserting GPIO is re-examined, in core cycles. Same number
+    #: and same reason as Mspi.CQ_PUMP_INTERVAL: this source is level-sensitive,
+    #: so how often it is looked at decides how many times it re-pends, and that
+    #: rate is part of the model rather than a free parameter.
+    POLL_INTERVAL = 256
+
+    def next_deadline(self) -> Optional[int]:
+        """When an asserting pin needs looking at again, or None if none is.
+
+        Edges arrive from things that do have deadlines — the panel's TE line,
+        the accelerometer's sample clock, scheduled touch input — or from inside
+        a register access, which calls :meth:`raise_interrupt`. What needs a rate
+        rather than a deadline is the *level* afterwards.
+        """
+        for bank in (0, 1):
+            if self.int_status[bank] & self.storage.get(self.INT_EN[bank], 0):
+                return self.POLL_INTERVAL
+        return None
 
     def pending_irqs(self) -> list[int]:
         for bank in (0, 1):
@@ -501,8 +543,14 @@ class Gpio(Peripheral):
             return
         if offset in self.INT_SET:
             self.int_status[self.INT_SET.index(offset)] |= value & 0xFFFFFFFF
+            if self.machine is not None:
+                self.machine.cut_slice()
             return
         self.storage[offset] = value
+        if offset in self.INT_EN and self.machine is not None:
+            # Enabling an interrupt whose edge is already latched makes it
+            # deliverable at once, and nothing on the clock changed to say so.
+            self.machine.cut_slice()
 
 
 class Uart(Peripheral):
@@ -1185,6 +1233,29 @@ class Mspi(Peripheral):
         if rx_len:
             self.rx_fifo.extend(bytes(rx)[:rx_len].ljust(rx_len, b"\xff"))
         self.transfers += 1
+
+    #: How often the controller is given a chance to walk its queue, in core
+    #: cycles. This is the historical poll rate — the fixed quantum every
+    #: measurement was taken at — kept as a number here because polling *is* the
+    #: model: :meth:`pending_irqs` pumps the queue, so its frequency decides how
+    #: fast pixels reach the panel. At one poll every 16384 cycles a boot loses
+    #: two frames and three NAND pages, which is what pinned this down.
+    CQ_PUMP_INTERVAL = 256
+
+    def next_deadline(self) -> Optional[int]:
+        """When the command queue next needs a turn, or None if it has no work.
+
+        The saving is not in pumping less often while the controller is busy —
+        that would drop frames — it is in not pumping at all when the queue is
+        caught up, which is most of a boot.
+        """
+        if self.int_status & self.storage.get(self.INTEN, 0):
+            return self.CQ_PUMP_INTERVAL
+        if not self.storage.get(self.CQCFG, 0) & self.CQ_ENABLE:
+            return None
+        cur = self.storage.get(self.CQCURIDX, 0) & self.CQ_INDEX_MASK
+        end = self.storage.get(self.CQENDIDX, 0) & self.CQ_INDEX_MASK
+        return self.CQ_PUMP_INTERVAL if cur != end else None
 
     def pending_irqs(self) -> list[int]:
         # The controller walks the queue on its own, so the model has to advance

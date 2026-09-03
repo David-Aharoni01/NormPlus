@@ -92,6 +92,16 @@ EXCP_EXCEPTION_EXIT = 8
 #: ICSR PENDSVSET | PENDSTSET — a cheap test for "an exception may be pending".
 _PEND_BITS = (1 << 28) | (1 << 26)
 
+#: The fixed quantum used when deadlines are off, and the value every
+#: measurement taken before them was taken at.
+FIXED_TIME_QUANTUM = 256
+
+#: Ceiling on a deadline-driven quantum. A backstop for a machine with every
+#: clock stopped, not a tuning knob: while the STIMER runs — which is the whole
+#: of a normal boot, since the FreeRTOS tick is an STIMER compare — its own
+#: deadline is never more than one 1464-cycle tick away, so this never binds.
+MAX_TIME_QUANTUM = 48_000
+
 
 @dataclass
 class StopReason:
@@ -144,6 +154,7 @@ class Apollo3Machine:
         chiprev: Optional[int] = None,
         idle_skip: bool = False,
         fast_hook: bool = False,
+        deadline_quantum: bool = True,
     ) -> None:
         self.image = img
         self.log = log
@@ -185,11 +196,24 @@ class Apollo3Machine:
         #: too -- without it, a branch into unmapped memory left emu_start
         #: returning immediately, forever, at 100% CPU and zero instructions.
         self._faulted: Optional[str] = None
-        #: Core cycles between clock updates. This does NOT set interrupt latency
-        #: — deliverability is tested every basic block (see _on_block_timing) —
-        #: so it can be coarse. Timer interrupts arrive at most this late, against
-        #: a ~47000-cycle tick period.
-        self.time_quantum = 256
+        #: Core cycles the CPU may run before the clocks are brought forward and
+        #: the interrupt sources polled. This does NOT set interrupt latency —
+        #: deliverability is tested every basic block (see _on_block_timing) —
+        #: but it does set how long a timer can be stale, so it cannot simply be
+        #: made large: see _next_quantum.
+        self.time_quantum = FIXED_TIME_QUANTUM
+        #: Recompute the quantum from the next deadline each slice rather than
+        #: sampling on a fixed grid. Off restores the fixed quantum above.
+        self.deadline_quantum = bool(deadline_quantum)
+        #: Sources that can say how far the clock may run before they need
+        #: attention. Rebuilt when a timer is added; see _rebuild_deadlines.
+        self._deadline_sources: list = []
+        #: Set by cut_slice on the Python-hook path; see there.
+        self._cut_requested = False
+        #: The block the Python hook last stopped on, so that resuming does
+        #: not count it a second time. Mirrors watchemu_hook.c.
+        self._stopped_address = None
+        self._just_stopped = False
         #: PC -> "is this a WFI/WFE". The run loop asks after every handback, and
         #: it was reading two bytes out of the emulator to find out each time.
         #: Invalidated wholesale whenever flash is programmed.
@@ -262,6 +286,7 @@ class Apollo3Machine:
         self.ctimer: CtimerBlock = self.bus.by_base[0x40008000]
         self.gpio = self.bus.by_base[0x40010000]
         self._irq_sources = [p for p in self.bus.peripherals if hasattr(p, "pending_irqs")]
+        self._rebuild_deadlines()
 
     def add_timer(self, source) -> None:
         """Register *source* to be advanced with the clocks.
@@ -272,6 +297,15 @@ class Apollo3Machine:
         """
         if source not in self._timers:
             self._timers.append(source)
+            self._rebuild_deadlines()
+
+    def _rebuild_deadlines(self) -> None:
+        """Collect everything that can name the next moment it matters."""
+        seen: list = []
+        for source in [self.cortexm, *self._timers, *self._irq_sources]:
+            if hasattr(source, "next_deadline") and not any(s is source for s in seen):
+                seen.append(source)
+        self._deadline_sources = seen
 
     # ── memory helpers ───────────────────────────────────────────────────────
 
@@ -510,9 +544,20 @@ class Apollo3Machine:
         at 25000, and collapses entirely at 100000. Checking per basic block keeps
         latency to a few tens of instructions.
         """
+        # Stopping from a block hook leaves the block unexecuted, so it is hooked
+        # again on resume and must not be counted twice — watchemu_hook.c has the
+        # same guard for the same reason. It stopped being a rounding error the
+        # moment this hook began handing back at every quantum: a block of 256
+        # halfwords or more re-expires the quantum on re-entry, stops again, and
+        # the run livelocks with the clock advancing and the CPU executing
+        # nothing at all.
         count = size >> 1 or 1
-        self._instructions += count
-        self._quantum_cycles += count
+        if self._just_stopped and address == self._stopped_address:
+            self._just_stopped = False
+        else:
+            self._just_stopped = False
+            self._instructions += count
+            self._quantum_cycles += count
 
         if self.idle_skip and address == IDLE_LOOP_HEAD:
             # Only skip once we have seen the loop go round: arriving here twice
@@ -522,7 +567,7 @@ class Apollo3Machine:
             last, self._idle_last_head = self._idle_last_head, self._instructions
             if last is not None and self._instructions - last <= IDLE_LOOP_MAX_ITERATION:
                 self._idle_pending = True
-                uc.emu_stop()
+                self._stop_here(uc, address)
                 return
 
         if self._watchpoints:
@@ -531,13 +576,18 @@ class Apollo3Machine:
         if self.trace is not None:
             self.trace.on_block(address)
 
-        if self._quantum_cycles >= self.time_quantum:
-            cycles, self._quantum_cycles = self._quantum_cycles, 0
-            self._advance_time(cycles)
-            self._fire_due_events(self._instructions)
-            if self._instructions >= self._instruction_budget or self.stop_requested:
-                uc.emu_stop()
-                return
+        # Hand back rather than advancing the clocks here, so that this hook and
+        # the C one have the same shape: both only *count*, and the run loop
+        # advances after emu_start returns. They used to differ — this one
+        # advanced in place and carried on, the C one could only stop — which
+        # meant the native path also advanced at exception stops and this one did
+        # not. At a fixed 256-cycle quantum the two were indistinguishable; once
+        # the quantum came from a deadline and grew to ~1464, the native path
+        # polled the MSPI queue more often than this one and took two more MSPI
+        # interrupts in 20M instructions.
+        if self._cut_requested or self._quantum_cycles >= self.time_quantum:
+            self._stop_here(uc, address)
+            return
 
         # Deliverability is checked every block, not once per quantum, because
         # PendSV latency has to be near zero to be correct. FreeRTOS's
@@ -552,7 +602,13 @@ class Apollo3Machine:
         cortexm = self.cortexm
         if (cortexm.icsr & _PEND_BITS) or (cortexm.irq_pending & cortexm.irq_enabled):
             if cortexm.pending_exception() is not None:
-                uc.emu_stop()
+                self._stop_here(uc, address)
+
+    def _stop_here(self, uc, address: int) -> None:
+        """Stop emulation, remembering the block so it is not counted twice."""
+        self._stopped_address = address
+        self._just_stopped = True
+        uc.emu_stop()
 
     def _fire_due_events(self, instructions: int) -> None:
         while self._events and self._events[0][0] <= instructions:
@@ -614,6 +670,9 @@ class Apollo3Machine:
                 if self.trace is not None:
                     self.trace.on_exception(exc, pc)
 
+            if self.deadline_quantum:
+                self._set_quantum(self._next_quantum())
+
             # The block hook drives the clocks and stops emulation the moment an
             # interrupt is deliverable, so this count is only a safety cap.
             # The native hook keeps the quantum in its own units and stops us
@@ -623,8 +682,11 @@ class Apollo3Machine:
                 self.uc.emu_start(pc | 1, 0, count=budget)
                 pc = read_pc(UC_ARM_REG_PC)
 
-                if self.native_hook is not None and self._service_native():
-                    continue
+                if self.native_hook is not None:
+                    if self._service_native():
+                        continue
+                else:
+                    self._service_python()
 
                 if self._idle_pending:
                     # Parked at the head of the idle busy-wait, which has not
@@ -754,6 +816,27 @@ class Apollo3Machine:
         self.halts += 1
         return skipped
 
+    def _service_python(self) -> None:
+        """The clock work for the Python hook, done where the native one does it.
+
+        The counterpart to :meth:`_service_native`: the hook counts cycles and
+        stops, this advances by whatever it counted. Keeping the two on the same
+        footing is what makes "the C hook must be indistinguishable" a statement
+        about the C, rather than about which of two different control flows a run
+        happened to take.
+        """
+        if not self._quantum_cycles:
+            return
+        cycles, self._quantum_cycles = self._quantum_cycles, 0
+        self._advance_time(cycles)
+        self._fire_due_events(self._instructions)
+        # After, not before: advancing the clocks latches GPIO edges, and a
+        # device asking to cut a slice we are already at the end of would
+        # otherwise re-arm the request and make the next slice one block long.
+        # _service_native zeroes its own counter in the same place for the same
+        # reason.
+        self._cut_requested = False
+
     def _service_native(self) -> bool:
         """The clock work the Python hook used to do per block.
 
@@ -828,6 +911,71 @@ class Apollo3Machine:
         self.idle_skips += 1
         self.idle_instructions_skipped += skipped
         return skipped
+
+    # ── how far the CPU may run before the clocks need attention ─────────────
+
+    def _next_quantum(self) -> int:
+        """Cycles until the first moment anything on the clock changes state.
+
+        The fixed quantum this replaces is a *sampling rate*, and it degrades in
+        the way sampling always does. Measured over a 200M boot: 512 is 35%
+        faster than 256 and bit-identical; 1024 loses half the GPIO interrupts;
+        2048 starts moving STIMER counts, which is exactly where it should,
+        because one STIMER tick is 1464 cycles and a longer chunk can cross two
+        compare points and coalesce them into one.
+
+        So instead of picking a rate, ask. Everything that changes with the
+        clock knows when it next will — the STIMER's next tick, the TE line's
+        next edge, the accelerometer's next sample, the next scheduled stimulus
+        — and running to the nearest of those is not an approximation of
+        sampling finely, it is what sampling finely converges to.
+
+        What it cannot see is a change the CPU causes *during* a slice: software
+        enabling an interrupt whose status is already latched, or posting work to
+        the MSPI queue. Those call :meth:`cut_slice` from the register write, so
+        a stale deadline is shortened rather than waited out.
+        """
+        limit = MAX_TIME_QUANTUM
+        for source in self._deadline_sources:
+            due = source.next_deadline()
+            if due is not None and due < limit:
+                limit = due
+        if self._events:
+            due = self._events[0][0] - self._instructions
+            if due < limit:
+                limit = due
+        return limit if limit > 0 else 1
+
+    def _set_quantum(self, cycles: int) -> None:
+        if cycles == self.time_quantum:
+            return
+        self.time_quantum = cycles
+        if self.native_hook is not None:
+            self.native_hook.set_time_quantum(cycles)
+
+    def cut_slice(self) -> None:
+        """End the current slice at the next basic block.
+
+        For state a precomputed deadline could not have known about, because the
+        CPU itself caused it: a GPIO edge latched from inside an I2C read, an
+        interrupt enable turned on over an already-set status, a command posted
+        to the MSPI queue. The quantum is expired rather than emulation stopped,
+        so the stop still comes through the ordinary block-hook path — calling
+        ``emu_stop`` here would leave the CPU part-way through a block that the
+        hook had already counted, and re-entering it would count it twice.
+        """
+        if self.native_hook is not None:
+            # In C, quantum_cycles is only ever compared against the threshold —
+            # the clock itself is the separate `instructions` counter — so
+            # expiring it costs nothing.
+            self.native_hook.state.quantum_cycles = self.native_hook.state.time_quantum
+        else:
+            # In Python the same field *is* the elapsed-cycle accumulator, and
+            # the clock is advanced by whatever it holds. Setting it to the
+            # threshold here would invent cycles that were never executed —
+            # 0.16% of clock drift and a handful of extra timer interrupts —
+            # so the request is a flag instead.
+            self._cut_requested = True
 
     def _advance_time(self, cycles: int) -> None:
         self.cycles += cycles

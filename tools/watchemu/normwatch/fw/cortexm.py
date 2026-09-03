@@ -300,6 +300,8 @@ class CortexM:
         return 0
 
     def _systick_write(self, addr: int, value: int) -> None:
+        # Any of these moves the wrap the current slice was sized against.
+        self.machine.cut_slice()
         if addr == 0xE000E010:
             self.systick_ctrl = value & 0x7
         elif addr == 0xE000E014:
@@ -424,6 +426,17 @@ class CortexM:
             self.cpacr = value
 
     # ── time ─────────────────────────────────────────────────────────────────
+
+    def next_deadline(self) -> Optional[int]:
+        """Cycles until SysTick next wraps, or None while it is stopped.
+
+        This firmware drives the RTOS tick from an STIMER compare rather than
+        SysTick, so in practice the answer is None for the whole run — but the
+        model implements SysTick, so it has to be able to say when it matters.
+        """
+        if not self.systick_enabled or self.systick_load == 0:
+            return None
+        return (self.systick_load + 1) - self._systick_acc
 
     def advance(self, cycles: int) -> None:
         """Advance SysTick by *cycles* core clocks, pending the exception on wrap."""

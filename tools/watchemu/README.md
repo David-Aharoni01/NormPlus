@@ -170,17 +170,21 @@ no coverage), `--force-gestures` (see below), `--json`.
 ```
 normwatch/fw/
   image.py        Ambiq image header: link address, payload, both CRCs
-  viewer.py       The live window: framebuffer -> Tk, mouse -> touch panel
-tests/
-  test_exception_entry.py   Regression test for the ITSTATE bug (run it directly)
   machine.py      The machine: memory map, MMIO bus, run loop, exception delivery
   cortexm.py      ARMv7-M private peripheral block: SCB, SysTick, NVIC + exceptions
   peripherals.py  Apollo3 peripheral register models (CLKGEN, MCUCTRL, CTIMER/STIMER, MSPI, IOM, …)
   devices.py      The chips on the buses: SPI NAND, PSRAM, RM67162 panel, touch panel
   bootrom.py      Shim for the Apollo3 mask-ROM helper functions
+  fasthook.py     Loads (and builds) the C block hook; falls back to Python
   console.py      Hooks the firmware's own printf so its asserts and logs are readable
   symbols.py      Address -> source module, recovered from assert() strings
   trace.py        Coverage, execution path, stall detection
+  viewer.py       The live window: framebuffer -> Tk, mouse -> touch panel
+native/
+  watchemu_hook.c The per-block timing hook, so the hot path never enters Python
+  build.py        Finds MSVC and builds it; fasthook.py calls this on demand
+tests/            Each file is a standalone script -- run it directly:
+                  PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/<name>.py
 ```
 
 Memory map, per `docs/firmware.md` §4:
@@ -592,17 +596,17 @@ A 40M-instruction run taking 8.99s broke down as:
   in Python.
 
 ```
-                                        instr/s     boot to the UI
                                       boot to the UI (445M instructions)
                                       CLI defaults    --idle-skip
 at the start of this work                  80s            --
 --no-trace, now the default                58s            --
 + fast register reads                       --           24s
 + the C block hook                        21.9s         12.4s
-+ the three exact wins below              18.3s         10.9s
++ the three exact wins below              18.5s         10.9s
++ the deadline quantum below              11.9s          9.4s
 ```
 
-**1.97x slower than the watch at defaults, 1.18x with `--idle-skip`**, against
+**1.28x slower than the watch at defaults, 1.02x with `--idle-skip`**, against
 9.2s on the watch itself. Keep the two columns apart when quoting a number:
 `--idle-skip` is opt-in precisely because it is not bit-identical, so its
 figures do not describe what `normwatch boot` actually does.
@@ -687,6 +691,75 @@ where you would expect it, since one STIMER tick is 48e6/32768 = 1464 cycles and
 a larger chunk can cross two compare points and coalesce them. Raising the
 constant buys ~35% and buys it by moving closer to a cliff. The fix is to stop
 sampling and take the quantum from the next deadline instead.
+
+### Don't pick a sampling rate — ask when the next thing happens
+
+Everything that moves with the clock knows when it next will: the STIMER's next
+tick, the TE line's next edge, the accelerometer's next sample, the next
+scheduled touch. `_next_quantum` takes the nearest of those and the run loop goes
+exactly that far. In a normal boot the answer is almost always the STIMER tick,
+because the FreeRTOS tick is an STIMER compare and the counter is readable —
+every `am_util_delay_*` spins on `STTMR`, so running past a tick without
+advancing would hand a delay loop a stale counter. That makes **1464 cycles the
+natural quantum** where it used to be 256, and the boot goes 18.5s → 11.9s.
+
+Two sources are deliberately *not* on deadlines, and finding out why was the
+whole difficulty:
+
+- **`Mspi.pending_irqs` walks the command queue as a side effect.** It is not a
+  query. How often it is called is how fast the controller runs, which is how
+  fast pixels reach the panel — at one poll per 16384 cycles a boot loses two
+  frames and three NAND pages.
+- **`Gpio.pending_irqs` is level-sensitive**, so how often it is looked at is how
+  many times an asserting pin re-pends.
+
+For both, the poll frequency *is* the model, so they keep the historical
+256-cycle interval while they have something to say and offer no deadline at all
+when they do not — which is most of a boot. Skipping a poll that provably does
+nothing is free; skipping one that would have done something is not.
+
+The other half is `cut_slice`, for changes the CPU causes mid-slice that no
+deadline could have foreseen — an interrupt enabled over an already-latched
+status, a GPIO edge asserted from inside an I2C read. It expires the quantum
+rather than calling `emu_stop`, because stopping would leave the CPU part-way
+through a block the hook had already counted and re-entering it would count it
+twice.
+
+Two bugs came out of this, both of which only a wide comparison could have found:
+
+- **The two hooks did not have the same shape.** The Python hook advanced the
+  clocks *in place* and carried on; the C one could only stop. So the native path
+  also advanced at exception stops and the Python path did not. At a fixed 256
+  that was indistinguishable; at 1464 the native path polled the MSPI queue more
+  often and took two more MSPI interrupts per 20M. Both hooks now only count, and
+  the run loop advances — and they agree on the instruction total exactly, which
+  they never did before.
+- **The Python hook had no re-entry guard.** `watchemu_hook.c` has one, because
+  stopping from a block hook leaves the block unexecuted and it is hooked again
+  on resume. In Python that had always been a rounding error — until the hook
+  started handing back every quantum, at which point a block of 256 halfwords or
+  more re-expires the quantum on re-entry, stops again, and **the run livelocks
+  with the clock advancing and the CPU executing nothing.** It looked like the
+  firmware hanging at 3M instructions.
+
+It is on by default (`--fixed-quantum` opts out) and it is *not* bit-identical,
+so here is exactly what moves. Over a full boot to the UI, a boot with a swipe
+and a boot with a language selection:
+
+| | fixed 256 | deadline |
+|---|---|---|
+| frames, pixel bytes, NAND pages, `scr_act`, gesture flags, animation frame, unmodelled MMIO | — | **all identical** |
+| GPIO (exc 29) | 72 / 106 / 102 | **identical** |
+| MSPI (exc 36) | 3091 / 1278 / 3528 | +2 / +1 / +2 |
+| STIMER (exc 39) | 9243 / 4101 / 9561 | +1 / +1 / +1 |
+| PendSV (exc 14) | 4632 / 1998 / 4720 | −8 / 0 / −18 |
+
+Everything the watch actually *did* is identical; exception delivery moves by up
+to 0.4%. For scale, `--idle-skip` moves STIMER by ~4% and stays opt-in for it.
+One check had to be loosened: `test_idle_skip`'s clock comparison, because
+`machine.cycles` also counts what the boot ROM's delay helper says it burned and
+the two runs enter it a different number of times — 0.012% over 100M, in a
+counter nothing reads.
 
 ### Speed: 70% of a boot is the idle task spinning
 
