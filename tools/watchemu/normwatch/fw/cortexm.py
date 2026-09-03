@@ -150,8 +150,12 @@ def _make_fast_reg_reader(uc):
             _fn(_h, register, _ref)
             return _buf.value
 
-        # Prove it agrees with the supported path before trusting it.
-        for probe in (UC_ARM_REG_PRIMASK, UC_ARM_REG_BASEPRI, UC_ARM_REG_FAULTMASK):
+        # Prove it agrees with the supported path before trusting it. PC is on
+        # the list because the run loop reads it after every emu_start, and a
+        # wrong answer there would send emulation somewhere rather than merely
+        # misreading a mask bit.
+        for probe in (UC_ARM_REG_PRIMASK, UC_ARM_REG_BASEPRI, UC_ARM_REG_FAULTMASK,
+                      UC_ARM_REG_PC):
             if read(probe) != uc.reg_read(probe):
                 return uc.reg_read, False
         return read, True
@@ -168,6 +172,9 @@ class CortexM:
         #: See _make_fast_reg_reader. Falls back to uc.reg_read if the binding
         #: does not look the way we expect.
         self._reg, self.fast_reg_reads = _make_fast_reg_reader(machine.uc)
+        #: The same reader, for callers outside this class — the run loop reads
+        #: PC through it after every emu_start.
+        self.read_register = self._reg
 
         # SCB
         self.vtor = 0

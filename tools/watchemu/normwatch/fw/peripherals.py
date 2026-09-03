@@ -1329,10 +1329,17 @@ class JedecId(Peripheral):
 class Bus:
     """Address decode across every modelled peripheral, with a gap log."""
 
+    #: Every peripheral here is a 4 KB block, so the page number is enough to
+    #: pick one out. Nothing depends on that being true — a peripheral of any
+    #: size claims every page it touches, and the bounds are still checked.
+    _PAGE_SHIFT = 12
+
     def __init__(self, machine=None) -> None:
         self.machine = machine
         self.peripherals: list[Peripheral] = []
         self.by_base: dict[int, Peripheral] = {}
+        self._by_page: dict[int, Peripheral] = {}
+        self._shared_pages: set[int] = set()
         self.unknown_reads = collections.Counter()
         self.unknown_writes = collections.Counter()
         self.unknown_storage: dict[int, int] = {}
@@ -1340,12 +1347,31 @@ class Bus:
     def add(self, peripheral: Peripheral) -> Peripheral:
         self.peripherals.append(peripheral)
         self.by_base[peripheral.base] = peripheral
+        first = peripheral.base >> self._PAGE_SHIFT
+        last = (peripheral.base + peripheral.size - 1) >> self._PAGE_SHIFT
+        for page in range(first, last + 1):
+            # setdefault, not assignment: the scan this replaces returned the
+            # first peripheral added that covered the address, so where two
+            # models share a page the first still wins — and the page is marked
+            # so a miss on it falls back to the scan instead of reporting a gap.
+            if self._by_page.setdefault(page, peripheral) is not peripheral:
+                self._shared_pages.add(page)
         return peripheral
 
     def find(self, addr: int) -> Optional[Peripheral]:
-        for p in self.peripherals:
-            if p.base <= addr < p.base + p.size:
-                return p
+        """Which peripheral owns this address, or None.
+
+        Called on every MMIO access — 722k times in a 200M-instruction boot — so
+        it is a dict lookup rather than a scan of all twenty-odd peripherals.
+        """
+        page = addr >> self._PAGE_SHIFT
+        p = self._by_page.get(page)
+        if p is not None and p.base <= addr < p.base + p.size:
+            return p
+        if page in self._shared_pages:
+            for p in self.peripherals:
+                if p.base <= addr < p.base + p.size:
+                    return p
         return None
 
     def describe(self, addr: int) -> str:

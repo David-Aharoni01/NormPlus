@@ -190,6 +190,10 @@ class Apollo3Machine:
         #: so it can be coarse. Timer interrupts arrive at most this late, against
         #: a ~47000-cycle tick period.
         self.time_quantum = 256
+        #: PC -> "is this a WFI/WFE". The run loop asks after every handback, and
+        #: it was reading two bytes out of the emulator to find out each time.
+        #: Invalidated wholesale whenever flash is programmed.
+        self._wait_cache: dict[int, bool] = {}
 
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M4)
@@ -315,6 +319,8 @@ class Apollo3Machine:
         if not (FLASH_BASE <= addr < FLASH_BASE + FLASH_SIZE):
             self.log(f"  [flash] refusing a write outside internal flash at 0x{addr:08X}")
             return
+        # Code the run loop has already classified may have just changed under it.
+        self._wait_cache.clear()
         if erase:
             self.uc.mem_write(addr, data)
             return
@@ -581,6 +587,10 @@ class Apollo3Machine:
         self._instructions = 0
         self._quantum_cycles = 0
         self._instruction_budget = max_instructions
+        # Bound once: this is read after every handback — 776k times in a 200M
+        # boot — and the binding's reg_read resolves a register class through a
+        # generator on each call. Same C function either way.
+        read_pc = self.cortexm.read_register
 
         while self._instructions < max_instructions:
             if self.stop_requested:
@@ -611,7 +621,7 @@ class Apollo3Machine:
             budget = slice_size
             try:
                 self.uc.emu_start(pc | 1, 0, count=budget)
-                pc = self.uc.reg_read(UC_ARM_REG_PC)
+                pc = read_pc(UC_ARM_REG_PC)
 
                 if self.native_hook is not None and self._service_native():
                     continue
@@ -633,7 +643,7 @@ class Apollo3Machine:
                     self.uc.reg_write(UC_ARM_REG_PC, pc)
                     continue
             except UcError as e:
-                pc = self.uc.reg_read(UC_ARM_REG_PC)
+                pc = read_pc(UC_ARM_REG_PC)
                 if pc < EXC_RETURN_MARKER:
                     if self.reset_requested:
                         stats.stop = StopReason("reset", "firmware requested a system reset", pc)
@@ -710,10 +720,23 @@ class Apollo3Machine:
     _WAIT_ENCODINGS = (b"\x30\xbf", b"\x20\xbf")  # WFI, WFE
 
     def _is_wait_instruction(self, pc: int) -> bool:
+        """Is the core parked on a WFI/WFE?
+
+        Asked after every handback, so the answer is memoised by address — the
+        mem_read behind it was 800k calls and as many ctypes buffers per 200M
+        instructions, to look at the same two bytes over and over. A read that
+        faults is not cached, because the mapping it failed against can change.
+        """
+        pc &= 0xFFFFFFFE
+        cached = self._wait_cache.get(pc)
+        if cached is not None:
+            return cached
         try:
-            return bytes(self.uc.mem_read(pc & 0xFFFFFFFE, 2)) in self._WAIT_ENCODINGS
+            verdict = bytes(self.uc.mem_read(pc, 2)) in self._WAIT_ENCODINGS
         except UcError:
             return False
+        self._wait_cache[pc] = verdict
+        return verdict
 
     def _wait_for_interrupt(self, step: int = 2_000, limit: int = 4_000) -> int:
         """Run the clocks forward until an exception is pending.

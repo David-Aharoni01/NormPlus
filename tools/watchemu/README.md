@@ -593,13 +593,19 @@ A 40M-instruction run taking 8.99s broke down as:
 
 ```
                                         instr/s     boot to the UI
-default, at the start of this           5.4M        80s
---no-trace, now the default             7.6M        58s
-+ fast register reads                   7.6M        24s   (with --idle-skip)
-+ --fast-hook                          35.0M        12.6s
+                                      boot to the UI (445M instructions)
+                                      CLI defaults    --idle-skip
+at the start of this work                  80s            --
+--no-trace, now the default                58s            --
++ fast register reads                       --           24s
++ the C block hook                        21.9s         12.4s
++ the three exact wins below              18.3s         10.9s
 ```
 
-**1.4x slower than the watch, from 8.7x.**
+**1.97x slower than the watch at defaults, 1.18x with `--idle-skip`**, against
+9.2s on the watch itself. Keep the two columns apart when quoting a number:
+`--idle-skip` is opt-in precisely because it is not bit-identical, so its
+figures do not describe what `normwatch boot` actually does.
 
 The C hook is held to exact equivalence — same exception counts, not close ones
 — and that caught two bugs that never looked like crashes:
@@ -642,6 +648,45 @@ to be bit-identical, and that is why *it* is still opt-in.
 The library default (`Apollo3Machine(fast_hook=...)`) stays **off**, so probes
 and tests keep watchpoints. It is the CLI — where the runs are long and the
 watchpoints are not — that turns it on.
+
+### After the C hook, the cost moved to leaving Unicorn
+
+Profiling a 200M boot with the native hook active shows a completely different
+shape: the block hook is gone from the top of the list, and what dominates now
+is **776k round trips out of `emu_start`** — one every 258 clock units, because
+`time_quantum` is a fixed 256. Each one costs an `emu_start`, a
+`_service_native`, an `_advance_time` over every timer and IRQ source, a
+`mem_read` and two register reads.
+
+Three of those costs were pure overhead and came off without changing a single
+emulated value:
+
+- **`Bus.find` scanned every peripheral on every MMIO access** — 722,408 linear
+  scans over twenty-odd entries per 200M instructions. It is a page-indexed dict
+  lookup now. It could not simply be bound into the `mmio_map` closure: the MMIO
+  windows are two 256 MB regions, not one per peripheral, so the closure knows
+  the window and not the device.
+- **The WFI probe read two bytes out of the emulator after every handback** —
+  803,666 `mem_read`s and as many ctypes buffers, to look at the same
+  instruction over and over. Memoised by PC, and invalidated whenever flash is
+  programmed, because the code underneath a cached address can change.
+- **The post-`emu_start` PC read went through the binding.** `CortexM` already
+  builds a raw `uc_reg_read` reader for `_masked`; the run loop uses it too now.
+  PC was added to that reader's self-check, since a wrong answer *there* sends
+  emulation somewhere rather than merely misreading a mask bit.
+
+Together: 48.98M Python calls per 200M instructions down to 41.21M, and the boot
+from 21.9s to 18.3s. Fingerprints identical across boot, boot + a swipe and boot
++ a language selection — captured before and after on the same tree, which is
+the only comparison that can catch a change moving both sides of a setting.
+
+What is left is the handback *rate*, and a fixed quantum is a fixed sampling
+rate. Raising it to 512 is a third faster and still bit-identical; 1024 loses
+half the GPIO interrupts; 2048 starts moving STIMER counts, which is exactly
+where you would expect it, since one STIMER tick is 48e6/32768 = 1464 cycles and
+a larger chunk can cross two compare points and coalesce them. Raising the
+constant buys ~35% and buys it by moving closer to a cliff. The fix is to stop
+sampling and take the quantum from the next deadline instead.
 
 ### Speed: 70% of a boot is the idle task spinning
 
