@@ -9,13 +9,20 @@ The invariant that makes it usable is that instructions ARE the emulated clock:
 every skipped cycle is still counted and still advances the timers, so anything
 driven by time happens at the same emulated instant either way.
 
-It is NOT bit-identical, and these tests say so rather than pretending
-otherwise. The totals agree to within 100 instructions in 20M and the boot
-animation lands on exactly the same frame, but the STIMER interrupt count shifts
-by about 4% because a tick the fully emulated run coalesced can be delivered
-separately here. Finer steps converge on the same shifted number, so it is a
-real difference in delivery rather than sampling error. That is the reason the
-flag exists instead of this being the default.
+These tests used to record a 4% shift in the STIMER count (338 -> 352) as a
+property of the skip, and it was not one. It was the *Python block hook*, which
+advanced the clocks in place and carried on instead of handing back, so at the
+moment it stopped here to fast-forward it was holding counted-but-unapplied
+cycles and the skip started from a clock that was behind. Measured on the commit
+before that was fixed: the Python hook gave 338 -> 352 and the C hook gave
+338 -> 338 on the same run. The skip was never the inexact part.
+
+So the assertions below now demand exact equality, which is a far stronger guard
+than the 10% tolerance they replaced. Checked at 20M, 100M, 200M and 445M, on
+both hooks.
+
+The flag stays opt-in anyway: it reasons about when the core has nothing to do
+rather than executing it, and that is worth asking for on purpose.
 
 Run with:  PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_idle_skip.py
 """
@@ -41,8 +48,6 @@ BUDGET = 20_000_000
 #: The boot animation's state: frame count at +4, current frame at +0x10. It is
 #: driven by timers, so it is a direct readout of the emulated clock.
 ANIMATION = 0x10000114
-#: STIMER_CMPR0. The one exception whose count the skip is allowed to move.
-STIMER_EXCEPTION = 39
 
 _img = image_mod.load(IMAGE)
 
@@ -124,27 +129,23 @@ def test_the_clock_agrees_to_a_rounding_error():
     # proportional bound rather than an absolute one. It was under 1,000 while
     # the quantum was a fixed 256 -- a pure boundary effect -- and the deadline
     # quantum turned it into slow drift: 0.008% over 20M, 0.007% over 50M,
-    # 0.012% over 100M. Two orders of magnitude below the ~4% of STIMER delivery
-    # --idle-skip is already documented to move, and in a counter that nothing
-    # in the emulator reads.
+    # 0.012% over 100M. This is now the only thing about --idle-skip that is
+    # not exact, and it is in a counter nothing in the emulator reads.
     drift = abs(plain.cycles - skipped.cycles) / max(1, plain.cycles)
     assert drift < 0.0005, f"clock drifted {drift:.4%}: {plain.cycles} vs {skipped.cycles}"
 
 
-def test_the_divergence_is_confined_to_timer_delivery():
-    # PendSV and the MSPI have to match exactly: a skip that lost a context
-    # switch or a transfer would be unusable. STIMER is allowed to move a few
-    # percent, and is documented as doing so.
+def test_every_exception_matches_exactly():
+    # This used to allow STIMER to move up to 10%, because it did: 338 -> 352.
+    # That turned out to be the Python block hook, not the skip -- the C hook
+    # gave 338 -> 338 on the same commit -- and once both hooks were put on the
+    # same footing it went away. Exact equality is the real invariant, so assert
+    # it: a skip that shifts interrupt delivery at all is a skip that has
+    # decided the core was idle when it was not.
     plain, _ = run(False)
     skipped, _ = run(True)
     a, b = dict(plain.cortexm.exception_counts), dict(skipped.cortexm.exception_counts)
-    assert set(a) == set(b), (a, b)
-    for number in a:
-        if number == STIMER_EXCEPTION:
-            drift = abs(a[number] - b[number]) / max(1, a[number])
-            assert drift < 0.10, f"STIMER moved {drift:.0%}: {a[number]} -> {b[number]}"
-        else:
-            assert a[number] == b[number], (number, a[number], b[number])
+    assert a == b, (a, b)
 
 
 def test_it_is_off_unless_asked_for():

@@ -151,7 +151,9 @@ def test_a_real_run_is_unchanged_where_it_can_be_seen():
     # Exception delivery moves by a hair and is allowed to. Over the three
     # workloads this was checked against -- a full boot to the UI, a boot with a
     # swipe and a boot with a language selection -- GPIO matched exactly, MSPI
-    # moved by 1 or 2 in ~3,000 and PendSV by up to 18 in ~4,700.
+    # moved by 1 or 2 in ~3,000 and PendSV by up to 18 in ~4,700. This is the
+    # only switch in the emulator that is not exact; --idle-skip was believed to
+    # be one for a long time and turned out not to be.
     a, b = fixed.cortexm.exception_counts, deadline.cortexm.exception_counts
     assert set(a) == set(b), (dict(a), dict(b))
     for number in a:

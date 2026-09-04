@@ -340,9 +340,11 @@ def main(argv=None) -> int:
                              "busy-wait instead of emulating it. About 70%% of a "
                              "boot is spent there and this build never sleeps, so "
                              "this is most of the run time. The emulated clock is "
-                             "unaffected — every skipped cycle is still counted — "
-                             "but it is off by default because it reasons about "
-                             "when the core has nothing to do.")
+                             "unaffected — every skipped cycle is still counted, "
+                             "and exception counts match exactly with it on and "
+                             "off — but it is off by default because it reasons "
+                             "about when the core has nothing to do rather than "
+                             "executing it.")
     p_boot.add_argument("--fixed-quantum", action="store_true",
                         help="advance the clocks on a fixed 256-cycle grid "
                              "instead of running to the next deadline. The "

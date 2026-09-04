@@ -646,8 +646,13 @@ workloads:
 
 So the C hook on its own is indistinguishable, including through the gesture
 path, which is the part of the firmware most sensitive to interrupt latency.
-The remaining difference belongs to `--idle-skip`, which was already known not
-to be bit-identical, and that is why *it* is still opt-in.
+
+That right-hand column was read the wrong way round at the time. It was taken as
+"`--idle-skip` is the inexact one", and it is not — it says the two *hooks*
+disagree when the skip is on, and the C hook was the one that was right. The
+Python hook advanced the clocks in place instead of handing back, so when it
+stopped to fast-forward it was holding counted-but-unapplied cycles. Fixed in
+the deadline-quantum work below; the column is zeroes now.
 
 The library default (`Apollo3Machine(fast_hook=...)`) stays **off**, so probes
 and tests keep watchpoints. It is the CLI — where the runs are long and the
@@ -755,7 +760,8 @@ and a boot with a language selection:
 | PendSV (exc 14) | 4632 / 1998 / 4720 | −8 / 0 / −18 |
 
 Everything the watch actually *did* is identical; exception delivery moves by up
-to 0.4%. For scale, `--idle-skip` moves STIMER by ~4% and stays opt-in for it.
+to 0.4%. (`--idle-skip`, for a long time the standing example of an inexact
+switch, turned out not to be one — see below.)
 One check had to be loosened: `test_idle_skip`'s clock comparison, because
 `machine.cycles` also counts what the boot ROM's delay helper says it burned and
 the two runs enter it a different number of times — 0.012% over 100M, in a
@@ -796,14 +802,30 @@ default, before          5.4M        80s
 
 That is 3.0x slower than the watch instead of 8.7x.
 
-**Idle-skip is opt-in because it is not bit-identical.** Totals agree to within
-100 instructions in 20M and the boot animation lands on exactly the same frame,
-but the STIMER interrupt count moves by about 4% (338 -> 352) because a tick the
-fully emulated run coalesced can be delivered separately. Finer steps do not
-close the gap — 2000, 1000, 500, 250 and 100 all converge on 352 — so it is a
-real difference in delivery, not sampling error. `tests/test_idle_skip.py` pins
-what does hold: same animation frame, clock within a rounding error, PendSV and
-MSPI counts exact, and STIMER allowed to move a few percent and no more.
+**Idle-skip is bit-identical, and the long-standing claim that it was not was
+never about the skip.** For most of this project's life the docs here said the
+STIMER count moved ~4% (338 -> 352) with the skip on, and treated that as the
+price of it. It was the *Python block hook*: it advanced the clocks in place and
+carried on rather than handing back, so at the moment it stopped to fast-forward
+it held cycles it had counted and not yet applied, and the skip began from a
+clock that was behind. On the commit before that was fixed, the same 20M run
+gives 338 -> 352 on the Python hook and **338 -> 338 on the C hook**. The skip
+was never the inexact part.
+
+Once both hooks were put on the same footing, exception counts match exactly
+with the skip on and off — at 20M, 100M, 200M and 445M, on both hooks. So
+`tests/test_idle_skip.py` now asserts exact equality where it used to allow
+STIMER 10% of slack, which is a much stronger guard: a skip that shifts
+interrupt delivery at all is a skip that decided the core was idle when it was
+not.
+
+One thing is still not exact, and it is not the clock: `machine.cycles` also
+accumulates whatever the boot ROM's delay helper reports burning, and the two
+runs enter that helper a different number of times — 0.012% over 100M, in a
+counter nothing in the emulator reads.
+
+It stays opt-in regardless. It reasons about when the core has nothing to do
+instead of executing it, and that judgement is worth asking for on purpose.
 
 Detection is deliberately narrow. The skip only engages on the second
 consecutive arrival at the loop head within 200 instructions — meaning the loop

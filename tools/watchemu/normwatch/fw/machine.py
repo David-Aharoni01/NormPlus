@@ -888,15 +888,23 @@ class Apollo3Machine:
         where it would have got to anyway. Bounded, so that an idle loop with
         every source disabled cannot hang the run.
 
-        **It is not bit-identical, which is why it is opt-in.** Over a 20M
-        instruction run the totals match to within 100 instructions and the boot
-        animation reaches exactly the same frame, but the STIMER interrupt count
-        moves by about 4% (338 -> 352) because the moments at which pending
-        interrupts are noticed differ, and a tick that the fully emulated run
-        coalesced can be delivered separately here. Making ``step`` finer does
-        not close the gap — 2000, 1000, 500, 250 and 100 all converge on 352 —
-        so it is a real difference in delivery, not sampling error. Nothing that
-        depends on exact interrupt counts should be measured with this on.
+        **It is bit-identical, and the long-standing claim that it was not was
+        never about this function.** What used to move the STIMER count by 4%
+        (338 -> 352 over 20M) was the *Python block hook*, which advanced the
+        clocks in place and carried on rather than handing back — so at the
+        moment it stopped here to fast-forward, cycles it had counted had not
+        been applied yet, and the skip began from a clock that was behind. The C
+        hook never had the problem: measured on the commit before that was
+        fixed, the Python hook gave 338 -> 352 and the C hook gave 338 -> 338 on
+        the same run.
+
+        Now that both hooks only count and the run loop advances, exception
+        counts match exactly with the skip on and off — checked at 20M, 100M,
+        200M and 445M, on both hooks. See ``tests/test_idle_skip.py``.
+
+        It is still opt-in, because it reasons about when the core has nothing
+        to do rather than executing it, and that judgement is worth asking for
+        explicitly.
         """
         start = self._instructions
         for _ in range(limit):
