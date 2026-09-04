@@ -88,12 +88,43 @@ watch: the analogue hands carry the time and the AMOLED only adds the digital bl
 Getting here needed four fixes to the bus model, all recorded below: the resource path,
 the MSPI interrupt, the command queue, and bit-expanded NAND commands.
 
-**Where it stops short.** *No radio.* The BLE stack never reaches the BLEIF registers, so
-there is nothing to bridge to the phone yet - see
+**Where it stops short.** *The radio powers up, but nothing is behind it yet.*
+
+This paragraph used to say the BLE stack never reached the BLEIF registers at all. That
+was wrong, and it was wrong in the most expensive way: it was a conclusion drawn from an
+access counter that read zero, and the reason it read zero was two mistakes in **this**
+model, not a decision by the firmware.
+
+`am_hal_ble_power_control` (`0x0008A340`) was running the whole time. It got through the
+MCUCTRL.FEATUREENABLE handshake and then failed in `am_hal_pwrctrl_periph_enable`
+(`0x0008D2C0`), which polls `PWRCTRL.DEVPWRSTATUS` for a per-peripheral bit it reads out
+of a table at `0x000CB1EC` - three words each, word0 the DEVPWREN mask and word1 the
+DEVPWRSTATUS mask. **They are different bits.** This model answered DEVPWRSTATUS by
+mirroring DEVPWREN, which satisfies every other peripheral by coincidence (MSPI wants
+status `0x40` and gets it because IOM5's *enable* bit is `0x40`) and cannot ever satisfy
+the BLE controller, which wants status `0x100` from enable `0x2000` - and `0x100` belongs
+to UART1, which this firmware never powers. The second mistake was the status register's
+address: all three sites that read the controller's state use `0x5000C30C`
+(`0x0008A422` for `B2M_STATE`, `0x00089590` for bit 3, `0x0008923A` for bit 7), not the
+`0x308` that had been guessed here.
+
+With those two fixed the firmware runs its entire bring-up at ~0.27s of watch time and
+hands over to its HCI transport, which then polls `BSTATUS` for a controller that does not
+exist yet. So there *is* an HCI stream to bridge now, and the seam is the FIFO - see
 [What to build next](#what-to-build-next).
 
-Getting the emulated firmware to talk to `:app` in the Android emulator needs the BLEIF
-model (below), and is not implemented.
+The lesson worth keeping: a counter that reads zero is not evidence the firmware declined
+to do something. It is equally evidence that this model told it not to.
+
+**It is not free.** The transport polls inside a critical section, so with no controller
+answering the firmware spends ~100M instructions up front in an interrupt-masked retry and
+keeps retrying afterwards: about 5.5M MMIO reads over a boot, `bootrom_delay_cycles` up
+from 190k to 4.3M, 18% of the FreeRTOS ticks never delivered, and roughly 2.1x on the wall
+clock — 3.1x until the boot ROM shim was profiled, which is its own story below. The screen
+still reaches first-run setup, about a third later in budget terms.
+`--no-ble` withholds that one status bit and gives back the old behaviour bit for bit -
+same exception counts, same 9,770 idle skips, same 509 NAND pages - which is what the
+optimisation tests use, since with the radio on there is much less idle time to measure.
 
 ## Running it
 
@@ -696,6 +727,194 @@ where you would expect it, since one STIMER tick is 48e6/32768 = 1464 cycles and
 a larger chunk can cross two compare points and coalesce them. Raising the
 constant buys ~35% and buys it by moving closer to a cliff. The fix is to stop
 sampling and take the quantum from the next deadline instead.
+
+### The watch talks to its radio
+
+Once power-up worked the firmware's Cordio host started driving the transport, and the
+whole of it could be read off a running machine rather than guessed. The send path is at
+0x000891F0 and the receive path at 0x00089C92:
+
+| what | where the firmware reads it | meaning |
+|---|---|---|
+| `PWRCMD` bits [3:2] | written at 0x0008A6D4 / 0x0008A6E8 | 3 = wake the controller, 2 = let it sleep |
+| `BSTATUS` bit 3 | 0x00089590 | controller is awake and its SPI is ready |
+| `BSTATUS` bit 7 | 0x0008923A, 0x00089C92 | controller has something to hand over |
+| `CMD` [4:0] / [19:8] | written at 0x00089672 | direction (1 write, 2 read) and TSIZE |
+| `FIFOPTR` bits [15:8] | 0x0008931E | free space in the write FIFO |
+| `FIFOPTR` bits [23:16] | 0x000899B4 | bytes waiting in the read FIFO |
+| `INTSTAT` bit 0 | 0x0008938E | the transfer you asked for is done |
+
+Bit 3 is the gate on everything: with it clear the firmware waits 300 x 160us = 48ms,
+gives up, and starts over. The old placeholder never set it, which is why nothing had
+ever been seen to move.
+
+`FIFOPTR` is worth singling out because it is the kind of mistake that looks like a hang.
+The placeholder returned `0x00200000` with the comment "plenty of transmit room" — but
+0x20 there lands in bits [23:16], which is the *read* count. The send loop reads bits
+[15:8], saw zero room, and waited for ever. The two counts are one register and one
+transposition apart.
+
+**The first packet out of the watch is `01 bb f1 02 54 06`.** The builder at 0x00089C24
+assembles it a byte at a time: `1` for an H4 command, an opcode low byte from a table, a
+hardcoded `0xF1` for the high byte, a length of 2, and a 16-bit value from the same table
+entry. So it is Ambiq's vendor register/trim sequence, one command per entry.
+
+### The radio is a Nationz NZ8801 with no firmware in it
+
+That first packet is not standard HCI, and chasing it as HCI is a dead end. It is the first
+command of a **firmware download**: the watch's BLE controller is a Nationz NZ8801 that
+boots empty, and the Apollo3 gives it its firmware every time the watch starts.
+
+The protocol is three commands per section — opcode high byte is the phase, low byte is the
+section id:
+
+```
+01 <section> F1 02 <len lo> <len hi>      begin, and the total length
+01 <section> F2 <n> <n bytes of payload>  data, n <= 0x80
+01 <section> F3 02 <crc lo> <crc hi>      end
+```
+
+and this watch sends four: `0xBB` (1620 bytes of code), `0xCC` (560 more), `0xDD` (194
+bytes) and `0xEE` with a length of zero, which means *run it*. `0xDD` is the interesting
+one — it is a RivieraWaves **NVDS** blob, `"NVDS"` then `[tag][0x06][length][data]` records,
+tag 1 a BD address and tag 2 the string `"NZ8801V1A"`. That is how the part names itself.
+
+**The firmware spells out what it wants back.** At `0x00089CC6` it assembles the reply it
+expects and compares against it at `0x00089CEA`:
+
+```
+04 <section> <phase> 01 00
+```
+
+Five bytes, not an HCI Command Complete — which is why answering with one is refused. After
+the `0xEE` go-ahead the controller restarts into what it was given and says so
+*unsolicited*, in that same shape; the firmware is already waiting for it at `0x00089F56`
+and checks only that the second byte is `0xEE`. From there the link is ordinary HCI and the
+first thing across it is the vendor command `0xFD04`.
+
+One trap in that last step. The announcement is read **two bytes at a time**
+(`0x00089F64`), and the drain loop will not move at all below four (`0x000899C2`). Report a
+literal 2 in `FIFOPTR` and the firmware parks against its own threshold for ever, which
+looks exactly like a dead controller — the count has to be rounded up to a whole word,
+because the FIFO holds words.
+
+`NationzController` in `devices.py` does all of this and keeps every section it is given,
+so `nvds_tags()` reads the part name and BD address straight off the wire. It answers so
+the firmware's stack can start; it is not a radio, and putting a real one behind it is the
+rest of card #25.
+
+**The radio now costs nothing.** A 576M boot is 14.45s with it fully up against 14.37s with
+it switched off, 136 frames and 509 NAND pages either way, all 16 tasks healthy and the BLE
+task parked on its event group. The retry storm was never the price of having a radio, only
+the price of having one that nothing was talking back to.
+
+### Three ways to desynchronise a byte stream
+
+Getting from "the download completes" to "the firmware trusts its controller" was three
+separate rounds, and all three failures looked the same from outside: the watch restarts
+the download. Worth writing down, because each one is invisible in a register trace and
+obvious in a byte log.
+
+**The go-ahead is announced, not acked.** `01 EE F1` means *run what I gave you*. The
+controller restarts into it, so it cannot answer the command -- it sends one message, the
+announcement, once it is up. Sending both an ack and an announcement leaves five bytes in
+the queue, and from then on every read is five bytes out of step. This one is nastier than
+it sounds: the run still reported "HCI up" and a plausible packet count, and it took a log
+of `take(n)` calls against what was queued to see that a message had been left behind.
+
+**A read is padded to TSIZE.** The bus clocks TSIZE bytes off the controller whether or not
+it has that many. The firmware reads an HCI event in a fixed nine-byte window
+(0x0008A058), so handing back exactly the seven bytes of a Command Complete leaves the
+drain loop at 0x000899B0 waiting for two that are never coming.
+
+**`INTSTAT` bit 8 mirrors `BSTATUS` bit 3.** The readiness check at 0x000895A4 reads
+*either* register depending on a handle byte, and the firmware sets that byte at
+0x0008A076 -- the last step of bring-up. So every check before that point goes through
+BSTATUS and every check afterwards through INTSTAT, and a model with only the first gets
+the firmware all the way up before it decides its controller has vanished.
+
+### A real stack behind the seam
+
+`blelink.py` puts a bumble `Controller` on a `LocalLink` behind the NZ8801 bootloader. Two
+things are answered locally rather than forwarded: the download phase, which is not HCI at
+all, and every OGF 0x3F vendor opcode -- bumble replies to a vendor opcode by logging an
+error and emitting *nothing*, which the firmware reads as a dead controller. That is the
+same split `tools/emulator/norm_emu_bridge.py` already makes for Google's 0xFD53 on the
+Android side: the vendor space belongs to whoever is emulating the part.
+
+Bumble runs on its own thread because it is asyncio and the emulator is not, and because
+`Controller.send_hci_packet` defers through `call_soon` -- a reply is never ready by the
+time `on_hci_packet` returns. A command hands off and waits briefly for the answer, which
+makes the exchange look synchronous to the emulator and keeps the watch's own timeouts
+from racing the loop.
+
+**It is wired in but not yet exercised.** After the download the firmware runs a vendor
+init sequence of its own -- `0xFD04`, then `0xFD02` with parameters `54 60 00 20` -- and
+stalls on the answer to the second, so nothing standard has reached bumble yet. INTEN stays
+zero and the BLE interrupt is never enabled, so this is still a polling stall and not a
+missing IRQ.
+
+### Turning the radio on moved the cost somewhere nobody had looked
+
+Powering up the BLE controller made a boot about 3.1x slower, and the obvious
+suspect was the BLEIF register the firmware polls: 5,365,844 of the 5,473,007
+BLEIF reads in a boot are `BSTATUS`, hammered by an HCI transport waiting for a
+controller that is not there yet. That suspicion was wrong, and it is a good
+example of why the profiler comes before the fix.
+
+`cProfile` over a 40M window inside the spin, 21.281s total:
+
+```
+  ncalls  tottime  cumtime
+  162827    2.446   16.623  unicorn emu_start
+ 2613008    1.675    3.694  unicorn _reg_read
+  653197    1.343    9.572  bootrom._on_execute      <- 45% of the run
+ 1780848    0.852    2.311  peripherals Bus.read
+```
+
+The MMIO reads were 16%. **The boot ROM shim was 45%**, and it had nothing to do
+with BLE except in volume: `am_util_delay_us`, called from the HAL's retry loop,
+goes through the ROM helper table, and a boot went from 190,544 ROM entries to
+4,313,279. Three things were wrong with `_on_execute` at that frequency, none of
+which mattered at 190k:
+
+* it read **all four** argument registers on every call, through
+  `uc.reg_read` — and every handler ends in `*_args`, so three of the four were
+  read and thrown away. `bootrom_delay_cycles` takes one argument and is over
+  99% of the calls.
+* it read them through the binding rather than the fast reader that already
+  exists for exactly this (`cortexm._make_fast_reg_reader`, 1,161 ns -> 279 ns).
+* it resolved the handler with `getattr(self, f"_rom_{name}")` — building an
+  f-string per call — instead of once at install time.
+
+Asking each handler's signature how many arguments it actually declares, and
+resolving the handler when the table is parsed, took the 40M window from 21.281s
+to 13.618s and `_on_execute` from 9.572s to 1.508s. A full radio-on boot went
+from 50.6s to 36.0s with every fingerprint identical.
+
+A second, smaller one on the path the profile then pointed at: the MMIO callback
+tested "is this the PPB window" and "is there a tracer" on every access, though
+both are fixed for the life of the machine, and `Bus.read` called `find()` as a
+separate Python call. Four flat closures bound at install time and an inlined
+page lookup (with `find()` still the fallback, so shared pages behave the same)
+took a radio-on boot to 34.2s and a radio-off one from 16.3s to 15.3s.
+
+**What was tried and rejected.** During the spin the MSPI interrupt is pending
+and the core is masked, so `Mspi.next_deadline` wins the deadline 135,396 times
+out of 162,827 and delivers nothing each time. Returning `None` once the
+exception is already latched in the NVIC is worth another 1.14x and looks
+obviously safe — the run loop will deliver it the moment the core allows, and
+deliverability is checked every basic block anyway. It is not safe: that poll
+*pumps the command queue* as a side effect. With it skipped, a radio-off boot
+moves from 12,040 STIMER interrupts to 12,043, and with `--idle-skip` to 12,039
+— so the two stop agreeing with each other, which is the one property that
+switch has to keep. `test_mspi_still_asks_for_a_rate_when_its_irq_is_already_latched`
+pins it so it is not quietly reintroduced.
+
+What is left is intrinsic: ~1.8M MMIO reads and ~163k slices per 40M
+instructions, because the firmware really is executing a busy-wait. The way to
+get it back is not to make the spin cheaper but to stop it happening, which is
+what card #25 does when the FIFO answers.
 
 ### Don't pick a sampling rate — ask when the next thing happens
 
@@ -1305,13 +1524,25 @@ In dependency order. These are tracked on the kanban board (`/kanban`).
    queue's own completion bits (CQUPD at 9, and a CQCMP bit) are not, and the driver
    enables CQUPD. If the NAND driver waits on queue completion rather than DMA
    completion, that alone explains the stall.
-2. **BLEIF -> HCI.** The Apollo3's BLE controller is on-die behind the BLEIF interface, and
-   the firmware runs the Cordio/ExactLE host over it (`wsf_timer.c` is already being
-   reached). Modelling BLEIF well enough to extract the HCI byte stream lets the emulated
-   firmware's own BLE stack be bridged to a Bumble virtual controller, and from there — via
-   the same `-packet-streamer-endpoint` netsim path that `tools/emulator/norm_emu_bridge.py`
-   already uses for the USB dongle — to `:app` running in the Pixel 8 AVD. That is the route
-   to connecting the emulated watch to the emulated phone, with no hardware at all.
+2. **BLEIF -> HCI.** Power-on, the transport and the controller handshake are all **done**
+   — see "The watch talks to its radio" and "The radio is a Nationz NZ8801" below.
+
+   The controller is a Nationz NZ8801 that boots
+   empty, and `NationzController` gives it its firmware exactly as the real one is given
+   it. The link reaches ordinary HCI and the radio costs the boot nothing.
+
+   What is left is a radio. `NationzController` answers so the firmware's stack can
+   start; it does not advertise, connect or carry data. That means: a bumble `Controller`
+   subclassing it on a `LocalLink`, its
+   other end into the netsim servicer `tools/emulator/norm_emu_bridge.py` already
+   implements, and from there to `:app` in the Pixel 8 AVD — the emulated watch talking
+   to the emulated phone with no hardware at all. Two things to keep in mind: the
+   download phase and the vendor opcodes either side of it (`0xF1`/`0xF2`/`0xF3`, then
+   `0xFD04`) mean nothing to a bumble controller, so they stay answered in the seam — the
+   same split the bridge already uses for Google's `0xFD53` on the AVD side; and `--idle-skip`
+   and the deadline quantum both fast-forward *watch* time past idle, so a live link will
+   need the machine pinned to the wall clock. `0x50023800`/`0x50023804` is still
+   unmodelled MMIO the BLE path touches.
 
 ## Relationship to the rest of the repo
 
