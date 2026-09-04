@@ -29,6 +29,7 @@ identified from the call site rather than guessed at.
 
 from __future__ import annotations
 
+import inspect
 import struct
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -50,6 +51,28 @@ BOOTROM_SIZE = 0x1000
 
 _THUMB_BX_LR = b"\x70\x47"
 
+#: The ROM ABI's argument registers, in order.
+_ARG_REGISTERS = (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3)
+
+
+def _declared_arg_registers(handler) -> tuple:
+    """The R0.. registers a handler actually names, ignoring its ``*_args``.
+
+    Every ``_rom_*`` handler ends in ``*_args`` so that it can be called with
+    all four ROM argument registers while using only the ones it needs. That
+    made the caller read four registers to throw three away. Asking the
+    signature how many are real is a one-off cost at install time.
+    """
+    if handler is None:
+        return ()
+    positional = 0
+    for parameter in inspect.signature(handler).parameters.values():
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD:
+            positional += 1
+        elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            break
+    return _ARG_REGISTERS[:positional]
+
 
 @dataclass
 class BootRomEntry:
@@ -57,6 +80,15 @@ class BootRomEntry:
     address: int
     name: str
     inferred: bool = True
+    #: Resolved once at install time. Looking the handler up per call meant
+    #: building an f-string and a getattr on a path taken millions of times.
+    handler: Optional[Callable] = None
+    #: The argument registers this handler actually declares, R0 upwards. The
+    #: ROM ABI puts arguments in R0-R3 and every handler ends in ``*_args`` to
+    #: swallow the rest, so reading all four was reading three values that were
+    #: then discarded. ``bootrom_delay_cycles`` takes one and is over 99% of
+    #: the calls.
+    arg_registers: tuple = ()
 
 
 #: Names by table index, following the AmbiqSuite ``am_hal_bootrom_helper_t``
@@ -118,6 +150,10 @@ class BootRom:
         self.table_address: Optional[int] = None
         self.calls: dict[str, int] = {}
         self.unknown_calls: list[tuple[str, tuple[int, ...]]] = []
+        #: The same fast register reader CortexM uses -- the same uc_reg_read,
+        #: without the binding's per-call register-class lookup and ctypes
+        #: marshalling. CortexM is built before BootRom, so it is already there.
+        self._reg = machine.cortexm.read_register
 
     # ── installation ─────────────────────────────────────────────────────────
 
@@ -140,7 +176,10 @@ class BootRom:
                 break
             addr = word & ~1
             name, inferred = _ENTRY_NAMES.get(index, (f"rom_entry_{index}", True))
-            self.entries[addr] = BootRomEntry(index, addr, name, inferred)
+            entry = BootRomEntry(index, addr, name, inferred)
+            entry.handler = getattr(self, f"_rom_{name}", None)
+            entry.arg_registers = _declared_arg_registers(entry.handler)
+            self.entries[addr] = entry
             index += 1
             off += 4
 
@@ -159,9 +198,14 @@ class BootRom:
     # ── dispatch ─────────────────────────────────────────────────────────────
 
     def _on_execute(self, uc, address, size, user_data) -> None:
+        # This is a hot path, not a bookkeeping one. A boot without the radio
+        # enters ROM 190k times; with it, ``am_util_delay_us`` inside the BLE
+        # HAL's retry loop takes it to 4.3M, and it was reading four registers
+        # through the Unicorn binding and rebuilding an f-string on every one.
+        # Reading only what the handler declares, through the fast reader
+        # (cortexm._make_fast_reg_reader), and resolving the handler at install
+        # time took it from ~45% of a BLE-on run to a few percent.
         entry = self.entries.get(address)
-        args = tuple(uc.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3))
-
         if entry is None:
             # Landed in the ROM window but not on a known entry: the `bx lr`
             # already there will return, so just record it.
@@ -169,9 +213,12 @@ class BootRom:
             return
 
         self.calls[entry.name] = self.calls.get(entry.name, 0) + 1
-        handler: Optional[Callable] = getattr(self, f"_rom_{entry.name}", None)
+        handler = entry.handler
+        read = self._reg
         if handler is None:
             if entry.name not in {n for n, _ in self.unknown_calls}:
+                args = (read(UC_ARM_REG_R0), read(UC_ARM_REG_R1),
+                        read(UC_ARM_REG_R2), read(UC_ARM_REG_R3))
                 self.unknown_calls.append((entry.name, args))
                 self.log(
                     f"  [bootrom] unmodelled {entry.name} (index {entry.index}) "
@@ -180,7 +227,11 @@ class BootRom:
             uc.reg_write(UC_ARM_REG_R0, 0)
             return
 
-        result = handler(*args)
+        registers = entry.arg_registers
+        if len(registers) == 1:  # bootrom_delay_cycles and friends
+            result = handler(read(registers[0]))
+        else:
+            result = handler(*[read(r) for r in registers])
         if result is not None:
             uc.reg_write(UC_ARM_REG_R0, result & 0xFFFFFFFF)
 

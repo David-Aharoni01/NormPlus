@@ -1250,6 +1250,15 @@ class Mspi(Peripheral):
         caught up, which is most of a boot.
         """
         if self.int_status & self.storage.get(self.INTEN, 0):
+            # Tempting to return None here when the exception is already latched
+            # in the NVIC -- the run loop will deliver it the moment the core
+            # allows, and during the BLE retry spin this poll wins the deadline
+            # 135,396 times out of 162,827 while the core is masked throughout,
+            # so skipping it is worth 1.14x. It was tried and rejected: the pump
+            # this poll performs is not idle work. Without it a radio-off boot
+            # moves from 12,040 STIMER interrupts to 12,043, and --idle-skip
+            # lands on 12,039 -- so the two stop agreeing, which is the one
+            # property that switch has to keep.
             return self.CQ_PUMP_INTERVAL
         if not self.storage.get(self.CQCFG, 0) & self.CQ_ENABLE:
             return None
@@ -1452,18 +1461,26 @@ class Bus:
         return f"{p.name}.{p.reg_name(addr - p.base)}"
 
     def read(self, addr: int, size: int) -> int:
-        p = self.find(addr)
-        if p is None:
-            self.unknown_reads[addr] += 1
-            return self.unknown_storage.get(addr, 0)
+        # The page lookup is inlined rather than calling find(): this runs on
+        # every MMIO access, and at this frequency the Python call itself is a
+        # measurable share of it. find() is still the fallback, so shared pages
+        # and out-of-bounds addresses behave exactly as before.
+        p = self._by_page.get(addr >> self._PAGE_SHIFT)
+        if p is None or not (p.base <= addr < p.base + p.size):
+            p = self.find(addr)
+            if p is None:
+                self.unknown_reads[addr] += 1
+                return self.unknown_storage.get(addr, 0)
         return p.read(addr - p.base, size)
 
     def write(self, addr: int, size: int, value: int) -> None:
-        p = self.find(addr)
-        if p is None:
-            self.unknown_writes[addr] += 1
-            self.unknown_storage[addr] = value
-            return
+        p = self._by_page.get(addr >> self._PAGE_SHIFT)
+        if p is None or not (p.base <= addr < p.base + p.size):
+            p = self.find(addr)
+            if p is None:
+                self.unknown_writes[addr] += 1
+                self.unknown_storage[addr] = value
+                return
         p.write(addr - p.base, size, value)
 
     def unknown_report(self, limit: int = 15) -> str:

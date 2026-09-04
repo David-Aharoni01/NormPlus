@@ -373,23 +373,32 @@ class Apollo3Machine:
     # ── MMIO plumbing ────────────────────────────────────────────────────────
 
     def _install_mmio(self) -> None:
+        # Every access crosses into Python, and there are 1.8M of them in a 40M
+        # window of the BLE retry spin, so the callback is written as four flat
+        # closures rather than one with the branches inside it. Whether this is
+        # the PPB window and whether there is a tracer are both fixed for the
+        # life of the machine; testing them per access was two attribute loads
+        # and a compare on the hottest path in the emulator.
         for base, size in MMIO_WINDOWS:
             is_ppb = base == PPB_RANGE[0]
+            target = self.cortexm if is_ppb else self.bus
 
-            def rd(uc, offset, size_, ud, _base=base, _ppb=is_ppb):
-                addr = _base + offset
-                value = self.cortexm.read(addr, size_) if _ppb else self.bus.read(addr, size_)
-                if self.trace is not None:
+            if self.trace is None:
+                def rd(uc, offset, size_, ud, _base=base, _read=target.read):
+                    return _read(_base + offset, size_)
+
+                def wr(uc, offset, size_, value, ud, _base=base, _write=target.write):
+                    _write(_base + offset, size_, value)
+            else:
+                def rd(uc, offset, size_, ud, _base=base, _read=target.read):
+                    addr = _base + offset
+                    value = _read(addr, size_)
                     self.trace.on_mmio(addr, size_, value, write=False)
-                return value
+                    return value
 
-            def wr(uc, offset, size_, value, ud, _base=base, _ppb=is_ppb):
-                addr = _base + offset
-                if _ppb:
-                    self.cortexm.write(addr, size_, value)
-                else:
-                    self.bus.write(addr, size_, value)
-                if self.trace is not None:
+                def wr(uc, offset, size_, value, ud, _base=base, _write=target.write):
+                    addr = _base + offset
+                    _write(addr, size_, value)
                     self.trace.on_mmio(addr, size_, value, write=True)
 
             self.uc.mmio_map(base, size, rd, None, wr, None)

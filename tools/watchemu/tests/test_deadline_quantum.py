@@ -33,6 +33,7 @@ from normwatch.fw.devices import (attach_motion_sensor, attach_mspi_devices,
                                   attach_pmu, attach_touch_panel)
 from normwatch.fw.machine import (FIXED_TIME_QUANTUM, MAX_TIME_QUANTUM,
                                   Apollo3Machine)
+from normwatch.fw.cortexm import IRQ_MSPI
 from normwatch.fw.peripherals import CtimerBlock, Gpio, Mspi
 
 REPO = Path(__file__).resolve().parents[3]
@@ -126,6 +127,28 @@ def test_the_level_sensitive_sources_ask_for_a_rate_when_they_assert():
     mspi.storage[Mspi.INTEN] = 0xFFFFFFFF
     mspi.int_status = Mspi.INT_DMACMP
     assert mspi.next_deadline() == Mspi.CQ_PUMP_INTERVAL
+
+
+def test_mspi_still_asks_for_a_rate_when_its_irq_is_already_latched():
+    """A rejected optimisation, pinned so it is not quietly reintroduced.
+
+    During the BLE retry spin the MSPI interrupt is pending and the core is
+    masked, so this poll wins the deadline 135,396 times out of 162,827 and
+    delivers nothing -- returning None once the exception is latched in the
+    NVIC is worth 1.14x and looks obviously safe. It is not. The poll pumps the
+    command queue as a side effect, so skipping it changes the run: a radio-off
+    boot moves from 12,040 STIMER interrupts to 12,043, and with --idle-skip to
+    12,039, which means the two stop agreeing with each other. Being able to
+    turn --idle-skip on without changing a single interrupt is worth more than
+    the 1.14x.
+    """
+    m, _ = build()
+    mspi = m.bus.by_base[0x50014000]
+    mspi.storage[Mspi.INTEN] = 0xFFFFFFFF
+    mspi.int_status = Mspi.INT_DMACMP
+    m.cortexm.set_pending_irq(IRQ_MSPI)
+    assert mspi.next_deadline() == Mspi.CQ_PUMP_INTERVAL, \
+        "the poll must keep its rate even when the interrupt is already pending"
 
 
 def test_cut_slice_ends_the_slice_without_inventing_cycles():
