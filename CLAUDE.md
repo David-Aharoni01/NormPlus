@@ -8,11 +8,20 @@ Reverse-engineering workspace for the **Norm 2 smartwatch**. The goals are:
 1. Understand the BLE communication protocol between the watch and its companion app (smali in `NORM/`)
 2. Build a custom Android app that replicates/extends the companion app's functionality (`app/`)
 3. Patch or replace the watch firmware via OTA
+4. Run the watch's own firmware on the PC, so the watch's behaviour can be observed and
+   changed without the hardware (`tools/watchemu/`)
 
 ## Code Quality Standards
 
-Every piece of code in this repo is grounded in the original NORM app smali. Before implementing any command, parsing any response, or deciding on any byte sequence:
+Every piece of code in this repo is grounded in something the watch or its app actually
+does — the NORM app smali for the protocol work, the firmware image itself for
+`tools/watchemu/`. Before implementing any command, parsing any response, deciding on any
+byte sequence, or modelling any register:
 - **Read the corresponding smali** first. The source of truth is `NORM/smali_classes2/cn/appscomm/`. If the smali contradicts your assumptions, the smali wins.
+- **For firmware work, the image is the source of truth.** Never guess a register value, a
+  pin number or a device response: derive it from the firmware's own driver sequence, an
+  address, or an `assert()` string, and cite that in the comment. Every device model in
+  `watchemu` was built this way and it is why they work.
 - **Every byte matters.** BLE packets to/from a physical device are unforgiving — an off-by-one, wrong endianness, or missing flag byte will silently fail or corrupt state on the watch. Be precise.
 - **Model edge cases from the source.** The smali shows what the watch actually does with malformed or edge-case inputs. Follow its behavior, not what seems logical in the abstract.
 - **Coroutine discipline.** BLE callbacks arrive on arbitrary threads. Channels and flows are the only safe bridge. Never share mutable state between the GATT callback and application code without a Channel or `@Volatile`.
@@ -39,9 +48,15 @@ app/                ← Android companion app (Kotlin + Compose)
 cli/                ← normlink-cli: Windows JVM tool for autonomous BLE testing
   src/main/python/norm2_probe/  ← Python bleak BLE backend (bridge for the CLI)
 tools/
-  emulator/         ← Pixel 8 Android emulator + Bumble HCI bridge for on-device testing
-                       (the primary way to run/test :app — see "Testing on the emulator")
+  emulator/         ← Pixel 8 ANDROID emulator + Bumble HCI bridge, for running :app
+                       (the primary way to run/test :app — see "Testing on the Android emulator")
+  watchemu/         ← the WATCH emulator: runs the watch's own Apollo3 firmware under
+                       Unicorn, no hardware. See "Watch Firmware Emulator" below.
+  firmware/         ← image_tool.py: verifies and re-seals Ambiq firmware images
 ```
+
+Note the two "emulators": `tools/emulator/` runs the **phone**, `tools/watchemu/` runs the
+**watch**. They are unrelated codebases that meet only at card #25 (BLEIF -> HCI).
 
 The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
 
@@ -79,6 +94,33 @@ cli\build\install\normlink-cli\bin\normlink-cli.bat battery --mac 4C:59:80:12:44
 ./gradlew lint
 ```
 
+### Watch emulator (`tools/watchemu`) — Python 3.11, no Gradle
+
+```bash
+# One-time: same interpreter the Android emulator's BLE bridge uses
+py -3.11 -m pip install -r tools/watchemu/requirements.txt
+
+# Boot the watch firmware and print a triage report. --seconds is watch time;
+# the default 30M-instruction budget is 0.6s, which is still inside the 8.3s
+# boot animation, so pass --seconds 10 to reach the UI.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 10
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --live        # window + mouse touch
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --screenshot out.png
+
+# Parse the image header / list source modules recovered from assert() strings
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
+
+# Tests are standalone scripts, not pytest. Run one:
+PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_native_hook.py
+
+# Run all of them (each exits non-zero on failure):
+for t in tools/watchemu/tests/test_*.py; do   PYTHONPATH=tools/watchemu py -3.11 "$t" >/dev/null || echo "FAIL $t"; done
+
+# The C block hook builds itself on demand; to build it by hand:
+py -3.11 tools/watchemu/native/build.py
+```
+
 Build config: `app/build.gradle.kts` — compileSdk 35, minSdk 30, JVM 17 target.
 CLI config: `cli/build.gradle.kts` — pure JVM, installs to `cli/build/install/normlink-cli/`.
 
@@ -92,7 +134,7 @@ CLI config: `cli/build.gradle.kts` — pure JVM, installs to `cli/build/install/
 
 ---
 
-## Testing on the emulator
+## Testing on the Android emulator
 
 **`:app` is developed and tested on a local Android emulator** (not a physical phone) — a
 Pixel 8 AVD (`Pixel_8_API35`, AOSP Google-APIs Android 15 / API 35; no Android Studio). All
@@ -119,6 +161,134 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
 
 `normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
 the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
+
+---
+
+## Watch Firmware Emulator (`tools/watchemu`)
+
+> **Two different things are called "the emulator" in this repo.** `tools/emulator/` is the
+> **Pixel 8 Android** emulator that runs `:app`. `tools/watchemu/` is the **watch** emulator
+> that runs the watch's own firmware. This section is about the second one.
+
+Runs `NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` — the real firmware shipped inside the
+APK — on an emulated **Ambiq Apollo3 Blue** (Cortex-M4F @ 48 MHz) under Unicorn. No watch
+involved. It is a hardware emulator, not a protocol mock: nothing reimplements watch
+behaviour, the behaviour comes from executing the watch's code. The same "read the source
+of truth first" rule as the smali applies, with the firmware image as the source of truth.
+
+`tools/watchemu/README.md` is long and is the real documentation — it records *why* each
+piece is the way it is, mostly as post-mortems of wrong answers. Read it before changing
+anything in `fw/`.
+
+### Where the boot gets to
+
+FreeRTOS boots, the scheduler ticks and preempts, the SPI NAND is identified against the
+firmware's own part table, the resource blob mounts, and the panel draws. Run to 600M
+instructions with no fault. Touch, buttons, the accelerometer, the battery gauge and the
+charger are all modelled and answer the firmware's own driver sequences.
+
+Two facts that cost a lot to rediscover, in this order:
+
+1. **`ui_notify_poweroff_dlg.c` is a 134-frame boot animation**, ~2.95M instructions a
+   frame, so ~400M total = **8.3 seconds of watch time**. The default `--max-instructions`
+   of 30M is 0.6s, i.e. frame 8 of 134. Every early "the screen is black / the watch is
+   stuck" investigation was a run that was too short. `boot` now says so when a run ends
+   mid-animation and prints the budget that would clear it.
+2. Past the animation the watch reaches **first-run setup** — "Select a Language", then a
+   QR pairing screen showing `A0.2(R.T0.0H0.0B01)` / `Norm2#00000`. It ignores swipe and
+   button there because it is waiting for a phone. **The watch face is behind first-run
+   setup, and setup is behind BLE.** That is the standing blocker, not an emulator defect;
+   card #25 (BLEIF → HCI) is the real route past it and #41 (flash persistence) is the
+   cheap one.
+
+### The invariants that break silently
+
+- **The clock unit is halfwords, not instructions.** `size >> 1` per basic block;
+  48,000,000 = one second of watch time. Unicorn's `emu_start(count=)` counts
+  *instructions* — mixing the two ran the clock ~30% fast and showed up as double the
+  timer interrupts, not as anything that looked like a bug.
+- **Interrupt deliverability is checked every basic block, not once per slice.** FreeRTOS
+  sets PendSV inside a critical section and expects the switch the instant BASEPRI is
+  released. ~100 instructions late and `vTaskSwitchContext` early-returns, the yield is
+  lost, and the task re-blocks on a queue it is already on — which corrupts the event list
+  into a self-referential node and hangs the system.
+- **Never register a Unicorn memory hook on this machine.** A `UC_HOOK_MEM_WRITE` over
+  SRAM does not merely miss writes, it derails the run (dies at ~155k instructions on an
+  unmapped fetch with `pc=0`) *and* reports the same ~103,659 writes whatever the run
+  length, which is what makes it so convincing. Use `machine.watch()`, which is
+  block-hook based.
+- **Stopping from a block hook leaves the block unexecuted**, so it is hooked again on
+  resume. Both hooks carry a `just_stopped`/`stopped_address` guard. Without it the clock
+  double-counts, and with a large quantum the run *livelocks* — clock advancing, CPU
+  executing nothing, looking exactly like a firmware hang.
+
+### Architecture
+
+`Apollo3Machine.run()` is the centre. It slices execution, and after every `emu_start`
+returns it advances the clocks, fires scheduled stimulus, polls IRQ sources and delivers
+the highest-priority pending exception. The block hook only ever *counts* and asks to
+stop; it never advances anything. That is deliberate — see below.
+
+- **`cortexm.py`** implements exception entry and return in software. Unicorn's M-profile
+  core has no PPB and raises `UC_ERR_EXCEPTION` on an `EXC_RETURN` branch, so SVCall,
+  PendSV and SysTick — the three FreeRTOS is built on — are all handled here.
+- **`peripherals.py`** models registers; **`devices.py`** models the chips hanging off the
+  buses (SPI NAND, PSRAM, RM67162 panel, touch, accelerometer, CW6303 PMU/charger). A
+  device implements some of: `read`/`write`, `exchange` (SPI), `advance(cycles)` (state
+  that evolves on the clock), `pending_irqs()`, `next_deadline()`.
+- **Two block hooks that must stay indistinguishable.** The Python one in `machine.py` and
+  the C one in `native/watchemu_hook.c`, loaded through `fasthook.py`, which builds it on
+  demand when the DLL is missing *or older than the .c*. `tests/test_native_hook.py`
+  demands their exception counts match **exactly**; that is not pedantry, it is what
+  caught the halfword/instruction bug and a stale-pending bug that made every peripheral
+  IRQ fire twice. When the two hooks were allowed to have different *shapes*, the
+  difference silently masqueraded as a property of `--idle-skip` for months.
+- **The quantum comes from the next deadline**, not a fixed grid: each clock-driven source
+  says when it next matters and the run loop goes exactly that far. `Mspi.pending_irqs`
+  and `Gpio.pending_irqs` are deliberately excluded — the first *walks the command queue
+  as a side effect* (poll rate = how fast pixels reach the panel) and the second is
+  level-sensitive (poll rate = how often a pin re-pends). For those the rate is the model,
+  so they keep a 256-cycle interval while active and offer no deadline when idle.
+
+### Performance switches, and which are exact
+
+Measured over a full 445M-instruction boot to the UI (9.27s on the watch itself):
+
+| switch | worth | exact? |
+|---|---|---|
+| C block hook (default; `--no-fast-hook` off) | 3.3x | **yes** — identical, including instruction totals |
+| `--idle-skip` | 1.6x | **yes** — identical at 20M/100M/200M/445M on both hooks |
+| deadline quantum (default; `--fixed-quantum` off) | 1.6x | **no** — outputs identical, interrupts move <=0.4% |
+| `--trace` | costs 28% | yes, but forces the Python hook |
+
+`--idle-skip` and the deadline quantum overlap (both remove idle time), so together they
+are worth 1.95x rather than 2.5x. `--trace` and `machine.watch()` both need per-block
+Python and switch the C hook off on their own.
+
+The library default `Apollo3Machine(fast_hook=...)` is **False** while the CLI default is
+on, so probes and tests keep watchpoints.
+
+**When measuring anything, say which configuration you measured.** A "35M instr/s" number
+taken with `--idle-skip` is not what `normwatch boot` does, and quoting one as the other
+has already gone wrong once here.
+
+### Working on it
+
+Claims about firmware behaviour need firmware evidence — an address, an assert string, a
+traced value. Two specific traps:
+
+- **A linear Capstone sweep of the whole image desynchronises** and will report that an
+  instruction does not exist when it does. Search for the encoding directly.
+- **`symbols.py` is nearest-neighbour.** `AssertMap` gives exact points from `assert()`
+  strings, but attributing an arbitrary address still interpolates. Confirm module
+  identity from an assert operand before trusting an attribution — "hot charger blocks"
+  seen during exploration turned out to be a shared critical-section helper.
+
+Scratch probes are throwaway and live outside the repo; anything worth keeping becomes a
+test. Every optimisation so far has been accepted or rejected on a before/after
+fingerprint captured **on the same tree** (stash, capture, pop, capture) — comparing two
+settings within one build cannot catch a change that moved both. Card #47 is to make that
+a checked-in test instead of a scratchpad script.
 
 ---
 
@@ -705,6 +875,26 @@ Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ign
 Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 
 **Status: Fixed in code, not yet verified on Android device.**
+
+### Watch emulator — status
+
+Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
+and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
+accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
+modelled from the firmware's own driver sequences. 15 test files, all standalone scripts.
+
+**Blocked on BLE, not on the emulator.** The watch face is behind first-run setup and
+setup is behind pairing, so the QR screen ignores swipe and button by design. Open cards:
+
+- **#25 BLEIF -> HCI seam** — the real route past pairing, and the point where `watchemu`
+  and `tools/emulator/` finally meet: the emulated watch's own BLE stack bridged to a
+  Bumble virtual controller, and from there to `:app` in the AVD. No hardware at all.
+- **#41 flash persistence** (`--flash-state PATH`) — the cheap route: keep the watch
+  provisioned across runs so it starts past setup. Also unblocks #13 (OTA rehearsal).
+- **#46 snapshot/restore** — every probe currently pays a 12s boot; this is the biggest
+  iteration win left, and composes with #41.
+- **#47 golden-fingerprint test** — the equivalence checks that gate every optimisation
+  still live in throwaway scripts.
 
 ### Pending features (priority order)
 
