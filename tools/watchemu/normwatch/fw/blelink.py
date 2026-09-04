@@ -112,8 +112,13 @@ class BumbleController(NationzController):
         await asyncio.Event().wait()
 
     def on_packet(self, packet: bytes) -> None:
-        """Bumble's host sink: a packet from the controller to the firmware."""
-        self.to_host(bytes(packet))
+        """Bumble's host sink: a packet from the controller to the firmware.
+
+        It goes out length-prefixed like anything else the running controller
+        says -- bumble produces bare H4 and knows nothing about the framing
+        0x0008900C expects.
+        """
+        self._event(bytes(packet))
         self._answered.set()
 
     # -- thread-safe queueing -------------------------------------------------
@@ -154,8 +159,14 @@ class BumbleController(NationzController):
             # Bumble answers a vendor opcode with silence, which the firmware
             # reads as a dead controller.
             self.vendor_commands.append(opcode)
-            self.to_host(bytes([0x04, 0x0E, 0x04, 0x01,
-                                opcode & 0xFF, opcode >> 8, 0x00]))
+            if opcode == self.OPCODE_READ_MEMORY and len(packet) >= 8:
+                address = int.from_bytes(packet[4:8], "little")
+                self._event(bytes([0x04, 0x0E, 0x08, 0x01,
+                                   opcode & 0xFF, opcode >> 8, 0x00])
+                            + self.memory.get(address, 0).to_bytes(4, "little"))
+            else:
+                self._event(bytes([0x04, 0x0E, 0x04, 0x01,
+                                   opcode & 0xFF, opcode >> 8, 0x00]))
             return
         self._forward(packet)
 

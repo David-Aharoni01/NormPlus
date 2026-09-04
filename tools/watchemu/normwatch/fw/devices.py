@@ -1406,6 +1406,21 @@ class NationzController(BleController):
     #: The section whose "begin" doubles as "start running".
     SECTION_GO = 0xEE
 
+    #: Vendor opcode 0xFD02 is "read 32 bits of the controller's memory": an
+    #: 8-byte command carrying the address (built at 0x0008A1DA, ``movw r1,
+    #: #0xfd02``), answered with a Command Complete whose return parameters are
+    #: the value. The caller assembles it from bytes 7..10 of the reply
+    #: (0x0008A248), so the whole event is eleven bytes.
+    OPCODE_READ_MEMORY = 0xFD02
+
+    #: What that read is *for*: the HAL reads 0x20006054 at 0x00089550 and the
+    #: check at 0x00089558 accepts it only in 0x7B00..0x8200 -- a version gate
+    #: on the controller. The bound is the firmware's; the value inside it is
+    #: not known, so this is a plausible one in range rather than a measured
+    #: one, and it is the only invented number in this model.
+    CONTROLLER_VERSION_ADDRESS = 0x20006054
+    CONTROLLER_VERSION = 0x00007D00
+
     def __init__(self, log=None) -> None:
         super().__init__()
         self.log = log
@@ -1417,10 +1432,24 @@ class NationzController(BleController):
         self.declared: dict = {}
         #: Opcodes seen after the download, in order.
         self.hci_commands: list = []
+        #: The controller's memory, as far as the firmware ever looks at it.
+        self.memory = {self.CONTROLLER_VERSION_ADDRESS: self.CONTROLLER_VERSION}
         self._section = None
 
     def _ack(self, section: int, phase: int) -> None:
         self.to_host(bytes([0x04, section, phase, 0x01, 0x00]))
+
+    def _event(self, payload: bytes) -> None:
+        """Queue an HCI event, framed the way the running controller frames.
+
+        Once the download is over the framing changes: 0x0008900C reads a
+        **two-byte little-endian length** first (0x00089068-0x00089074),
+        refuses anything above 0x100, and only then reads that many bytes.
+        The bootloader's replies are raw by comparison, which is why the
+        handover needs two shapes rather than one -- by this point the
+        controller is running the firmware it was just given.
+        """
+        self.to_host(len(payload).to_bytes(2, "little") + payload)
 
     def from_host(self, packet: bytes) -> None:
         super().from_host(packet)
@@ -1457,7 +1486,15 @@ class NationzController(BleController):
         # Past the bootloader: ordinary HCI.
         opcode = section | (phase << 8)
         self.hci_commands.append(opcode)
-        self.to_host(bytes([0x04, 0x0E, 0x04, 0x01, section, phase, 0x00]))
+        if opcode == self.OPCODE_READ_MEMORY and len(packet) >= 8:
+            address = int.from_bytes(packet[4:8], "little")
+            value = self.memory.get(address, 0)
+            # 0x0008A248 assembles the answer from bytes 7..10 of the payload,
+            # so the four return-parameter bytes have to land exactly there.
+            self._event(bytes([0x04, 0x0E, 0x08, 0x01, section, phase, 0x00])
+                        + value.to_bytes(4, "little"))
+            return
+        self._event(bytes([0x04, 0x0E, 0x04, 0x01, section, phase, 0x00]))
 
     # -- what the download tells us about the part ---------------------------
 

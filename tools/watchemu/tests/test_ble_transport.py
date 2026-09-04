@@ -255,6 +255,43 @@ def test_the_nvds_names_the_part():
     assert len(tags[1]) == 6, "tag 1 should be a BD address"
 
 
+def test_the_framing_changes_when_the_controller_reboots():
+    """Bootloader replies are raw; HCI events are length-prefixed.
+
+    0x0008900C reads a two-byte little-endian length first
+    (0x00089068-0x00089074) and refuses anything above 0x100, so a bare
+    ``04 0E ...`` is read as a length of 0x0E04 and rejected. By that point
+    the controller is running the firmware it was just given, which is why
+    there are two shapes rather than one.
+    """
+    controller = NationzController()
+    controller.from_host(bytes.fromhex("01bbf1025406"))       # bootloader
+    assert controller.take(5) == bytes.fromhex("04bbf10100"), "raw, not framed"
+    controller.from_host(bytes.fromhex("01eef1020000"))       # go-ahead
+    controller.take(5)
+    assert controller.booted
+    controller.from_host(bytes.fromhex("0104fd0101"))         # first HCI
+    reply = controller.take(64)
+    assert int.from_bytes(reply[:2], "little") == len(reply) - 2, reply.hex(" ")
+    assert reply[2] == 0x04 and reply[3] == 0x0E
+
+
+def test_a_memory_read_answers_where_the_caller_looks_for_it():
+    # 0xFD02 is "read 32 bits of controller memory" (0x0008A1DA), and the
+    # caller assembles the value from bytes 7..10 of the payload
+    # (0x0008A248). The HAL uses it to read 0x20006054 and gates on
+    # 0x7B00..0x8200 at 0x00089558.
+    controller = NationzController()
+    controller.booted = True
+    address = NationzController.CONTROLLER_VERSION_ADDRESS
+    controller.from_host(bytes([0x01, 0x02, 0xFD, 0x04])
+                         + address.to_bytes(4, "little"))
+    reply = controller.take(64)
+    payload = reply[2:]
+    value = payload[7] | int.from_bytes(payload[8:11], "little") << 8
+    assert 0x7B00 <= value <= 0x8200, f"0x{value:X} is outside the firmware's gate"
+
+
 def test_the_go_ahead_gets_one_message_not_two():
     """It is an announcement, not an ack, and sending both desynchronises.
 
