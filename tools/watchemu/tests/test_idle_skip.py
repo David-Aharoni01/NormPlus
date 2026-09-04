@@ -60,7 +60,13 @@ def run(idle_skip):
     """A machine with the devices attached — the firmware does not get anywhere
     near its idle task without storage and a panel to talk to."""
     img = image_mod.load(IMAGE)
-    m = Apollo3Machine(img, log=quiet, trace=None, idle_skip=idle_skip)
+    # ble=False: with the radio answering, the firmware's HCI transport spins
+    # in an interrupt-masked retry for the first ~100M instructions (nothing is
+    # behind the BLEIF FIFO yet -- task #25), which at this budget leaves no
+    # idle time to measure and almost no exceptions to compare. See
+    # test_ble_powerup.py.
+    m = Apollo3Machine(img, log=quiet, trace=None, idle_skip=idle_skip,
+                       ble=False)
     attach_mspi_devices(m, resource_blob=RESOURCES, log=quiet)
     attach_touch_panel(m, log=quiet)
     attach_motion_sensor(m, log=quiet)

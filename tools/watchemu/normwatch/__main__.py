@@ -14,8 +14,8 @@ from pathlib import Path
 
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
-from .fw.devices import (attach_mspi_devices, attach_motion_sensor,
-                         attach_pmu, attach_touch_panel)
+from .fw.devices import (attach_ble_controller, attach_mspi_devices,
+                         attach_motion_sensor, attach_pmu, attach_touch_panel)
 from .fw.machine import Apollo3Machine
 from .fw.patches import force_gestures
 from .fw.rtos import format_tasks
@@ -166,7 +166,8 @@ def cmd_boot(args) -> int:
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
                              idle_skip=args.idle_skip,
                              fast_hook=not args.no_fast_hook,
-                             deadline_quantum=not args.fixed_quantum)
+                             deadline_quantum=not args.fixed_quantum,
+                             ble=not args.no_ble)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
@@ -175,6 +176,9 @@ def cmd_boot(args) -> int:
         machine, percent=getattr(args, "battery", 80.0),
         charging=getattr(args, "charging", False),
         charger_status=getattr(args, "charger_status", None), log=log)
+    controller = None
+    if args.ble_controller and not args.no_ble:
+        controller = attach_ble_controller(machine, log=log)
     if args.force_gestures:
         force_gestures(machine, log=print if quiet else log)
 
@@ -237,6 +241,18 @@ def cmd_boot(args) -> int:
         print(device.summary())
     print(format_tasks(machine, symbols))
     print(machine.bootrom.summary())
+    print(machine.bus.by_base[0x5000C000].summary())
+    if controller is not None:
+        if hasattr(controller, "summary"):
+            print(controller.summary())
+        if controller.sent:
+            print("  HCI out of the watch:")
+            for packet in controller.sent[:10]:
+                head = packet[:16].hex(" ")
+                tail = f" ... ({len(packet)} bytes)" if len(packet) > 16 else ""
+                print(f"    {head}{tail}")
+            if len(controller.sent) > 10:
+                print(f"    ... and {len(controller.sent) - 10} more")
     print(machine.bus.unknown_report())
     if machine.native_hook is not None:
         print(f"  block hook: native, {machine.native_hook.state.blocks:,} blocks")
@@ -351,6 +367,24 @@ def main(argv=None) -> int:
                              "deadline is the default and is about 1.7x faster; "
                              "this is here to reproduce a measurement taken "
                              "before it, or to check one against it.")
+    p_boot.add_argument("--no-ble", action="store_true",
+                        help="stop the BLE controller from answering its "
+                             "power-up, the way this emulator behaved before the "
+                             "PWRCTRL.DEVPWRSTATUS mapping was fixed. Nothing is "
+                             "yet behind the BLEIF FIFO, so with the radio on the "
+                             "firmware's HCI transport spins in an "
+                             "interrupt-masked retry for ~100M instructions and a "
+                             "boot costs about 2.1x. That is faithful and it is "
+                             "the default; this is for when the run is not about "
+                             "the radio. It also restores idle time, so anything "
+                             "measuring --idle-skip wants it.")
+    p_boot.add_argument("--ble-controller", action="store_true",
+                        help="put a controller on the other side of the BLEIF "
+                             "FIFO, so the firmware's Cordio host can complete "
+                             "a transfer and its HCI packets are captured. It "
+                             "records rather than answering, so the firmware "
+                             "still waits for a reply it never gets -- what to "
+                             "reply is the rest of task #25.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 

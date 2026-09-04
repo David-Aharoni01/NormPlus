@@ -46,8 +46,13 @@ def quiet(*a, **k):
 
 def run(fast_hook, idle_skip=False):
     img = image_mod.load(IMAGE)
+    # ble=False: with the radio answering, the firmware's HCI transport spins
+    # in an interrupt-masked retry for the first ~100M instructions (nothing is
+    # behind the BLEIF FIFO yet -- task #25), which at this budget leaves no
+    # idle time to measure and almost no exceptions to compare. See
+    # test_ble_powerup.py.
     m = Apollo3Machine(img, log=quiet, trace=None, idle_skip=idle_skip,
-                       fast_hook=fast_hook)
+                       fast_hook=fast_hook, ble=False)
     attach_mspi_devices(m, resource_blob=RESOURCES, log=quiet)
     attach_touch_panel(m, log=quiet)
     attach_motion_sensor(m, log=quiet)

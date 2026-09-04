@@ -155,6 +155,7 @@ class Apollo3Machine:
         idle_skip: bool = False,
         fast_hook: bool = False,
         deadline_quantum: bool = True,
+        ble: bool = True,
     ) -> None:
         self.image = img
         self.log = log
@@ -241,6 +242,12 @@ class Apollo3Machine:
         self.bus: Bus = build_apollo3_bus(self)
         if chiprev is not None:
             self.bus.by_base[0x40020000].chiprev = chiprev
+        #: Whether the BLE controller answers its power-up. On by default,
+        #: because it is what the hardware does; off makes the firmware give up
+        #: on the radio the way this emulator did before the DEVPWRSTATUS
+        #: mapping was fixed. See Pwrctrl.ble_controller for the cost.
+        self.ble = bool(ble)
+        self.bus.by_base[0x40021000].ble_controller = self.ble
         self.cortexm = CortexM(self, log=log)
         self.bleif = None  # installed by attach_bleif()
 

@@ -132,14 +132,66 @@ class Pwrctrl(Peripheral):
         0x024: "MISC", 0x028: "DEVPWREVENTEN", 0x02C: "MEMPWREVENTEN",
     }
 
+    #: DEVPWREN bit -> DEVPWRSTATUS bit, read out of the firmware's own
+    #: ``am_hal_pwrctrl_periph`` table at **0x000CB1EC**: three words per
+    #: peripheral, word0 the DEVPWREN mask and word1 the DEVPWRSTATUS mask that
+    #: ``am_hal_pwrctrl_periph_enable`` (0x0008D2C0) polls for. The two are *not*
+    #: the same bit, and several peripherals share one status bit -- IOM0..2 all
+    #: report through 0x08, IOM3..5 through 0x10, and IOS/UART0/UART1/SCARD all
+    #: through 0x04.
+    #:
+    #: Mirroring DEVPWREN into DEVPWRSTATUS, which is what this model used to do,
+    #: happens to satisfy most of them by coincidence: MSPI wants status bit 0x40
+    #: and gets it because IOM5's *enable* bit is also 0x40. The BLE controller is
+    #: the one it cannot fake -- it wants status 0x100 from enable 0x2000, and
+    #: 0x100 would need UART1 powered, which this firmware never does. So
+    #: ``am_hal_pwrctrl_periph_enable(AM_HAL_PWRCTRL_PERIPH_BLEL)`` timed out,
+    #: ``am_hal_ble_power_control`` bailed at 0x0008A3AC, and the radio was never
+    #: brought up. See tests/test_ble_powerup.py.
+    DEVPWREN_TO_STATUS = {
+        0x0001: 0x0004,  # 1  IOS
+        0x0002: 0x0008,  # 2  IOM0
+        0x0004: 0x0008,  # 3  IOM1
+        0x0008: 0x0008,  # 4  IOM2
+        0x0010: 0x0010,  # 5  IOM3
+        0x0020: 0x0010,  # 6  IOM4
+        0x0040: 0x0010,  # 7  IOM5
+        0x0080: 0x0004,  # 8  UART0
+        0x0100: 0x0004,  # 9  UART1
+        0x0200: 0x0020,  # 10 ADC
+        0x0400: 0x0004,  # 11 SCARD
+        0x0800: 0x0040,  # 12 MSPI
+        0x1000: 0x0080,  # 13 PDM
+        0x2000: 0x0100,  # 14 BLEL
+    }
+
+    #: Status bit 0x100 is BLEL's and nothing else's, so withholding it is
+    #: exactly "the BLE controller never reports up" -- which is the behaviour
+    #: this model had before the mapping above was fixed. ``Apollo3Machine(
+    #: ble=False)`` clears this to get it back: without a controller behind the
+    #: BLEIF FIFO the firmware's HCI transport spins in an interrupt-masked
+    #: retry for ~100M instructions, which is faithful but costs about 2.1x on a
+    #: boot and leaves far less idle time for anything measuring it. Tests that are not
+    #: about the radio turn it off. See tests/test_ble_powerup.py.
+    ble_controller = True
+
     def read(self, offset: int, size: int) -> int:
         self.reads[offset] += 1
         if offset == 0x004:  # SUPPLYSTATUS: running from the simo buck, BLE buck on
             return 0x00000003
         if offset == 0x014:  # MEMPWRSTATUS mirrors MEMPWREN
             return self.storage.get(0x010, 0xFFFFFFFF)
-        if offset == 0x018:  # DEVPWRSTATUS mirrors DEVPWREN
-            return self.storage.get(0x008, 0)
+        if offset == 0x018:
+            # DEVPWRSTATUS: every enabled peripheral reports up, through the
+            # status bit the firmware's own table assigns it.
+            enabled = self.storage.get(0x008, 0)
+            status = 0
+            for enable_bit, status_bit in self.DEVPWREN_TO_STATUS.items():
+                if enabled & enable_bit:
+                    status |= status_bit
+            if not self.ble_controller:
+                status &= ~self.DEVPWREN_TO_STATUS[0x2000]
+            return status
         if offset == 0x020:  # ADCSTATUS: powered and ready
             return 0x00000001
         return self.storage.get(offset, 0)
@@ -1295,31 +1347,132 @@ class Mspi(Peripheral):
         return self.device
 
 
+class BleController:
+    """The other side of the BLEIF: an on-die BLE controller speaking H4 HCI.
+
+    The firmware runs a Cordio host and this is what it talks to. Packets the
+    firmware sends arrive at :meth:`from_host`; packets for the firmware are
+    queued with :meth:`to_host` and show up to it as "the controller has
+    something" on BSTATUS bit 7.
+
+    This base class is the seam, not a radio: it records what the host sends
+    and hands back whatever was queued. A real stack (a bumble ``Controller``
+    on a ``LocalLink``) subclasses it -- that is the rest of task #25.
+    """
+
+    def __init__(self) -> None:
+        #: Complete transfers the firmware has sent, in order.
+        self.sent: list = []
+        self._inbound = bytearray()
+
+    def from_host(self, packet: bytes) -> None:
+        """One complete transfer's worth of bytes from the firmware."""
+        self.sent.append(bytes(packet))
+
+    def to_host(self, data: bytes) -> None:
+        """Queue bytes for the firmware to read."""
+        self._inbound.extend(data)
+
+    def has_data(self) -> bool:
+        return bool(self._inbound)
+
+    def available(self) -> int:
+        return len(self._inbound)
+
+    def take(self, count: int) -> bytes:
+        out = bytes(self._inbound[:count])
+        del self._inbound[: len(out)]
+        return out
+
+
 class Bleif(Peripheral):
     """The Apollo3's interface to its on-die BLE controller.
 
     The controller is a separate core reached over this IOM-like block: the HAL
     powers it up through ``BLECFG``/``PWRCMD``, waits on ``BSTATUS``, and then
-    exchanges HCI packets through the FIFO. Everything the firmware's Cordio host
-    says to the radio passes through here, so this is the seam where the emulated
-    watch's BLE traffic can be taken out to a real host stack.
+    exchanges HCI packets through the FIFO. Everything the firmware's Cordio
+    host says to the radio passes through here, so this is the seam where the
+    emulated watch's BLE traffic can be taken out to a real host stack.
 
-    Currently a recording model: it names the registers, reports the controller as
-    powered and idle so bring-up proceeds, and captures whatever the firmware
-    writes to the FIFO. Turning that byte stream into HCI is task #25.
+    Every field below was read off the firmware's own transport rather than a
+    datasheet, because the two disagree about where BSTATUS even lives:
+
+    * ``am_hal_ble_power_control`` (0x0008A340) brings the controller up and
+      spins at 0x0008A422 until BSTATUS bits [10:8] read 3.
+    * ``am_hal_ble_wakeup_set`` (0x0008A6B0) drives PWRCMD bits [3:2]: 3 to
+      wake the controller, 2 to let it sleep.
+    * The send path (0x000891F0) wakes it and then waits up to 300 x 160us at
+      0x00089590 for **BSTATUS bit 3** -- the controller answering "awake, SPI
+      ready". 0x0008966E/0x00089672 then write OFFSETHI and CMD, and the loop
+      at 0x0008931E pushes one word at a time into FIFOPUSH for as long as
+      **FIFOPTR bits [15:8]** (free space in the write FIFO) is at least 4,
+      finishing on **INTSTAT bit 0**.
+    * The receive path waits at 0x00089C92 for **BSTATUS bit 7** -- the
+      controller saying it has something -- and then reads five bytes. Its
+      drain loop at 0x000899B0 takes the available byte count from **FIFOPTR
+      bits [23:16]** and pops words from FIFOPOP at 0x00089A10.
+
+    With no controller attached the two handshake bits stay clear, which is the
+    truthful answer -- there is nothing on the other side -- and is what this
+    model did before, so a bare machine and ``--no-ble`` behave as they did.
     """
 
     name = "BLEIF"
     FIFO = 0x000
     FIFOPTR = 0x100
+    FIFOTHR = 0x104
     FIFOPOP = 0x108
     FIFOPUSH = 0x10C
+    FIFOCTRL = 0x110
+    CLKCFG = 0x200
+    #: [4:0] direction, [19:8] TSIZE. 0x00000601 is the first thing the
+    #: firmware ever sends: write, six bytes.
     CMD = 0x20C
+    CMD_WRITE = 1
+    CMD_READ = 2
     CMDSTAT = 0x218
+    INTEN = 0x220
     INTSTAT = 0x224
+    INTCLR = 0x228
     BLECFG = 0x300
     PWRCMD = 0x304
-    BSTATUS = 0x308
+    #: **0x30C, not 0x308.** Every site that reads the controller's state uses
+    #: +0x30C off the 0x5000C000 base literal: 0x0008A422 tests bits [10:8] for
+    #: B2M_STATE == 3, 0x00089590 tests bit 3, and 0x0008923A / 0x00089C92 test
+    #: bit 7. Nothing in the image was seen to read 0x308, so it is left
+    #: unnamed rather than guessed at.
+    BSTATUS = 0x30C
+
+    #: INTSTAT bit 0. Both the send loop (0x0008938E) and the receive path wait
+    #: on it to mean "the transfer you asked for is done".
+    INT_CMDCMP = 1 << 0
+
+    #: INTSTAT bit 8: the same "controller is awake and ready" that BSTATUS
+    #: bit 3 carries, in the form the firmware switches to once it is running.
+    #:
+    #: 0x000895A4 is the readiness check, and it has two halves: while the
+    #: handle byte at +0x40 is zero it reads BSTATUS bit 3 (0x00089590), and
+    #: once that byte is set it reads **INTSTAT bit 8** instead (0x000895C6).
+    #: The byte is set at 0x0008A076, right after the last step of controller
+    #: bring-up -- so every check before that point goes through BSTATUS and
+    #: every check afterwards through INTSTAT. Model only the first and the
+    #: firmware gets all the way up and then decides its controller has gone
+    #: away, which it answers by restarting the whole download.
+    INT_CONTROLLER_READY = 1 << 8
+
+    #: PWRCMD bits [3:2] == 3 is the firmware asking the controller to wake, 2
+    #: lets it sleep again (``am_hal_ble_wakeup_set``, 0x0008A6B0).
+    PWRCMD_WAKE_MASK = 0xC
+    PWRCMD_WAKE = 0xC
+
+    #: BSTATUS bits, each confirmed at the sites named in the class docstring.
+    BSTATUS_SPI_READY = 1 << 3
+    BSTATUS_HAS_DATA = 1 << 7
+    BSTATUS_B2M_ACTIVE = 3 << 8
+
+    #: The firmware sets FIFOTHR to 0x2020 at 0x000896FA -- one threshold of 32
+    #: per direction, which is what pins the FIFO depth.
+    FIFO_DEPTH = 32
 
     REGS = {
         0x000: "FIFO", 0x100: "FIFOPTR", 0x104: "FIFOTHR", 0x108: "FIFOPOP",
@@ -1328,49 +1481,149 @@ class Bleif(Peripheral):
         0x220: "INTEN", 0x224: "INTSTAT", 0x228: "INTCLR", 0x22C: "INTSET",
         0x240: "DMATRIGEN", 0x244: "DMATRIGSTAT", 0x250: "DMACFG",
         0x254: "DMATOTCOUNT", 0x258: "DMATARGADDR", 0x25C: "DMASTAT",
-        0x300: "BLECFG", 0x304: "PWRCMD", 0x308: "BSTATUS", 0x310: "BLEDBG",
+        0x300: "BLECFG", 0x304: "PWRCMD", 0x30C: "BSTATUS", 0x310: "BLEDBG",
     }
 
     def __init__(self, base: int, size: int, machine=None) -> None:
         super().__init__(base, size, machine)
+        #: The controller on the other side, or None for "nothing is fitted".
+        self.controller = None
+        #: Everything the firmware has pushed, kept whole for triage.
         self.tx = bytearray()
+        #: The read FIFO, filled from the controller when a read is commanded.
         self.rx = bytearray()
         self.commands = 0
+        self.packets_sent = 0
+        self.packets_received = 0
+        self.int_status = 0
+        self._direction = 0
+        self._tsize = 0
+        self._moved = 0
+        self._outbound = bytearray()
+
+    # -- the state the firmware polls ----------------------------------------
+
+    @property
+    def awake(self) -> bool:
+        """Whether the firmware currently has the controller woken."""
+        return (self.storage.get(self.PWRCMD, 0)
+                & self.PWRCMD_WAKE_MASK) == self.PWRCMD_WAKE
+
+    def _bstatus(self) -> int:
+        status = self.BSTATUS_B2M_ACTIVE
+        if self.controller is None:
+            # Nothing on the other side, and saying otherwise would send the
+            # transport after a packet that does not exist.
+            return status
+        if self.awake:
+            status |= self.BSTATUS_SPI_READY
+        if self.rx or self.controller.has_data():
+            status |= self.BSTATUS_HAS_DATA
+        return status
+
+    def _fifoptr(self) -> int:
+        # [23:16] is what the receive drain reads as "bytes available"; [15:8]
+        # is what the send loop reads as "room to push". The controller takes
+        # bytes as fast as they are pushed, so the write side is always clear.
+        #
+        # The count is rounded up to a whole word, because the FIFO holds words
+        # and the drain loop refuses to move at all below four bytes
+        # (0x000899C2). The firmware really does ask for two-byte reads -- the
+        # post-download announcement at 0x00089F64 is one -- and reporting two
+        # there deadlocks it against its own threshold.
+        available = (len(self.rx) + 3) & ~3
+        return ((available & 0xFF) << 16) | ((self.FIFO_DEPTH & 0xFF) << 8)
+
+    # -- registers -----------------------------------------------------------
 
     def read(self, offset: int, size: int) -> int:
         self.reads[offset] += 1
         if offset == self.BSTATUS:
-            # B2M_STATE = active, SPI ready, no IRQ outstanding. The HAL polls
-            # this during power-up and will not proceed until it looks alive.
-            return 0x00000030
+            return self._bstatus()
         if offset == self.CMDSTAT:
             return 0x00000004  # idle, last command complete
         if offset == self.INTSTAT:
-            return 0x00000000
+            # Bit 8 is a level, not a latch: it says the controller is awake,
+            # which is the same thing BSTATUS bit 3 says, so it is recomputed
+            # rather than remembered. Letting INTCLR knock it down would strand
+            # the firmware the moment it switched over to reading this one.
+            ready = self.controller is not None and self.awake
+            return self.int_status | (self.INT_CONTROLLER_READY if ready else 0)
         if offset == self.FIFOPTR:
-            # No received bytes waiting, plenty of transmit room.
-            return 0x00200000
+            return self._fifoptr()
         if offset in (self.FIFO, self.FIFOPOP):
-            if self.rx:
-                word = self.rx[:4]
-                del self.rx[: len(word)]
-                return int.from_bytes(bytes(word).ljust(4, b"\x00"), "little")
-            return 0
+            return self._pop()
         return self.storage.get(offset, 0)
 
     def write(self, offset: int, size: int, value: int) -> None:
         self.writes[offset] += 1
         if offset in (self.FIFO, self.FIFOPUSH):
-            self.tx.extend(value.to_bytes(4, "little")[:size or 4])
+            self._push(value)
+            return
+        if offset == self.INTCLR:
+            self.int_status &= ~value
             return
         if offset == self.CMD:
             self.commands += 1
+            self._begin(value)
         self.storage[offset] = value
 
+    # -- transfers -----------------------------------------------------------
+
+    def _begin(self, command: int) -> None:
+        """A CMD write starts a transfer: direction in [4:0], size in [19:8]."""
+        self._direction = command & 0x1F
+        self._tsize = (command >> 8) & 0xFFF
+        self._moved = 0
+        self._outbound.clear()
+        self.int_status &= ~self.INT_CMDCMP
+        if self._direction == self.CMD_READ and self.controller is not None:
+            # The controller presents the bytes; the firmware pops them out.
+            #
+            # A read clocks TSIZE bytes off the bus whether or not the
+            # controller has that many to give, so short answers are padded
+            # rather than left short. The firmware relies on it: it reads an
+            # HCI event in a fixed nine-byte window, and a seven-byte Command
+            # Complete delivered as seven bytes leaves its drain loop
+            # (0x000899B0) waiting for two more that are never coming.
+            data = self.controller.take(self._tsize)
+            self.rx.extend(data.ljust(self._tsize, b"\x00"))
+
+    def _push(self, word: int) -> None:
+        """One 32-bit word into the write FIFO (0x00089346).
+
+        The last word of a transfer is partial whenever TSIZE is not a multiple
+        of four -- the very first packet is six bytes, pushed as two words --
+        so the tail is trimmed to what was actually asked for.
+        """
+        remaining = self._tsize - self._moved
+        chunk = word.to_bytes(4, "little")[: max(0, min(4, remaining))]
+        self._outbound.extend(chunk)
+        self.tx.extend(chunk)
+        self._moved += 4
+        if self._tsize and self._moved >= self._tsize:
+            self.int_status |= self.INT_CMDCMP
+            if self.controller is not None:
+                self.controller.from_host(bytes(self._outbound))
+                self.packets_sent += 1
+            self._outbound.clear()
+
+    def _pop(self) -> int:
+        """One 32-bit word out of the read FIFO (0x00089A10)."""
+        word = self.rx[:4]
+        del self.rx[: len(word)]
+        self._moved += 4
+        if self._tsize and self._moved >= self._tsize:
+            self.int_status |= self.INT_CMDCMP
+            self.packets_received += 1
+        return int.from_bytes(bytes(word).ljust(4, b"\x00"), "little")
+
     def summary(self) -> str:
+        fitted = ("no controller" if self.controller is None else
+                  f"{self.packets_sent} sent, {self.packets_received} received")
         return (
-            f"  BLEIF: {self.commands} commands, {len(self.tx)} bytes written to the "
-            f"controller, {sum(self.reads.values())} reads"
+            f"  BLEIF: {self.commands} commands, {len(self.tx)} bytes to the "
+            f"controller ({fitted}), {sum(self.reads.values())} reads"
         )
 
 

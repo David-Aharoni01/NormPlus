@@ -27,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .peripherals import BitBangI2cBus, I2cDevice, SpiDevice
+from .peripherals import (BitBangI2cBus, BleController, I2cDevice, SpiDevice)
 
 # ── SPI NAND ─────────────────────────────────────────────────────────────────
 
@@ -1357,3 +1357,171 @@ def attach_touch_panel(machine, *, log=print) -> TouchPanel:
     if iom is not None:
         iom.devices[TOUCH_I2C_ADDRESS] = touch
     return touch
+
+
+class NationzController(BleController):
+    """The BLE controller this watch actually has: a Nationz NZ8801.
+
+    The part names itself. The third section the firmware downloads is a
+    RivieraWaves NVDS blob that starts ``"NVDS"`` and carries, in
+    ``[tag][0x06][length][data]`` records, tag 1 = a BD address and tag 2 =
+    the string ``"NZ8801V1A"``.
+
+    It boots empty. Before it will speak HCI the host has to download its
+    firmware, which the Apollo3 side does in three commands per section --
+    all H4 command packets whose opcode *high* byte is the phase and whose
+    *low* byte is the section id (built a byte at a time at 0x00089C24)::
+
+        01 <section> F1 02 <length lo> <length hi>     begin, total length
+        01 <section> F2 <n>  <n bytes of payload>      data, n <= 0x80
+        01 <section> F3 02 <checksum lo> <checksum hi> end
+
+    and this watch sends four sections: 0xBB (1620 bytes of code), 0xCC (560
+    more), 0xDD (194 bytes, the NVDS), then 0xEE with a length of zero, which
+    means "run it".
+
+    Each of those is answered with a five-byte event the firmware builds for
+    itself and compares against with a memcmp at 0x00089CEA::
+
+        04 <section> <phase> 01 00
+
+    which is why an ordinary HCI Command Complete is rejected here -- it is
+    not HCI yet. After the 0xEE go-ahead the controller restarts into what it
+    was given and says so *unsolicited*, in the same shape; the firmware waits
+    for it at 0x00089F56 and checks only that the second byte is 0xEE
+    (0x00089F88). From then on the link is ordinary HCI, and the first thing
+    across it is the vendor command 0xFD04.
+
+    What this class does **not** do is behave like a radio. It answers so the
+    firmware's stack can finish starting, and it keeps every section it was
+    given. Putting a real stack behind it -- a bumble ``Controller`` on a
+    ``LocalLink``, out to the netsim endpoint the Android emulator's bridge
+    already serves -- is the rest of task #25.
+    """
+
+    #: Opcode high bytes for the three download phases.
+    PHASE_BEGIN = 0xF1
+    PHASE_DATA = 0xF2
+    PHASE_END = 0xF3
+    #: The section whose "begin" doubles as "start running".
+    SECTION_GO = 0xEE
+
+    def __init__(self, log=None) -> None:
+        super().__init__()
+        self.log = log
+        #: True once the go-ahead has been answered and the link is HCI.
+        self.booted = False
+        #: section id -> the bytes the firmware downloaded into it.
+        self.sections: dict = {}
+        #: section id -> the length it declared, for checking against.
+        self.declared: dict = {}
+        #: Opcodes seen after the download, in order.
+        self.hci_commands: list = []
+        self._section = None
+
+    def _ack(self, section: int, phase: int) -> None:
+        self.to_host(bytes([0x04, section, phase, 0x01, 0x00]))
+
+    def from_host(self, packet: bytes) -> None:
+        super().from_host(packet)
+        if len(packet) < 4 or packet[0] != 0x01:
+            return
+        section, phase, length = packet[1], packet[2], packet[3]
+        body = packet[4:4 + length]
+
+        if not self.booted and phase in (self.PHASE_BEGIN, self.PHASE_DATA,
+                                         self.PHASE_END):
+            if phase == self.PHASE_BEGIN:
+                self.declared[section] = int.from_bytes(body[:2], "little")
+                self.sections[section] = bytearray()
+                self._section = section
+            elif phase == self.PHASE_DATA:
+                self.sections.setdefault(section, bytearray()).extend(body)
+            # Exactly one message goes back, including for the go-ahead. That
+            # last one is *not* an ack -- the controller restarts into what it
+            # was just given, so it cannot answer the command; what the
+            # firmware waits for at 0x00089F56 is the announcement that comes
+            # out the other side, and it reads only one message there (two
+            # bytes then three). Sending both an ack and an announcement leaves
+            # five bytes in the queue that every later read is then skewed by,
+            # and the firmware restarts the whole download.
+            self._ack(section, phase)
+            if phase == self.PHASE_BEGIN and section == self.SECTION_GO:
+                self.booted = True
+                if self.log:
+                    sizes = ", ".join(
+                        f"0x{s:02X}={len(d)}B" for s, d in sorted(self.sections.items()))
+                    self.log(f"  [ble] controller booted; downloaded {sizes}")
+            return
+
+        # Past the bootloader: ordinary HCI.
+        opcode = section | (phase << 8)
+        self.hci_commands.append(opcode)
+        self.to_host(bytes([0x04, 0x0E, 0x04, 0x01, section, phase, 0x00]))
+
+    # -- what the download tells us about the part ---------------------------
+
+    def nvds(self):
+        """The NVDS section, if it has been downloaded."""
+        for data in self.sections.values():
+            if bytes(data[:4]) == b"NVDS":
+                return bytes(data)
+        return None
+
+    def nvds_tags(self) -> dict:
+        """``{tag: value}`` from the NVDS blob.
+
+        Records are ``[tag][0x06][length][data]`` after the four-byte magic.
+        """
+        blob = self.nvds()
+        tags = {}
+        if not blob:
+            return tags
+        i = 4
+        while i + 3 <= len(blob):
+            tag, status, length = blob[i], blob[i + 1], blob[i + 2]
+            if status != 0x06 or i + 3 + length > len(blob):
+                break
+            tags[tag] = blob[i + 3: i + 3 + length]
+            i += 3 + length
+        return tags
+
+    def summary(self) -> str:
+        tags = self.nvds_tags()
+        name = tags.get(2, b"").rstrip(b"\x00").decode("ascii", "replace")
+        address = tags.get(1)
+        parts = [f"{len(self.sections)} sections downloaded"]
+        if name:
+            parts.append(f"part {name}")
+        if address:
+            parts.append("NVDS address " + ":".join(f"{b:02X}" for b in reversed(address)))
+        parts.append("HCI up" if self.booted else "still in the bootloader")
+        return "  BLE controller: " + ", ".join(parts)
+
+
+#: The BLEIF block, where the on-die BLE controller hangs off the bus.
+BLEIF_BASE = 0x5000C000
+
+
+def attach_ble_controller(machine, controller=None, log=print):
+    """Put a BLE controller on the other side of the BLEIF FIFO.
+
+    Without one the firmware brings the radio up, sends its first packet into
+    nothing and retries until it gives up -- which is faithful to a dead
+    controller but is also what makes a radio-on boot slow. With one, the
+    transport completes and whatever the firmware's Cordio host says is
+    available as H4 packets.
+
+    ``controller`` defaults to :class:`NationzController`, which is enough for
+    the firmware's own stack to finish starting: it runs the NZ8801's download
+    protocol and then answers HCI. Pass something else to put a real stack
+    behind it.
+    """
+    bleif = machine.bus.by_base.get(BLEIF_BASE)
+    if bleif is None:
+        log("  [ble] no BLEIF on the bus")
+        return None
+    if controller is None:
+        controller = NationzController(log=log)
+    bleif.controller = controller
+    return controller
