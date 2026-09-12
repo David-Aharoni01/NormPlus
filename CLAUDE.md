@@ -109,6 +109,12 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 18
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 14 --no-ble
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --live        # window + mouse touch
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --screenshot out.png
+# A radio behind the firmware's BLE stack (a bumble controller): the watch advertises.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --radio --seconds 18
+# ...and the Android emulator's netsim endpoint on the same virtual air, so the
+# Pixel 8 AVD (launch-emulator.ps1 -Watch) pairs with the EMULATED watch.
+# Implies --realtime. --hci-trace logs every packet across the seam.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
 
 # Parse the image header / list source modules recovered from assert() strings
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
@@ -161,6 +167,13 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   the same time — they contend for the watch's single active connection.
 - **Rebuild from scratch:** `tools\emulator\setup.ps1` (SDK packages + AEHD + AVD + Bumble);
   the Zadig WinUSB swap is the one manual step.
+- **The emulated watch instead of the real one:** `launch-emulator.ps1 -Watch` skips the dongle
+  and points the AVD at the watch emulator, which serves the same netsim endpoint itself
+  (`normwatch boot --netsim --live`, start it first). `:app` bonds with it and reads its
+  battery; nothing physical involved. Verified on this AVD — a stale bond with the physical
+  watch (same address) had to be removed first (`adb root`, delete the `[4c:59:80:12:44:f1]`
+  section of `/data/misc/bluedroid/bt_config.conf`, toggle BT). See "A real stack behind the
+  seam" in `tools/watchemu/README.md` for the six bumble gaps that made this look impossible.
 
 `normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
 the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
@@ -200,9 +213,10 @@ Two facts that cost a lot to rediscover, in this order:
 2. Past the animation the watch reaches **first-run setup** — "Select a Language", then a
    QR pairing screen showing `A0.2(R.T0.0H0.0B01)` / `Norm2#00000`. It ignores swipe and
    button there because it is waiting for a phone. **The watch face is behind first-run
-   setup, and setup is behind BLE.** That is the standing blocker, not an emulator defect;
-   card #25 (BLEIF → HCI) is the real route past it and #41 (flash persistence) is the
-   cheap one.
+   setup, and setup is behind BLE.** The BLE half is done (`--netsim`: the AVD's `:app`
+   bonds with the emulated watch); what finishes setup is whatever the companion app
+   sends next, still to be found in the smali. #41 (flash persistence) is the cheap
+   route past it.
 
 ### The BLE controller
 
@@ -223,7 +237,7 @@ With both fixed the firmware runs its whole bring-up at ~0.27s of watch time —
 over to its HCI transport. `tests/test_ble_powerup.py` reads that table back out of the
 image and compares, so the model cannot drift from the firmware.
 
-**It costs about 2.1x, and that is expected.** Nothing is behind the BLEIF FIFO yet, so the
+**With nothing behind the BLEIF FIFO it costs about 2.1x, and that is expected**: the
 transport polls `BSTATUS` inside a critical section: ~100M instructions of interrupt-masked
 retry up front and periodic retries after, 5.5M MMIO reads over a boot, `bootrom_delay_cycles`
 up from 190k to 4.3M, and 18% of the FreeRTOS ticks never delivered. The screen still gets
@@ -236,7 +250,8 @@ run that is not about the radio, and the three optimisation tests use it. With t
 there is much less idle time to measure: `--idle-skip` still skips 276M instructions but is
 worth 1.09x rather than 1.33x, because more of the wall clock is un-skippable MMIO.
 
-All of this goes away when the FIFO answers, in card #25 — see below.
+All of this goes away when the FIFO answers — a `NationzController` (the default with
+`--ble-controller`) or a real radio (`--radio`) — see below.
 
 ### The BLEIF transport, and the packet in the way
 
@@ -309,23 +324,45 @@ Three details in that handshake each cost a debugging round and are each pinned 
   handle byte the firmware sets at `0x0008A076` at the end of bring-up. Model only BSTATUS
   and the firmware gets all the way up, then decides its controller has gone away.
 
-### Where the radio stands, and the seam for a real one
+### Where the radio stands: on the air
 
-`blelink.py` puts a bumble `Controller` on a `LocalLink` behind the NZ8801 seam, with the
-download phase and every OGF 0x3F vendor opcode answered locally — bumble replies to a
-vendor opcode with *silence*, which the firmware reads as a dead controller. It runs on its
-own thread, and a command waits briefly for its answer so the exchange looks synchronous to
-the emulator. (Bumble answers all the standard commands correctly, `Read_BD_ADDR` included,
-verified directly.)
+`blelink.py` puts a bumble `Controller` on a `LocalLink` behind the NZ8801 seam, and the
+watch is on the air with it: it advertises as `Norm2#00000` at the physical watch's address
+(`--address`), a phone connects, pairs (LE *legacy* Just Works — the firmware's Pairing
+Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discovers the GATT
+table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
+firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host in ~10s;
+`--netsim` does it with the Pixel 8 AVD (`launch-emulator.ps1 -Watch`).
 
-**The firmware does not reach standard HCI yet.** After the download it runs a vendor init
-sequence — `0xFD04`, then `0xFD02` with parameters `54 60 00 20` — and stalls on the reply
-to `0xFD02`, then restarts the download. So bumble is wired in but not yet exercised.
+The seam answers three kinds of thing itself and forwards the rest: the download phase
+(not HCI), every OGF 0x3F vendor opcode (bumble answers those with silence), and the LE
+crypto primitives `LE_Read_Local_P-256_Public_Key`, `LE_Generate_DHKey` and `LE_Encrypt`
+— bumble 0.0.229's P-256 handler is a `TODO` stub and the other two do not exist, and with
+0x2025 unanswered Cordio's command queue never reopened, so the watch never advertised.
+They are real P-256/AES-128 from `cryptography`, and the phone checks the results.
 
-The method that has worked every time, and the one to continue with: find the read length
-the firmware chose, find the code that consumes it (a code hook over `0x89000-0x8B000`
-recording PCs right after the last `FIFOPOP` finds the caller), and see what it compares.
-Twice now the firmware turned out to *build the reply it expects* and memcmp it.
+Unsolicited events reach the firmware through **IRQ 12**: `HciDrvRadioBoot` ends
+(`0x0004704E`) with INTCLR/INTEN 0x281 and `NVIC_EnableIRQ(12)`; the ISR (`0x000889CC`)
+reads INTSTAT & INTEN, clears it and wakes the HCI task. INTSTAT bit 7 (BLECIRQ) is the
+interrupt form of BSTATUS bit 7, latched on its rising edge, and `Bleif.pending_irqs`
+raises it.
+
+**Bumble's controller has six gaps a phone walks into, each of which looked like a hang**
+— the P-256 stub above; silence for unknown opcodes; LE data stamped with the sender's
+*random* address (the watch uses its public one, so its ATT responses were dropped); a
+filter accept list that is never consulted (Android connects through it); no
+`Read_Remote_Version_Information` (Android will not discover services without it); no
+`LE_Connection_Update` (jams the central's command queue). `VirtualController` and `Air`
+in `blelink.py` close them, `tests/test_ble_link.py` pins them, and the README's "A real
+stack behind the seam" tells each story. Android additionally aborts unless the controller
+claims Secure Simple Pairing, a BR/EDR bit the phone's controller now claims.
+
+**Two rules when touching the seam.** Everything on the bumble side lives on one loop
+(`Radio`): `LocalLink` dispatches on the *sender's* running loop, so controllers on
+different loops cannot hear each other. And a phone keeps real time, so the watch must
+too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead of the
+wall clock and never tries to catch up. `--hci-trace` is the first thing to turn on when
+the two disagree about what was said.
 
 ### The invariants that break silently
 
@@ -1015,14 +1052,18 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 17 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 19 test files, all standalone scripts.
 
-**Blocked on BLE, not on the emulator.** The watch face is behind first-run setup and
-setup is behind pairing, so the QR screen ignores swipe and button by design. Open cards:
+**The radio works end to end** (card #25): the firmware's own BLE stack runs behind a
+bumble controller, and with `--netsim` the Pixel 8 AVD's `:app` bonds with the emulated
+watch and reads its battery — `watchemu` and `tools/emulator/` meet there, with no hardware
+at all. The watch face is still behind first-run setup: the phone bonds, but whatever the
+companion app sends to finish setup has not been found in the smali yet, so the QR screen
+stays. Open cards:
 
-- **#25 BLEIF -> HCI seam** — the real route past pairing, and the point where `watchemu`
-  and `tools/emulator/` finally meet: the emulated watch's own BLE stack bridged to a
-  Bumble virtual controller, and from there to `:app` in the AVD. No hardware at all.
+- **First-run setup over BLE** — find the command(s) the NORM app sends after bonding that
+  take the watch past the QR screen, and send them from `:app` (or a bumble host) against
+  the emulated watch; `--hci-trace` shows every byte.
 - **#41 flash persistence** (`--flash-state PATH`) — the cheap route: keep the watch
   provisioned across runs so it starts past setup. Also unblocks #13 (OTA rehearsal).
 - **#46 snapshot/restore** — every probe currently pays a 12s boot; this is the biggest

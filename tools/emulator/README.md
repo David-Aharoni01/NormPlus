@@ -48,6 +48,11 @@ tools\emulator\launch-emulator.ps1
 # UI-only boot (no Bluetooth / no dongle needed)
 tools\emulator\launch-emulator.ps1 -NoBridge
 
+# Bluetooth to the EMULATED watch (tools/watchemu) instead of the physical one: no
+# dongle. Start the watch emulator first; it serves the netsim endpoint itself.
+#   PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
+tools\emulator\launch-emulator.ps1 -Watch
+
 # Cold boot after editing config.ini
 tools\emulator\launch-emulator.ps1 -ColdBoot
 
@@ -121,6 +126,23 @@ to be worked around (both in the script's header):
 2. **vendor-caps timeout** — Android's BT init sends `LE_GET_VENDOR_CAPABILITIES` (0xFD53);
    the CSR8510 ignores unknown vendor opcodes, so Android times out and *fatally* aborts BT
    startup. The bridge answers 0xFD53/0xFD5B locally with "not supported" so init completes.
+
+### The emulated watch as the peer (`-Watch`)
+
+`tools/watchemu` runs the watch's own firmware, and `normwatch boot --netsim` serves this
+same netsim endpoint from inside it with a Bumble virtual controller on the same virtual
+link as the watch's radio. `launch-emulator.ps1 -Watch` starts no bridge and no dongle; it
+just points the AVD at that port (and refuses to boot if nothing is listening there).
+`:app` then finds `Norm2#00000` at the physical watch's address, bonds with it and reads
+its battery, with nothing physical involved. `netsim_transport.py` (next to the bridge) is
+the netsim `packet`-field fix factored out so both can use it; the vendor-caps
+short-circuit is not needed there because the virtual controller answers every opcode.
+
+One thing to know: the emulated watch uses the physical watch's address by default, so a
+guest that is still bonded to the real watch has the wrong keys for it. Forget the device
+in the guest (Settings > Bluetooth, or with `adb root`: delete the `[4c:59:80:12:44:f1]`
+section of `/data/misc/bluedroid/bt_config.conf` and toggle BT), or give the emulated
+watch another address with `--address`.
 
 Notes / gotchas:
 - The CSR8510 is BT 4.0 — fine as a BLE central for the watch, but old. A newer BT5 dongle on a

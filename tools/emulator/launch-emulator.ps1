@@ -22,6 +22,12 @@
 .PARAMETER NoBridge
   Skip the Bumble HCI bridge and boot UI-only (no Bluetooth). The bridge is on by default.
 
+.PARAMETER Watch
+  Pair with the EMULATED watch instead of the physical one: no dongle, no bridge process.
+  The watch emulator serves the same netsim endpoint itself -- start it first with
+    PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
+  and this just points the AVD at it. Fails fast if nothing is listening on BridgePort.
+
 .PARAMETER BridgePort
   TCP port for the Bumble netsim bridge. Default: 8877.
 
@@ -31,6 +37,7 @@
 .EXAMPLE
   ./launch-emulator.ps1                 # boot with real-watch BLE (Bumble bridge + USB dongle)
   ./launch-emulator.ps1 -NoBridge       # UI-only boot (no Bluetooth)
+  ./launch-emulator.ps1 -Watch          # BLE to the emulated watch (normwatch boot --netsim)
   ./launch-emulator.ps1 -ColdBoot       # cold boot after editing config.ini
 #>
 [CmdletBinding()]
@@ -40,6 +47,7 @@ param(
     [ValidateSet("auto", "host", "swiftshader_indirect")]
     [string]$Gpu = "auto",
     [switch]$NoBridge,
+    [switch]$Watch,
     [int]$BridgePort = 8877,
     [string]$UsbController = "usb:0A12:0001"   # CSR dongle (must be WinUSB-bound via Zadig)
 )
@@ -69,6 +77,16 @@ if ($ColdBoot) { $emuArgs += @("-no-snapshot", "-wipe-data") }
 
 if ($NoBridge) {
     Write-Host "Booting WITHOUT Bluetooth bridge (-NoBridge): emulator is UI-only." -ForegroundColor Yellow
+} elseif ($Watch) {
+    # --- the emulated watch (tools/watchemu) is the other end of the radio ---
+    # normwatch boot --netsim serves the netsim endpoint with a virtual controller on the
+    # same bumble link as the watch's own; nothing to start here, only something to check.
+    $listening = Get-NetTCPConnection -LocalPort $BridgePort -State Listen -ErrorAction SilentlyContinue
+    if (-not $listening) {
+        throw "Nothing is listening on port $BridgePort. Start the watch emulator first:`n  PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim $BridgePort --live"
+    }
+    Write-Host "Bluetooth to the emulated watch on port $BridgePort (-Watch)." -ForegroundColor Cyan
+    $emuArgs += @("-packet-streamer-endpoint", "localhost:$BridgePort", "-writable-system", "-no-snapshot-load")
 } else {
     # --- real-watch BLE via Bumble HCI bridge (default) ---
     $listening = Get-NetTCPConnection -LocalPort $BridgePort -State Listen -ErrorAction SilentlyContinue
