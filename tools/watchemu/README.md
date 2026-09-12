@@ -47,6 +47,13 @@ Throughput is roughly 4.4M instructions/second with `--no-trace` and 3.4M with t
 on (~1/10th of real time). Every MMIO access is a Python callback, so tracing, heavy GPIO
 polling and bus traffic all cost. The live window itself is cheap — about 8%.
 
+**The watch is on the air.** With `--radio` the firmware's own BLE stack comes all the way
+up behind a bumble controller and advertises as `Norm2#00000`; with `--netsim` the Pixel 8
+AVD is on the same virtual air, and `:app` bonds with the emulated watch and reads its
+battery. A bumble host does the same in `tests/test_ble_end_to_end.py`, in about ten
+seconds. See "A real stack behind the seam" for the six things bumble does not do that
+each looked like a hang.
+
 **The watch draws its screen, live, and you can touch it.** LVGL renders and flushes
 real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and `--live`
 puts them in a window as they arrive, with the mouse acting as a finger:
@@ -151,6 +158,12 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
 | `info` | Parses the Ambiq image header, checks both CRCs, prints the vector table |
 | `modules` | Lists the source files recovered from the firmware's `assert()` strings |
 | `boot` | Runs the firmware and prints a triage report |
+
+Two switches put a radio behind the firmware's BLE stack: `--radio` (a bumble controller,
+alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's netsim
+endpoint on PORT — default 8877 — so `launch-emulator.ps1 -Watch` gives the AVD the
+emulated watch as its Bluetooth peer). `--netsim` paces the watch against the wall clock;
+`--hci-trace` logs every packet across the seam. See "A real stack behind the seam".
 
 ### The live window
 
@@ -835,24 +848,90 @@ the firmware all the way up before it decides its controller has vanished.
 
 ### A real stack behind the seam
 
-`blelink.py` puts a bumble `Controller` on a `LocalLink` behind the NZ8801 bootloader. Two
-things are answered locally rather than forwarded: the download phase, which is not HCI at
-all, and every OGF 0x3F vendor opcode -- bumble replies to a vendor opcode by logging an
-error and emitting *nothing*, which the firmware reads as a dead controller. That is the
-same split `tools/emulator/norm_emu_bridge.py` already makes for Google's 0xFD53 on the
-Android side: the vendor space belongs to whoever is emulating the part.
+`blelink.py` puts a bumble `Controller` on a `LocalLink` behind the NZ8801 bootloader,
+and with it **the watch is on the air**: it advertises as `Norm2#00000` at the physical
+watch's address, a phone connects to it, pairs with it, discovers its GATT table
+(`6006` with `8001`-`8004`, the `1530` DFU service, `FEE7`) and gets its 0x6F protocol
+answered by the firmware -- a battery CHECK comes back `6f 08 80 01 00 4d 8f`. The phone
+can be a bumble host (`tests/test_ble_end_to_end.py`, about ten seconds, no hardware) or
+the Pixel 8 AVD with `:app` in it (`--netsim`, below). The seam's rule is unchanged: the
+download phase and the OGF 0x3F vendor opcodes are answered locally, because neither means
+anything to bumble, and the rest is forwarded.
 
 Bumble runs on its own thread because it is asyncio and the emulator is not, and because
 `Controller.send_hci_packet` defers through `call_soon` -- a reply is never ready by the
-time `on_hci_packet` returns. A command hands off and waits briefly for the answer, which
-makes the exchange look synchronous to the emulator and keeps the watch's own timeouts
-from racing the loop.
+time `on_hci_packet` returns. A command hands off and waits briefly for *its* answer (a
+Command Complete or Command Status carrying its opcode, not just anything the controller
+says meanwhile), which makes the exchange look synchronous to the emulator and keeps the
+watch's own timeouts from racing the loop. Anything the controller says unasked -- a
+connection, data from the phone -- is queued and reaches the firmware through **IRQ 12**:
+`HciDrvRadioBoot` ends (`0x0004704E`) with INTCLR 0x281, INTEN 0x281 and
+`NVIC_EnableIRQ(12)`, and the ISR (`0x000889CC` via `0x00046EE8`) reads INTSTAT & INTEN,
+clears it and wakes the HCI driver's task. Bit 7 of that mask is BLECIRQ, the interrupt
+form of BSTATUS bit 7, latched on its rising edge; the blocking transfers mask it (INTEN
+0x201 at `0x00089274`) so a reply they are about to poll for does not also interrupt.
 
-**It is wired in but not yet exercised.** After the download the firmware runs a vendor
-init sequence of its own -- `0xFD04`, then `0xFD02` with parameters `54 60 00 20` -- and
-stalls on the answer to the second, so nothing standard has reached bumble yet. INTEN stays
-zero and the BLE interrupt is never enabled, so this is still a polling stall and not a
-missing IRQ.
+**Bumble 0.0.229 is missing six things a phone needs, and each one looked like a hang.**
+None of them is a bug in the watch; all of them are pinned by `tests/test_ble_link.py`:
+
+- `LE_Read_Local_P-256_Public_Key` (0x2025) has a handler that is a `TODO` stub: it returns
+  sync parameters for an async command, the dispatcher rejects that, and nothing comes
+  out. The firmware sends it during HCI init and then waits -- Cordio holds every later
+  command until `Num_HCI_Command_Packets` says the controller can take one -- so the
+  watch never got as far as advertising. `LE_Generate_DHKey` (0x2026) and `LE_Encrypt`
+  (0x2017) have no handler at all. The seam answers all three itself with real P-256 and
+  AES-128 from `cryptography` (a bumble dependency), not invented values: the phone does
+  the same arithmetic and checks it. As it turns out this firmware pairs LE *legacy* Just
+  Works -- its Pairing Response is `02 03 00 01 10 02 01`, AuthReq 0x01, bonding without
+  Secure Connections -- so the DHKey path is unit-tested but the AES one is what pairing
+  uses (five `LE_Encrypt` calls: c1 twice, s1 once).
+- An opcode bumble has no class for becomes a generic `HCI_Command`, and the dispatcher
+  answers one of those with silence. `VirtualController` answers every command: vendor
+  opcodes get the Command Complete `norm_emu_bridge.py` already proved Android accepts,
+  everything else the Command Status a real controller gives (Unknown HCI Command).
+- `LocalLink.send_acl_data` stamps every LE data PDU with the sender's *random* address.
+  The watch uses its public one, so every ATT response it sent arrived at the phone from
+  `00:00:00:00:00:00` and was dropped with "no connection" -- service discovery timed out
+  after the requests had visibly reached the watch. `Air` puts the address the connection
+  was made with on the PDU.
+- The filter accept list is accepted and never consulted. Android connects by putting the
+  peer on the list and issuing `LE_Extended_Create_Connection` with filter policy 1 and a
+  zero peer address, so nothing ever matched and every connect timed out.
+- `Read_Remote_Version_Information` is unhandled, and Android's GATT client will not start
+  service discovery until it has it ("Pausing service discovery till remote version is
+  read") -- so the app connected, bonded, and never saw a service. The watch's controller
+  reports what the physical one does (LMP 8 / subversion 809 / company 96, from the
+  bond record Android kept of the real watch).
+- `LE_Connection_Update` is unhandled. The watch asks for 15 ms / latency 4 / 4 s right
+  after pairing; the central's host turns that into this command, and with no answer its
+  whole command queue stops -- the next thing it could not do was disconnect. It is
+  granted as asked and both ends get the Connection Update Complete event.
+
+One more is Android's, not bumble's: its stack aborts start-up unless the controller
+claims Secure Simple Pairing (`btm_sec_dev_reset: only controllers with SSP is
+supported`, three fatal signals and then Bluetooth is simply off). The phone's virtual
+controller claims the bit; it is BR/EDR-only and changes nothing on the LE side.
+
+**The loop is shared on purpose.** `LocalLink` dispatches every PDU with
+`asyncio.get_running_loop().call_soon` on the *sender's* loop, so controllers that are to
+hear each other must live on the same one. That is `Radio`: one thread, one loop, one
+link. `AndroidLink` serves the Android emulator's netsim endpoint on it (the transport is
+imported from `tools/emulator/netsim_transport.py`, which owns the fix for emulator 36.x's
+`packet` field) with a second `VirtualController` behind it -- the phone in the AVD and
+the watch in the emulator are two controllers on one piece of air.
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live     # the watch, on port 8877
+tools\emulator\launch-emulator.ps1 -Watch                                # the phone, pointed at it
+```
+
+`--netsim` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
+ahead of the wall clock (1.25x at CLI defaults; `--idle-skip` and the deadline quantum
+fast-forward it further) times out on a peer that is answering promptly. The machine
+sleeps whenever it is ahead and never tries to catch up. `--hci-trace` logs every packet
+across the seam, and is the first thing to turn on when the phone and the watch disagree
+about what was said -- every one of the six gaps above was found in that trace, or in
+`adb logcat` next to it.
 
 ### Turning the radio on moved the cost somewhere nobody had looked
 
@@ -1524,30 +1603,23 @@ In dependency order. These are tracked on the kanban board (`/kanban`).
    queue's own completion bits (CQUPD at 9, and a CQCMP bit) are not, and the driver
    enables CQUPD. If the NAND driver waits on queue completion rather than DMA
    completion, that alone explains the stall.
-2. **BLEIF -> HCI.** Power-on, the transport and the controller handshake are all **done**
-   — see "The watch talks to its radio" and "The radio is a Nationz NZ8801" below.
+2. **BLEIF -> HCI: done.** Power-on, the transport, the NZ8801 handshake and a real
+   radio behind it — see "The watch talks to its radio", "The radio is a Nationz NZ8801"
+   and "A real stack behind the seam". `:app` in the Pixel 8 AVD bonds with the emulated
+   watch and reads its battery, with no hardware anywhere (`--netsim`,
+   `launch-emulator.ps1 -Watch`).
 
-   The controller is a Nationz NZ8801 that boots
-   empty, and `NationzController` gives it its firmware exactly as the real one is given
-   it. The link reaches ordinary HCI and the radio costs the boot nothing.
-
-   What is left is a radio. `NationzController` answers so the firmware's stack can
-   start; it does not advertise, connect or carry data. That means: a bumble `Controller`
-   subclassing it on a `LocalLink`, its
-   other end into the netsim servicer `tools/emulator/norm_emu_bridge.py` already
-   implements, and from there to `:app` in the Pixel 8 AVD — the emulated watch talking
-   to the emulated phone with no hardware at all. Two things to keep in mind: the
-   download phase and the vendor opcodes either side of it (`0xF1`/`0xF2`/`0xF3`, then
-   `0xFD04`) mean nothing to a bumble controller, so they stay answered in the seam — the
-   same split the bridge already uses for Google's `0xFD53` on the AVD side; and `--idle-skip`
-   and the deadline quantum both fast-forward *watch* time past idle, so a live link will
-   need the machine pinned to the wall clock. `0x50023800`/`0x50023804` is still
-   unmodelled MMIO the BLE path touches.
+   What is left on this front is not the radio. The watch is still in first-run setup
+   after the phone bonds, so whatever the companion app sends to finish setup is the next
+   thing to find in the smali and try against the emulated watch; `--hci-trace` shows
+   every byte of it. And `0x50023800`/`0x50023804` is still unmodelled MMIO the BLE path
+   touches.
 
 ## Relationship to the rest of the repo
 
 - `tools/emulator/` runs the **phone** side (Pixel 8 AVD) and bridges a real BT dongle to a
-  real watch. `watchemu` is the other end: no watch. Item 4 above is where they meet.
+  real watch. `watchemu` is the other end: no watch. They meet at `--netsim` /
+  `launch-emulator.ps1 -Watch`, where the AVD's Bluetooth is the emulated watch's radio.
 - `tools/firmware/image_tool.py` verifies and re-seals images; `watchemu`'s `image.py` is the
   loader's view of the same format and independently implements both CRCs.
 - `docs/firmware.md` is the analysis this is built on. It is worth reading first.

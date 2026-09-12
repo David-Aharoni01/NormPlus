@@ -20,7 +20,7 @@ from __future__ import annotations
 import collections
 from typing import Optional
 
-from .cortexm import IRQ_GPIO, IRQ_MSPI, IRQ_STIMER_CMPR0
+from .cortexm import IRQ_BLE, IRQ_GPIO, IRQ_MSPI, IRQ_STIMER_CMPR0
 
 
 class Peripheral:
@@ -1411,6 +1411,15 @@ class Bleif(Peripheral):
       controller saying it has something -- and then reads five bytes. Its
       drain loop at 0x000899B0 takes the available byte count from **FIFOPTR
       bits [23:16]** and pops words from FIFOPOP at 0x00089A10.
+    * Something the firmware did not ask for -- a connection, data from the
+      phone -- reaches it through **IRQ 12**. ``HciDrvRadioBoot`` ends
+      (0x0004704E) with INTCLR 0x281, INTEN 0x281 and ``NVIC_EnableIRQ(12)``
+      inlined at 0x00047066; the ISR (0x000889CC, via 0x00046EE8) reads
+      INTSTAT & INTEN, clears it through INTCLR, and wakes the HCI driver's
+      task with ``WsfSetEvent``. Bit 7 of that mask is **BLECIRQ**, the
+      interrupt form of BSTATUS bit 7, and the blocking transfers mask it
+      (INTEN 0x201 at 0x00089274) so that a reply they are about to poll for
+      does not also interrupt.
 
     With no controller attached the two handshake bits stay clear, which is the
     truthful answer -- there is nothing on the other side -- and is what this
@@ -1460,6 +1469,14 @@ class Bleif(Peripheral):
     #: away, which it answers by restarting the whole download.
     INT_CONTROLLER_READY = 1 << 8
 
+    #: INTSTAT bit 7, BLECIRQ: the controller has raised its line because it
+    #: has something to say. Latched on the rising edge of "has data" and
+    #: cleared by INTCLR, unlike bit 8, which is a level: the ISR clears what
+    #: it saw *before* the task gets round to reading, and a level here would
+    #: re-enter the ISR until it did. INTEN 0x281 at 0x00047062 enables it
+    #: alongside CMDCMP (bit 0) and DCMP (bit 9); IRQ 12 is what carries it.
+    INT_BLECIRQ = 1 << 7
+
     #: PWRCMD bits [3:2] == 3 is the firmware asking the controller to wake, 2
     #: lets it sleep again (``am_hal_ble_wakeup_set``, 0x0008A6B0).
     PWRCMD_WAKE_MASK = 0xC
@@ -1496,6 +1513,8 @@ class Bleif(Peripheral):
         self.packets_sent = 0
         self.packets_received = 0
         self.int_status = 0
+        self.interrupts_raised = 0
+        self._had_data = False
         self._direction = 0
         self._tsize = 0
         self._moved = 0
@@ -1509,6 +1528,17 @@ class Bleif(Peripheral):
         return (self.storage.get(self.PWRCMD, 0)
                 & self.PWRCMD_WAKE_MASK) == self.PWRCMD_WAKE
 
+    def _has_data(self) -> bool:
+        """Whether the controller has something for the firmware, latching
+        BLECIRQ on the way up. Every path that looks comes through here, so
+        an arrival is noticed whichever of them looks first."""
+        has = bool(self.rx) or (self.controller is not None
+                                and self.controller.has_data())
+        if has and not self._had_data:
+            self.int_status |= self.INT_BLECIRQ
+        self._had_data = has
+        return has
+
     def _bstatus(self) -> int:
         status = self.BSTATUS_B2M_ACTIVE
         if self.controller is None:
@@ -1517,9 +1547,23 @@ class Bleif(Peripheral):
             return status
         if self.awake:
             status |= self.BSTATUS_SPI_READY
-        if self.rx or self.controller.has_data():
+        if self._has_data():
             status |= self.BSTATUS_HAS_DATA
         return status
+
+    def pending_irqs(self) -> list:
+        """IRQ 12 while anything enabled in INTEN is set in INTSTAT.
+
+        Level-sensitive like the GPIO block's: the ISR takes it down through
+        INTCLR. The arrival that matters is polled here rather than pushed,
+        because a bumble controller queues its events from another thread and
+        this is the machine's thread.
+        """
+        self._has_data()
+        if self.int_status & self.storage.get(self.INTEN, 0):
+            self.interrupts_raised += 1
+            return [IRQ_BLE]
+        return []
 
     def _fifoptr(self) -> int:
         # [23:16] is what the receive drain reads as "bytes available"; [15:8]
@@ -1548,6 +1592,7 @@ class Bleif(Peripheral):
             # rather than remembered. Letting INTCLR knock it down would strand
             # the firmware the moment it switched over to reading this one.
             ready = self.controller is not None and self.awake
+            self._has_data()
             return self.int_status | (self.INT_CONTROLLER_READY if ready else 0)
         if offset == self.FIFOPTR:
             return self._fifoptr()
@@ -1616,6 +1661,9 @@ class Bleif(Peripheral):
         if self._tsize and self._moved >= self._tsize:
             self.int_status |= self.INT_CMDCMP
             self.packets_received += 1
+            # The line drops here if that was everything, so that the next
+            # arrival is a fresh edge even if nobody polls in between.
+            self._has_data()
         return int.from_bytes(bytes(word).ljust(4, b"\x00"), "little")
 
     def summary(self) -> str:
@@ -1623,7 +1671,8 @@ class Bleif(Peripheral):
                   f"{self.packets_sent} sent, {self.packets_received} received")
         return (
             f"  BLEIF: {self.commands} commands, {len(self.tx)} bytes to the "
-            f"controller ({fitted}), {sum(self.reads.values())} reads"
+            f"controller ({fitted}), {sum(self.reads.values())} reads, "
+            f"IRQ asserted {self.interrupts_raised}x"
         )
 
 

@@ -163,11 +163,14 @@ def cmd_boot(args) -> int:
     tracer = Tracer(
         symbols, stall_window=args.stall, watch_for_stall=not args.live, log=log
     ) if tracing else None
+    # A phone on the other end of the radio keeps real time, so the watch
+    # must too; --netsim implies it.
+    realtime = args.realtime or args.netsim is not None
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
                              idle_skip=args.idle_skip,
                              fast_hook=not args.no_fast_hook,
                              deadline_quantum=not args.fixed_quantum,
-                             ble=not args.no_ble)
+                             ble=not args.no_ble, realtime=realtime)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     devices["touch"] = attach_touch_panel(machine, log=log)
@@ -177,7 +180,22 @@ def cmd_boot(args) -> int:
         charging=getattr(args, "charging", False),
         charger_status=getattr(args, "charger_status", None), log=log)
     controller = None
-    if args.ble_controller and not args.no_ble:
+    android = None
+    if (args.radio or args.netsim is not None) and not args.no_ble:
+        # Imported here: bumble costs a third of a second to load and only
+        # these two switches need it.
+        from .fw.blelink import AndroidLink, BumbleController, Radio
+
+        radio = Radio()
+        controller = attach_ble_controller(
+            machine, BumbleController(args.address, radio=radio, log=log), log=log)
+        controller.trace = args.hci_trace
+        if args.netsim is not None:
+            android = AndroidLink(radio, args.netsim, log=log)
+            if not quiet:
+                print(f"  Android emulator: launch-emulator.ps1 -Watch "
+                      f"(-BridgePort {args.netsim} if not the default)")
+    elif args.ble_controller and not args.no_ble:
         controller = attach_ble_controller(machine, log=log)
     if args.force_gestures:
         force_gestures(machine, log=print if quiet else log)
@@ -245,6 +263,9 @@ def cmd_boot(args) -> int:
     if controller is not None:
         if hasattr(controller, "summary"):
             print(controller.summary())
+        if android is not None:
+            print(f"  Android emulator: {'attached' if android.connected else 'never attached'} "
+                  f"on localhost:{android.port}")
         if controller.sent:
             print("  HCI out of the watch:")
             for packet in controller.sent[:10]:
@@ -256,6 +277,8 @@ def cmd_boot(args) -> int:
     print(machine.bus.unknown_report())
     if machine.native_hook is not None:
         print(f"  block hook: native, {machine.native_hook.state.blocks:,} blocks")
+    if machine.realtime:
+        print(f"  realtime: slept {machine.realtime_slept:.1f}s to stay level with the wall clock")
     if machine.idle_skips:
         print(f"  idle skip: {machine.idle_skips:,} times, "
               f"{machine.idle_instructions_skipped:,} instructions "
@@ -379,12 +402,36 @@ def main(argv=None) -> int:
                              "the radio. It also restores idle time, so anything "
                              "measuring --idle-skip wants it.")
     p_boot.add_argument("--ble-controller", action="store_true",
-                        help="put a controller on the other side of the BLEIF "
-                             "FIFO, so the firmware's Cordio host can complete "
-                             "a transfer and its HCI packets are captured. It "
-                             "records rather than answering, so the firmware "
-                             "still waits for a reply it never gets -- what to "
-                             "reply is the rest of task #25.")
+                        help="put the NZ8801 stand-in on the other side of the "
+                             "BLEIF FIFO: it takes the firmware download, answers "
+                             "the vendor init and every HCI command with a bare "
+                             "Command Complete, and captures the packets. Enough "
+                             "for the firmware's stack to finish starting; it is "
+                             "not a radio. --radio is.")
+    p_boot.add_argument("--radio", action="store_true",
+                        help="put a real (virtual) radio behind the BLEIF: a bumble "
+                             "controller on a local link, so the firmware's own BLE "
+                             "stack comes all the way up and advertises as the "
+                             "watch. Alone on the air unless --netsim is given.")
+    p_boot.add_argument("--netsim", type=int, nargs="?", const=8877, default=None,
+                        metavar="PORT",
+                        help="also serve the Android emulator's netsim endpoint on "
+                             "PORT (default 8877), with the phone's virtual controller "
+                             "on the same air as the watch's -- launch the AVD with "
+                             "launch-emulator.ps1 -Watch and :app can pair with the "
+                             "emulated watch. Implies --radio and --realtime.")
+    p_boot.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
+                        help="the BD address the radio reports (default: the physical "
+                             "watch's, so the emulated one looks the same to the app)")
+    p_boot.add_argument("--hci-trace", action="store_true",
+                        help="with --radio/--netsim, log every HCI packet across the "
+                             "seam once the link is up (commands, events, ACL data "
+                             "both ways). The first thing to turn on when the phone "
+                             "and the watch disagree about what was said.")
+    p_boot.add_argument("--realtime", action="store_true",
+                        help="never let watch time run ahead of wall time. Needed "
+                             "whenever something outside keeps real time -- a phone on "
+                             "the radio -- and on by default with --netsim.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 

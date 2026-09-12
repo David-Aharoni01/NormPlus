@@ -156,6 +156,7 @@ class Apollo3Machine:
         fast_hook: bool = False,
         deadline_quantum: bool = True,
         ble: bool = True,
+        realtime: bool = False,
     ) -> None:
         self.image = img
         self.log = log
@@ -206,6 +207,15 @@ class Apollo3Machine:
         #: Recompute the quantum from the next deadline each slice rather than
         #: sampling on a fixed grid. Off restores the fixed quantum above.
         self.deadline_quantum = bool(deadline_quantum)
+        #: Never let watch time run ahead of wall time. Off, the machine runs
+        #: as fast as it can (1.25x watch speed at CLI defaults); on, it
+        #: sleeps whenever it is ahead. Wanted whenever something outside is
+        #: keeping real time -- a bumble link, a phone on the other end of it
+        #: -- because a watch whose clock runs ahead times out on a peer that
+        #: is answering promptly. Falling behind is not corrected: there is
+        #: nothing to do about it but run.
+        self.realtime = bool(realtime)
+        self.realtime_slept = 0.0
         #: Sources that can say how far the clock may run before they need
         #: attention. Rebuilt when a timer is added; see _rebuild_deadlines.
         self._deadline_sources: list = []
@@ -249,7 +259,6 @@ class Apollo3Machine:
         self.ble = bool(ble)
         self.bus.by_base[0x40021000].ble_controller = self.ble
         self.cortexm = CortexM(self, log=log)
-        self.bleif = None  # installed by attach_bleif()
 
         self._install_mmio()
 
@@ -664,10 +673,19 @@ class Apollo3Machine:
         # generator on each call. Same C function either way.
         read_pc = self.cortexm.read_register
 
+        paced_from = time.perf_counter()
+
         while self._instructions < max_instructions:
             if self.stop_requested:
                 stats.stop = StopReason("stopped", "stopped by the viewer", pc)
                 break
+            if self.realtime:
+                # The clock unit is halfwords: 48,000,000 to the second.
+                ahead = (self._instructions / self.CYCLES_PER_SECOND
+                         - (time.perf_counter() - paced_from))
+                if ahead > 0.002:
+                    time.sleep(ahead)
+                    self.realtime_slept += ahead
             # Deliver the highest-priority pending exception before running on.
             exc = self.cortexm.pending_exception()
             if exc is not None:
@@ -1009,8 +1027,6 @@ class Apollo3Machine:
         for source in self._irq_sources:
             for irq in source.pending_irqs():
                 self.cortexm.set_pending_irq(irq)
-        if self.bleif is not None:
-            self.bleif.poll()
 
     # ── reporting ────────────────────────────────────────────────────────────
 
