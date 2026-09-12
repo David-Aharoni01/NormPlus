@@ -6,8 +6,10 @@ Bumble HCI bridge for the Norm+ emulator, with two fixes the stock
 1. **netsim `packet` proto field** — Android emulator >= 36.x sends some HCI
    packets in the newer `PacketRequest.packet` (raw H4 bytes) field instead of
    the older structured `hci_packet` field. Stock Bumble (0.0.229) drops those
-   with "Unexpected request type: packet". We monkeypatch the controller-mode
-   netsim transport to accept both fields (no site-packages edit).
+   with "Unexpected request type: packet". `netsim_transport.py` (next to this
+   file) is the controller-mode netsim transport with both fields accepted,
+   monkeypatched in (no site-packages edit). The watch emulator serves the same
+   endpoint through it (`tools/watchemu`, `normwatch boot --netsim`).
 
 2. **Google vendor HCI short-circuit** — Android's BT stack sends
    `LE_GET_VENDOR_CAPABILITIES` (0xFD53) and friends during init. Cheap/older
@@ -29,18 +31,8 @@ import logging
 import bumble.logging
 from bumble import hci, transport
 from bumble.bridge import HCI_Bridge
-import bumble.transport.android_netsim as ns
-from bumble.transport.common import ParserSource, PumpedPacketSink
-from bumble.transport.grpc_protobuf.netsim.common_pb2 import ChipKind
-from bumble.transport.grpc_protobuf.netsim.hci_packet_pb2 import HCIPacket
-from bumble.transport.grpc_protobuf.netsim.packet_streamer_pb2 import (
-    PacketResponse,
-)
-from bumble.transport.grpc_protobuf.netsim.packet_streamer_pb2_grpc import (
-    PacketStreamerServicer,
-    add_PacketStreamerServicer_to_server,
-)
-import grpc.aio
+
+import netsim_transport
 
 logger = logging.getLogger("norm_emu_bridge")
 
@@ -52,146 +44,9 @@ VENDOR_SHORT_CIRCUIT = {
 }
 
 
-# -----------------------------------------------------------------------------
-# Fixed controller-mode netsim transport (accepts both `hci_packet` and `packet`)
-# This is a copy of bumble's open_android_netsim_controller_transport with the
-# data-packet handling extended; everything else is unchanged.
-# -----------------------------------------------------------------------------
-async def open_controller_transport_fixed(server_host, server_port, options):
-    if server_host == '_' or not server_host:
-        server_host = 'localhost'
-
-    instance_number = int(options.get('instance', "0"))
-    if not ns.publish_grpc_port(server_port, instance_number):
-        logger.warning("unable to publish gRPC port")
-
-    class HciDevice:
-        def __init__(self, context, server):
-            self.context = context
-            self.server = server
-            self.name = None
-            self.sink = None
-            self.raw = False  # set when the client uses the newer `packet` field
-            self.loop = asyncio.get_running_loop()
-            self.done = self.loop.create_future()
-
-        async def pump(self):
-            try:
-                await self.pump_loop()
-            except asyncio.CancelledError:
-                logger.debug('Pump task canceled')
-            finally:
-                if self.sink:
-                    self.server.release_sink()
-                    self.sink = None
-
-        async def pump_loop(self):
-            while True:
-                request = await self.context.read()
-                if request == grpc.aio.EOF:
-                    if not self.done.done():
-                        self.done.set_result(None)
-                    return
-
-                if self.name is None:
-                    if request.WhichOneof('request_type') == 'initial_info':
-                        self.name = request.initial_info.name
-                        if request.initial_info.chip.kind != ChipKind.BLUETOOTH:
-                            await self.context.write(
-                                PacketResponse(error='Unsupported chip type')
-                            )
-                            continue
-                        self.sink = self.server.lease_sink(self)
-                        if self.sink is None:
-                            await self.context.write(
-                                PacketResponse(error='Device busy')
-                            )
-                            continue
-                        continue
-
-                request_type = request.WhichOneof('request_type')
-                if request_type == 'hci_packet':
-                    data = (
-                        bytes([request.hci_packet.packet_type])
-                        + request.hci_packet.packet
-                    )
-                elif request_type == 'packet':
-                    # emulator 36.x: raw H4 framed bytes (type prefix + payload)
-                    self.raw = True
-                    data = request.packet
-                else:
-                    logger.warning(f'Unexpected request type: {request_type}')
-                    await self.context.write(
-                        PacketResponse(error='Unexpected request type')
-                    )
-                    continue
-
-                assert self.sink is not None
-                self.sink(data)
-
-        async def send_packet(self, data):
-            if self.raw:
-                return await self.context.write(PacketResponse(packet=bytes(data)))
-            return await self.context.write(
-                PacketResponse(
-                    hci_packet=HCIPacket(packet_type=data[0], packet=data[1:])
-                )
-            )
-
-    server_address = f'{server_host}:{server_port}'
-
-    class Server(PacketStreamerServicer, ParserSource):
-        def __init__(self):
-            PacketStreamerServicer.__init__(self)
-            ParserSource.__init__(self)
-            self.device = None
-            self.grpc_server = grpc.aio.server(options=(('grpc.so_reuseport', 0),))
-            add_PacketStreamerServicer_to_server(self, self.grpc_server)
-            self.port = self.grpc_server.add_insecure_port(server_address)
-
-        async def start(self):
-            await self.grpc_server.start()
-
-        async def serve(self):
-            try:
-                await self.grpc_server.wait_for_termination()
-            except asyncio.CancelledError:
-                await self.grpc_server.stop(None)
-
-        async def send_packet(self, packet):
-            if not self.device:
-                return
-            return await self.device.send_packet(packet)
-
-        def lease_sink(self, device):
-            if self.device:
-                return None
-            self.device = device
-            return self.parser.feed_data
-
-        def release_sink(self):
-            self.device = None
-
-        async def StreamPackets(self, request_iterator, context):
-            device = HciDevice(context, self)
-            self.device_obj = device
-            try:
-                await device.pump()
-            finally:
-                pass
-
-    server = Server()
-    await server.start()
-    asyncio.get_running_loop().create_task(server.serve())
-
-    sink = PumpedPacketSink(server.send_packet)
-    sink.start()
-    return transport.Transport(server, sink)
-
-
 async def async_main(port: int, usb: str):
     # Route controller-mode android-netsim through our fixed implementation.
-    ns.open_android_netsim_controller_transport = open_controller_transport_fixed
+    netsim_transport.install()
 
     host_spec = f"android-netsim:_:{port},mode=controller"
     print(f">>> opening netsim controller on :{port}")
