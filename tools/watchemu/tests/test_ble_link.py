@@ -274,6 +274,39 @@ def test_two_controllers_on_one_radio_see_each_other():
     radio.close()
 
 
+def test_a_bonded_watch_still_advertises_its_public_address():
+    """After a bond the firmware advertises with own_address_type 2 -- a
+    resolvable private address from the resolving list, or the public address
+    when the list has no entry to make one from (it adds the phone with an
+    all-zero local IRK). Bumble reads anything but 0 as "the random address",
+    which for the watch is all zeros, so the watch came back from its first
+    disconnect as 00:00:00:00:00:00 and no reconnect ever matched it."""
+    radio = Radio()
+    watch = booted(address=WATCH, radio=radio, name="watch")
+    phone = booted(address=PHONE, radio=radio, name="phone")
+    # 7.8.38 with the phone's identity and a zero local IRK, as the firmware
+    # sends it, then 7.8.5 with own_address_type 2.
+    reply_to(watch, command(0x2027, b"\x00" + bytes.fromhex(PHONE.replace(":", ""))[::-1]
+                            + bytes(16) + bytes(16)))
+    reply_to(watch, command(LE_SET_ADVERTISING_PARAMETERS, bytes.fromhex(
+        "c800c800" "00" "02" "00" "000000000000" "07" "00")))
+    reply_to(watch, command(LE_SET_ADVERTISING_DATA,
+                            bytes([3]) + bytes.fromhex("020106").ljust(31, b"\x00")))
+    (enabled,) = reply_to(watch, command(LE_SET_ADVERTISING_ENABLE, b"\x01"))
+    assert enabled[6] == 0x00, enabled.hex(" ")
+
+    reply_to(phone, command(LE_SET_SCAN_PARAMETERS, bytes.fromhex("0110001000" "0000")))
+    reply_to(phone, command(LE_SET_SCAN_ENABLE, b"\x01\x00"))
+    seen = frames(phone, wait=2.0)
+    reports = [f for f in seen if f[:2] == b"\x04>" and f[3] in (0x02, 0x0D)]
+    assert reports, [f.hex(" ") for f in seen]
+    address = bytes.fromhex(WATCH.replace(":", ""))[::-1]
+    # Public (address type 0) and the watch's own, not a random all-zero one.
+    assert all(address in r for r in reports), [r.hex(" ") for r in reports]
+    assert all(bytes(6) not in r[5:] for r in reports), [r.hex(" ") for r in reports]
+    radio.close()
+
+
 def collect(controller, wanted, *, timeout: float = 3.0) -> list:
     """Frames until ``wanted(frame)`` is true for one of them, or time is up."""
     deadline = time.monotonic() + timeout

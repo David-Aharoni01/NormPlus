@@ -216,6 +216,12 @@ class Apollo3Machine:
         #: nothing to do about it but run.
         self.realtime = bool(realtime)
         self.realtime_slept = 0.0
+        #: How far behind wall time the watch's clock is, in seconds, as of the
+        #: last quantum (negative would mean ahead, but the loop sleeps that
+        #: off). A peer that keeps real time should read this before timing
+        #: anything against the watch: while it is behind, every window in
+        #: the firmware is that much wider in wall-clock terms.
+        self.realtime_lag = 0.0
         #: Sources that can say how far the clock may run before they need
         #: attention. Rebuilt when a timer is added; see _rebuild_deadlines.
         self._deadline_sources: list = []
@@ -686,6 +692,7 @@ class Apollo3Machine:
                 if ahead > 0.002:
                     time.sleep(ahead)
                     self.realtime_slept += ahead
+                self.realtime_lag = max(0.0, -ahead)
             # Deliver the highest-priority pending exception before running on.
             exc = self.cortexm.pending_exception()
             if exc is not None:

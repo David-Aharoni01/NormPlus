@@ -1561,4 +1561,7 @@ def attach_ble_controller(machine, controller=None, log=print):
     if controller is None:
         controller = NationzController(log=log)
     bleif.controller = controller
+    attach = getattr(controller, "attach", None)
+    if attach is not None:
+        attach(machine)
     return controller

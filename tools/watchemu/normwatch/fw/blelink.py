@@ -68,6 +68,7 @@ cannot keep up with a watch whose clock is running ahead of it.
 from __future__ import annotations
 
 import asyncio
+import collections
 import sys
 import threading
 from pathlib import Path
@@ -89,6 +90,11 @@ VENDOR_OGF = 0x3F
 #: firmware's own patience is far longer -- the receive path retries 5000 times
 #: at 16us of watch time -- so this only has to beat the loop's scheduling.
 COMMAND_TIMEOUT_S = 0.5
+#: 7.8.12: connection intervals are in units of 1.25 ms.
+CONNECTION_INTERVAL_UNIT_S = 0.00125
+#: What Android asks for in its LE_Create_Connection (0x18) until someone
+#: updates it -- the interval a connection has before ``Air`` hears otherwise.
+DEFAULT_CONNECTION_INTERVAL_S = 0x18 * CONNECTION_INTERVAL_UNIT_S
 
 #: The LE Controller commands answered here rather than by bumble. Vol 4 Part
 #: E: 7.8.22 LE Encrypt, 7.8.36 LE Read Local P-256 Public Key, 7.8.37 LE
@@ -171,6 +177,29 @@ class VirtualController(Controller):
             pending.peer_address_type = pdu.advertiser_address.address_type
         super().on_advertising_pdu(pdu)
 
+    # -- advertising after a bond --------------------------------------------
+
+    def on_hci_le_set_advertising_parameters_command(self, command):
+        """7.8.5 with own_address_type 2 and 3, which bumble takes for random.
+
+        Once it holds a bond the firmware adds the phone to the resolving list
+        (0x2027, with an all-zero *local* IRK) and advertises with
+        own_address_type 2: "a resolvable private address from the resolving
+        list, or the public address if the list has no matching entry". This
+        controller keeps no resolving list, so there is never a match and the
+        address a real controller would fall back to is the public one; bumble
+        instead reads anything but 0 as "the random address", which for the
+        watch is 00:00:00:00:00:00. So after the first disconnect the watch
+        came back on the air as a random all-zero address, the phone's accept
+        list held its public one, and every reconnect timed out (0x93/147).
+        Types 2 and 3 fall back to 0 and 1 here, which is what the spec says
+        an empty resolving list amounts to.
+        """
+        own = int(command.own_address_type)
+        if own in (2, 3):
+            command.own_address_type = own - 2
+        return super().on_hci_le_set_advertising_parameters_command(command)
+
     # -- the silence --------------------------------------------------------
 
     def on_hci_command(self, command: hci.HCI_Command):
@@ -250,10 +279,27 @@ class VirtualController(Controller):
                 connection_interval=command.connection_interval_max,
                 peripheral_latency=command.max_latency,
                 supervision_timeout=command.supervision_timeout))
+        if isinstance(self.link, Air):
+            self.link.set_interval(connection.self_address, connection.peer_address,
+                                   command.connection_interval_max * CONNECTION_INTERVAL_UNIT_S)
+
+    def create_le_connection(self, peer_address) -> None:
+        """Bumble's, plus telling the air the interval the connection has."""
+        pending = self.pending_le_connection
+        super().create_le_connection(peer_address)
+        connection = self.le_connections.get(peer_address)
+        if pending is not None and connection is not None and isinstance(self.link, Air):
+            if isinstance(pending, hci.HCI_LE_Extended_Create_Connection_Command):
+                interval = pending.connection_interval_maxs[0]
+            else:
+                interval = pending.connection_interval_max
+            self.link.set_interval(connection.self_address, peer_address,
+                                   interval * CONNECTION_INTERVAL_UNIT_S)
 
 
 class Air(LocalLink):
-    """Bumble's ``LocalLink`` with data from a public address delivered.
+    """Bumble's ``LocalLink`` with data from a public address delivered, and
+    delivered when a radio would deliver it.
 
     ``LocalLink.send_acl_data`` stamps every LE data PDU with the sender's
     *random* address, on the assumption that an LE controller always uses one.
@@ -263,7 +309,49 @@ class Air(LocalLink):
     arrives at the phone from ``00:00:00:00:00:00``, and the phone's controller
     drops it with "no connection". The connection itself knows which address
     it was made with, so that is what goes on the PDU.
+
+    It also delivers *now*, and an LE connection does not: data crosses only
+    at connection events, one every connection interval (7.8.12; the watch
+    asks for 15 ms right after pairing, Android starts it at 30). The
+    firmware relies on that. Its 8001 command dispatcher (0x00036208) hands
+    the reply to the radio and then, some milliseconds later, clears the
+    receive buffer (0x00036294) -- and a frame that arrives in between is
+    cleared with it and answered ``6F 01 81 02 00 00 02`` when its trigger
+    comes. Over a real link the phone's next write cannot arrive inside that
+    window, because the reply and the write are two connection events apart.
+    Over ``call_soon`` it arrived every time, and the bind handshake failed at
+    its second command. So each direction of each connection is a lane that
+    holds what is sent and flushes it, in order, one interval later.
+
+    Whose interval, though. The window is milliseconds of the *watch's* time,
+    and the watch does not always keep up with the wall clock: painting the
+    pairing dialog's animation puts the emulator well behind it, and in that
+    state 30 wall-clock milliseconds are a few of the watch's -- the write
+    landed in the window again, from a phone that had waited two intervals.
+    So a lane whose destination has a clock attached (``attach_clock``; the
+    emulated watch's machine) counts its interval on that clock, through the
+    machine's own scheduler, and the phone simply sees a slow peripheral. A
+    lane into the phone counts wall-clock time, which is what the phone has.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: frozenset({address, address}) -> seconds; see ``set_interval``.
+        self.intervals: dict = {}
+        self._lanes: dict = {}
+        #: address -> (machine, radio) for destinations that keep watch time.
+        self.clocks: dict = {}
+
+    def attach_clock(self, address, machine, radio) -> None:
+        """Deliver to *address* on *machine*'s clock rather than the wall's."""
+        self.clocks[address] = (machine, radio)
+
+    def set_interval(self, address_a, address_b, seconds: float) -> None:
+        self.intervals[frozenset((address_a, address_b))] = seconds
+
+    def interval(self, address_a, address_b) -> float:
+        return self.intervals.get(frozenset((address_a, address_b)),
+                                  DEFAULT_CONNECTION_INTERVAL_S)
 
     def send_acl_data(self, sender_controller, destination_address, transport, data):
         if transport == PhysicalTransport.LE:
@@ -271,11 +359,41 @@ class Air(LocalLink):
             if connection is not None:
                 destination_controller = self.find_le_controller(destination_address)
                 if destination_controller is not None:
-                    asyncio.get_running_loop().call_soon(
-                        destination_controller.on_link_acl_data,
-                        connection.self_address, transport, data)
+                    self._queue(connection.self_address, destination_address,
+                                destination_controller, transport, data)
                 return
         super().send_acl_data(sender_controller, destination_address, transport, data)
+
+    def _queue(self, source, destination, controller, transport, data) -> None:
+        lane = self._lanes.get((source, destination))
+        if lane is None:
+            lane = self._lanes[(source, destination)] = collections.deque()
+        lane.append((controller, transport, data))
+        if len(lane) != 1:
+            return
+        interval = self.interval(source, destination)
+        clock = self.clocks.get(destination)
+        if clock is None:
+            asyncio.get_running_loop().call_later(interval, self._flush, source, destination)
+            return
+        machine, radio = clock
+        at = machine._instructions + int(interval * machine.CYCLES_PER_SECOND)
+        # post() is the thread-safe way onto the emulator thread; schedule()
+        # then fires at the watch-time deadline, and the flush comes back to
+        # this loop, where everything bumble lives.
+        machine.post(lambda: machine.schedule(
+            at, lambda: radio.call(self._flush, source, destination), "connection event"),
+            "connection event")
+
+    def _flush(self, source, destination) -> None:
+        """One connection event: everything queued since the last one, in order."""
+        lane = self._lanes.get((source, destination))
+        if not lane:
+            return
+        pending = list(lane)
+        lane.clear()
+        for controller, transport, data in pending:
+            controller.on_link_acl_data(source, transport, data)
 
 
 class Radio:
@@ -547,6 +665,13 @@ class BumbleController(NationzController):
         self._event(bytes([H4_EVENT, EVENT_LE_META, len(params)]) + params)
 
     # -- reporting ------------------------------------------------------------
+
+    def attach(self, machine) -> None:
+        """Called by ``attach_ble_controller``: data to the watch now crosses
+        the air on the watch's clock (see ``Air``)."""
+        self.machine = machine
+        self.radio.call(self.link.attach_clock, self._controller.public_address,
+                        machine, self.radio)
 
     @property
     def link(self):
