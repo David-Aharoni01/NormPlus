@@ -47,12 +47,15 @@ Throughput is roughly 4.4M instructions/second with `--no-trace` and 3.4M with t
 on (~1/10th of real time). Every MMIO access is a Python callback, so tracing, heavy GPIO
 polling and bus traffic all cost. The live window itself is cheap — about 8%.
 
-**The watch is on the air.** With `--radio` the firmware's own BLE stack comes all the way
-up behind a bumble controller and advertises as `Norm2#00000`; with `--netsim` the Pixel 8
-AVD is on the same virtual air, and `:app` bonds with the emulated watch and reads its
-battery. A bumble host does the same in `tests/test_ble_end_to_end.py`, in about ten
-seconds. See "A real stack behind the seam" for the six things bumble does not do that
-each looked like a hang.
+**The watch is on the air, and a phone can set it up.** With `--radio` the firmware's own
+BLE stack comes all the way up behind a bumble controller and advertises as `Norm2#00000`;
+with `--netsim` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
+emulated watch, *binds* it the way the companion app does after a QR scan -- bindStart,
+setDateTime, bindEnd -- and the watch leaves first-run setup for its watch face, showing
+the time the phone set. A bumble host does the same in `tests/test_ble_end_to_end.py`, in
+about twenty seconds. See "A real stack behind the seam" for the things bumble does not do
+that each looked like a hang, and "Binding, and three things the firmware does about it"
+for what the bind taught.
 
 **The watch draws its screen, live, and you can touch it.** LVGL renders and flushes
 real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and `--live`
@@ -933,6 +936,88 @@ across the seam, and is the first thing to turn on when the phone and the watch 
 about what was said -- every one of the six gaps above was found in that trace, or in
 `adb logcat` next to it.
 
+### Binding, and three things the firmware does about it
+
+Bonding put the phone on the watch, and the watch stayed on "Select a Language". What
+takes it off is the companion app's *bind* -- `BindDevice.start6F` in the smali, three
+commands the Norm 2 gets right after a QR scan, now `BindStartCommand` /
+`DateTimeCommand` / `BindEndCommand` in `:protocol` and `BindWatchUseCase` in `:app`:
+
+```
+6F 93 71 01 00 02 8F      bindStart, mode 2 = BIND_START_QR_CODE
+6F 04 71 0C 00 <12> 8F    setDateTime, the ordinary clock set
+6F 94 71 01 00 01 8F      bindEnd
+```
+
+The watch answers each with the generic `6F 01 81 02 00 <cmd> <status>`, shows "Pairing
+Success / Hooray!" for two seconds and goes to the face. `6F 94 70 01 00 00 8F`
+(checkInit) reads `00` before and `01` after, which is what the original app polls on
+every connect and un-pairs over if it reads 0. Getting there found three things, all in
+the firmware, none guessed:
+
+- **bindStart opens a 300-frame window.** The 0x93 handler (`0x00037054`) posts UI
+  message 0x0C, which opens `ui_notify_pairing_dlg.c` (`0x00075250`) straight into its
+  animating state; the dialog counts frames at 50 ms (`0x0007514C`, to 0x12C) and then
+  reports failure -- "Pairing Failed / Try again!", and `93 01` to the phone, some 15-19 s
+  later. bindEnd (0x94, `0x00037088`) posts 0x0D, the one message the dialog is waiting
+  for. The dialog also has an accept/decline form (`0x000753CC`, buttons 0x821/0x822)
+  that mode 1 would presumably use; mode 2 skips it.
+- **A SET written to 8003 gets no acknowledgement; the same SET written to 8001 does.**
+  One command table (`0x000CCD60`, 87 entries), two dispatchers in front of it. The one
+  behind 8001 (`0x00036208`) turns a handler's result into the generic reply -- 0 and 1
+  become `<cmd> 00` / `<cmd> 01`, 3 means the handler already answered (CHECKs do that
+  themselves), 4 defers. The one behind 8003 (`0x00036460`) throws the result away. The
+  companion app writes to 8001 (`AppsCommDevice.smali`), so does `:app`, and
+  `normlink-cli` writes to 8003 -- which is why the CLI only ever saw CHECK replies, and
+  why the bind cannot be driven from it. It also means the original app's queue, which
+  waits for each reply before sending the next command, gets bindEnd out inside the
+  window only because 8001 acknowledges bindStart at once.
+- **The firmware never answers a Read By Type for its Database Hash.** Its GATT service
+  has the 0x2B2A characteristic (handle 0x17), a plain Read of it returns sixteen zeros,
+  and a Read By Type -- the form the spec prescribes and the form Android uses -- is
+  parked for ever. `AttsAddGroup` (`0x00026DCC`) sets Cordio's `isHashUpdateInProgress`
+  (`0x100067D0`) whenever a service is added, `attsProcReadByTypeReq` (`0x00091DF4`) holds
+  a hash read while that flag is set, and the one thing that clears it, the CMAC callback
+  at `0x00092166` from `AttsCalculateDbHash()`, is never reached because the firmware never
+  calls it: no `LE_Encrypt` ever leaves the watch outside pairing. Nothing about the
+  emulator is involved. Android's stack reads the hash by type before service discovery
+  whenever its cached table for the device has 0x2B2A in it -- i.e. on every connection
+  after the one the bond was made on -- so `discoverServices()` from `:app` hangs there
+  until its watchdog reconnects, and the third attempt goes through when the stack gives
+  up on the hash. That is the shape of the "cold-connect penalty" `BleManager` has always
+  seen on the physical watch and blamed on SMP; the firmware image says it is this. Not
+  verified on hardware yet -- the physical watch runs a build with the same version
+  string, not provably the same bytes.
+
+And two more gaps in the virtual air, each hit only once the phone reconnected:
+
+- **After a bond the watch advertises with own_address_type 2** ("resolvable private
+  address from the resolving list, else the public address"), having put the phone on the
+  resolving list with an all-zero local IRK. Bumble keeps no resolving list and reads
+  anything but 0 as "the random address", which for the watch is `00:00:00:00:00:00`, so
+  the watch came back on the air as a random all-zero address, the phone's accept list
+  held the public one, and every reconnect timed out (status 147). `VirtualController`
+  maps 2 and 3 to 0 and 1, which is what an empty resolving list amounts to.
+- **`LocalLink` delivers data now, and a connection does not.** Data crosses only at
+  connection events, one per interval -- 15 ms once the watch has asked for it, 30 ms
+  from Android's create-connection until then. The firmware relies on that without
+  knowing: its 8001 dispatcher hands the reply to the radio and clears its receive buffer
+  *afterwards* (`0x00036294`), and a frame that lands in between is cleared with it and
+  answered `00 02` when its trigger comes. Over `call_soon` the phone's next write landed
+  in that window every time, so the bind failed at its second command, on the AVD and
+  from a bumble host alike. `Air` now holds each direction of each connection in a lane
+  and flushes it one interval later -- on the *watch's* clock for data into the watch,
+  because the window is milliseconds of watch time and painting the pairing dialog puts
+  the emulator behind the wall clock (`Apollo3Machine.realtime_lag` says how far), and on
+  the wall clock for data into the phone, which is what a phone keeps. The interval comes
+  from the create-connection command and every `LE_Connection_Update` after it.
+
+`tests/test_ble_end_to_end.py` runs the bind back to back with no pauses and asserts the
+acknowledgements, the screen change and the init flag; `tests/test_ble_link.py` pins the
+advertising address. On the AVD, expect the first two connection attempts after the bond
+to stall on the hash read and the third to bind; the watch's pairing dialog is only opened
+by the attempt that gets through.
+
 ### Turning the radio on moved the cost somewhere nobody had looked
 
 Powering up the BLE controller made a boot about 3.1x slower, and the obvious
@@ -1609,11 +1694,12 @@ In dependency order. These are tracked on the kanban board (`/kanban`).
    watch and reads its battery, with no hardware anywhere (`--netsim`,
    `launch-emulator.ps1 -Watch`).
 
-   What is left on this front is not the radio. The watch is still in first-run setup
-   after the phone bonds, so whatever the companion app sends to finish setup is the next
-   thing to find in the smali and try against the emulated watch; `--hci-trace` shows
-   every byte of it. And `0x50023800`/`0x50023804` is still unmodelled MMIO the BLE path
-   touches.
+   First-run setup is done too: the bind handshake (see "Binding, and three things the
+   firmware does about it") takes the emulated watch to its face, from the e2e test and
+   from `:app` in the AVD. What is left: the watch forgets all of it on restart until
+   #41 (flash persistence); `0x50023800`/`0x50023804` is still unmodelled MMIO the BLE
+   path touches; and the Database Hash finding wants checking against the physical
+   watch, since it would explain `BleManager`'s cold-connect penalty.
 
 ## Relationship to the rest of the repo
 

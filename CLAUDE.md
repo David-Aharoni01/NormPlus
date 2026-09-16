@@ -169,11 +169,15 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   the Zadig WinUSB swap is the one manual step.
 - **The emulated watch instead of the real one:** `launch-emulator.ps1 -Watch` skips the dongle
   and points the AVD at the watch emulator, which serves the same netsim endpoint itself
-  (`normwatch boot --netsim --live`, start it first). `:app` bonds with it and reads its
-  battery; nothing physical involved. Verified on this AVD — a stale bond with the physical
-  watch (same address) had to be removed first (`adb root`, delete the `[4c:59:80:12:44:f1]`
-  section of `/data/misc/bluedroid/bt_config.conf`, toggle BT). See "A real stack behind the
-  seam" in `tools/watchemu/README.md` for the six bumble gaps that made this look impossible.
+  (`normwatch boot --netsim --live`, start it first). `:app` bonds with it, binds it (the
+  pairing screen's first-run handshake) and lands on the dashboard while the watch goes to
+  its face; nothing physical involved. Verified on this AVD. Two things to expect: a stale
+  bond with the physical watch (same address) has to be removed first (`adb root`, delete
+  the `[4c:59:80:12:44:f1]` section of `/data/misc/bluedroid/bt_config.conf`, toggle BT —
+  the emulated watch keeps no bond across runs, so this is every run); and the first two
+  connection attempts after bonding stall in discovery and the third goes through — that is
+  the Database Hash park below, not the emulator. See "A real stack behind the seam" and
+  "Binding" in `tools/watchemu/README.md` for the bumble gaps that made this look impossible.
 
 `normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
 the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
@@ -213,10 +217,11 @@ Two facts that cost a lot to rediscover, in this order:
 2. Past the animation the watch reaches **first-run setup** — "Select a Language", then a
    QR pairing screen showing `A0.2(R.T0.0H0.0B01)` / `Norm2#00000`. It ignores swipe and
    button there because it is waiting for a phone. **The watch face is behind first-run
-   setup, and setup is behind BLE.** The BLE half is done (`--netsim`: the AVD's `:app`
-   bonds with the emulated watch); what finishes setup is whatever the companion app
-   sends next, still to be found in the smali. #41 (flash persistence) is the cheap
-   route past it.
+   setup, and setup is behind the bind** — not the bond: bonding alone leaves it there.
+   The companion app's `BindDevice.start6F` sends bindStart (0x93) / setDateTime (0x04) /
+   bindEnd (0x94), the watch shows "Pairing Success" and goes to its face, and
+   `tests/test_ble_end_to_end.py` and `:app`'s pairing screen both do exactly that now.
+   The watch forgets it on restart until #41 (flash persistence).
 
 ### The BLE controller
 
@@ -347,22 +352,41 @@ reads INTSTAT & INTEN, clears it and wakes the HCI task. INTSTAT bit 7 (BLECIRQ)
 interrupt form of BSTATUS bit 7, latched on its rising edge, and `Bleif.pending_irqs`
 raises it.
 
-**Bumble's controller has six gaps a phone walks into, each of which looked like a hang**
+**Bumble's controller has eight gaps a phone walks into, each of which looked like a hang**
 — the P-256 stub above; silence for unknown opcodes; LE data stamped with the sender's
 *random* address (the watch uses its public one, so its ATT responses were dropped); a
 filter accept list that is never consulted (Android connects through it); no
 `Read_Remote_Version_Information` (Android will not discover services without it); no
-`LE_Connection_Update` (jams the central's command queue). `VirtualController` and `Air`
-in `blelink.py` close them, `tests/test_ble_link.py` pins them, and the README's "A real
-stack behind the seam" tells each story. Android additionally aborts unless the controller
-claims Secure Simple Pairing, a BR/EDR bit the phone's controller now claims.
+`LE_Connection_Update` (jams the central's command queue); own_address_type 2 read as
+"random" (after a bond the watch re-advertises as `00:00:00:00:00:00` and no reconnect
+matches); and data delivered *now* rather than at the next connection event, which lands
+the phone's next write inside the firmware's reply-then-clear window on 8001 and gets it
+answered `00 02`. `VirtualController` and `Air` in `blelink.py` close them,
+`tests/test_ble_link.py` and `tests/test_ble_end_to_end.py` pin them, and the README's "A
+real stack behind the seam" and "Binding" tell each story. Android additionally aborts
+unless the controller claims Secure Simple Pairing, a BR/EDR bit the phone's controller
+now claims.
+
+**Three firmware facts the bind exposed** (all cited in the README's "Binding"): a SET
+written to 8003 is never acknowledged while the same SET on 8001 gets `6F 01 81 02 00
+<cmd> <status>` — two dispatchers in front of one command table, and `normlink-cli` writes
+to 8003; bindStart opens a 300-frame window in `ui_notify_pairing_dlg.c` that only bindEnd
+closes; and a Read By Type for the Database Hash (0x2B2A) is parked for ever, because
+`AttsAddGroup` sets Cordio's hash-update flag and `AttsCalculateDbHash()` is never called.
+Android reads the hash by type before discovery on every connection after the bonding one,
+so `:app`'s discovery stalls until its watchdog reconnects and the third attempt goes
+through. That is very likely `BleManager`'s "cold-connect penalty" on the physical watch
+too, but it has not been checked on hardware.
 
 **Two rules when touching the seam.** Everything on the bumble side lives on one loop
 (`Radio`): `LocalLink` dispatches on the *sender's* running loop, so controllers on
 different loops cannot hear each other. And a phone keeps real time, so the watch must
 too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead of the
-wall clock and never tries to catch up. `--hci-trace` is the first thing to turn on when
-the two disagree about what was said.
+wall clock and never tries to catch up; when the watch falls *behind* (drawing the pairing
+animation does it), `Apollo3Machine.realtime_lag` says by how much, and `Air` delivers
+data into the watch on the watch's clock so the firmware's timing windows stay the width
+the firmware expects. `--hci-trace` is the first thing to turn on when the two disagree
+about what was said.
 
 ### The invariants that break silently
 
@@ -627,6 +651,15 @@ BleConstants          All UUIDs, MTU values, timeouts, frame markers.
 - Ruled out on-device (none fix the first attempt): longer settle (even 2s), `CONNECTION_PRIORITY_HIGH`, `autoConnect=true`.
 
 **Hard limit:** a truly instant cold connect is **not** achievable from the app — it needs an SMP/adapter reset, and `BluetoothAdapter.enable/disable` is gone for non-system apps on modern Android. ~8s is the floor the stack imposes on a *cold* link.
+
+**A second explanation, from the firmware image (2026-09):** the watch never answers a Read By
+Type for its GATT Database Hash (0x2B2A) — Cordio's hash-update flag is set when the services
+are added and `AttsCalculateDbHash()` is never called, so the read is parked for ever — and
+Android reads exactly that before `discoverServices()` on every connection after the bonding
+one. Against the emulated watch this reproduces the symptom precisely: attempts 1 and 2 stall
+in discovery, attempt 3 goes through once the stack gives up on the hash. See "Binding" in
+`tools/watchemu/README.md`. Not yet confirmed on the physical watch; if it holds, the SMP
+theory above is describing the same stall from the wrong side.
 
 **Warm-connection via `BleService` (the "snappy reconnect" fix) — IMPLEMENTED (pending on-device verification):**
 The cold-start penalty only applies when the BLE link has gone fully idle. The app now **holds the GATT connection alive** in the foreground `BleService`, so a brief drop reconnects on a *warm* SMP state. What was built:
@@ -1037,7 +1070,7 @@ agile delegate). The bridge sidesteps all of this.
 
 Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ignores empty-payload commands. Wire packet: `[6F][cmd][0x70][01][00][00][8F]`. Confirmed on the physical watch through the Kotlin CLI: `BATTERY_POWER`, `SCREEN_BRIGHTNESS` → 60, `TOTAL_SPORT_SLEEP_COUNT` → 29 sport. (Still pending verification in the Android `:app` on-device.)
 
-**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue).
+**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue). Over 8001 (which `:app` uses) the emulated watch answers it with the generic `6F 01 81 02 00 03 01`, i.e. status 1, refused; over 8003 (the CLI) nothing comes back for any SET-style refusal, which is the "timeout".
 
 ### CHECK commands — fixed (pending on-device verification)
 
@@ -1054,16 +1087,16 @@ and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, but
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
 modelled from the firmware's own driver sequences. 19 test files, all standalone scripts.
 
-**The radio works end to end** (card #25): the firmware's own BLE stack runs behind a
-bumble controller, and with `--netsim` the Pixel 8 AVD's `:app` bonds with the emulated
-watch and reads its battery — `watchemu` and `tools/emulator/` meet there, with no hardware
-at all. The watch face is still behind first-run setup: the phone bonds, but whatever the
-companion app sends to finish setup has not been found in the smali yet, so the QR screen
-stays. Open cards:
+**The radio works end to end, and so does first-run setup** (card #25): the firmware's own
+BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
+bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the companion
+app's post-QR handshake) and reads its battery, while the watch goes from "Select a
+Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
+all. Open cards:
 
-- **First-run setup over BLE** — find the command(s) the NORM app sends after bonding that
-  take the watch past the QR screen, and send them from `:app` (or a bumble host) against
-  the emulated watch; `--hci-trace` shows every byte.
+- **Database Hash on hardware** — the firmware parks Android's Read By Type for 0x2B2A
+  (see "Binding" in the README); check the physical watch does the same, and if so
+  rewrite `BleManager`'s cold-connect story and its watchdog around that.
 - **#41 flash persistence** (`--flash-state PATH`) — the cheap route: keep the watch
   provisioned across runs so it starts past setup. Also unblocks #13 (OTA rehearsal).
 - **#46 snapshot/restore** — every probe currently pays a 12s boot; this is the biggest
