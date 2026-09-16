@@ -88,6 +88,10 @@ enum class CommandCode(val byte: Byte) {
     // COMMAND_CODE_WATCH_MOVE_ONE = -0x4a, COMMAND_CODE_WATCH_MOVE_KEEP = -0x48.
     WATCH_MOVE_ONE(0xB6.toByte()),  // 0xB6 = -0x4a signed — one nudge
     WATCH_MOVE_KEEP(0xB8.toByte()), // 0xB8 = -0x48 signed — continuous move / unlock / lock
+    // First-run binding (BindDevice.start6F). Source: BluetoothCommandConstant.smali
+    // COMMAND_CODE_BIND_START = -0x6d, COMMAND_CODE_BIND_END = -0x6c.
+    BIND_START(0x93.toByte()),      // 0x93 = -0x6d signed — SET [mode] opens the bind, CHECK reads the UID
+    BIND_END(0x94.toByte()),        // 0x94 = -0x6c signed — SET [1] closes it, CHECK reads the init flag
     SWITCH_SETTING(0x90.toByte()); // 0x90 = -0x70 signed
 
     companion object {

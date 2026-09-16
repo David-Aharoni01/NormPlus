@@ -108,16 +108,43 @@ fun PairingScreen(
             is BleConnectionState.Scanning -> "Scanning for devices…"
             is BleConnectionState.Connecting -> "Connecting…"
             is BleConnectionState.Discovering -> "Setting up…"
-            is BleConnectionState.Ready -> "Connected!"
+            is BleConnectionState.Ready -> when (state.bindStatus) {
+                BindStatus.NotStarted, BindStatus.Binding -> "Pairing with the watch…"
+                BindStatus.Done -> "Paired!"
+                is BindStatus.Failed -> "The watch did not finish pairing"
+            }
             is BleConnectionState.Error -> "Retrying… (${cs.retryCount}/3)"
             else -> if (state.scanResults.isEmpty()) "Tap below to enter MAC from watch QR" else "Tap a device to connect"
         }
+        val busy = state.isScanning ||
+            state.connectionState is BleConnectionState.Connecting ||
+            (state.connectionState is BleConnectionState.Ready && state.bindStatus is BindStatus.Binding)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (state.isScanning || state.connectionState is BleConnectionState.Connecting) {
+            if (busy) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Teal, strokeWidth = 2.dp)
                 Spacer(Modifier.size(8.dp))
             }
             Text(statusText, style = MaterialTheme.typography.bodyLarge, color = OnSurfaceMuted)
+        }
+
+        // The watch refused or ignored the bind handshake: say which step, and let the user
+        // try again (the watch's own "Pairing Failed" screen clears itself) or go on without it.
+        val bindFailure = state.bindStatus as? BindStatus.Failed
+        if (bindFailure != null && state.connectionState is BleConnectionState.Ready) {
+            Spacer(Modifier.height(12.dp))
+            Text(bindFailure.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(8.dp))
+            Row {
+                Button(
+                    onClick = { viewModel.bind() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+                ) { Text("Try again") }
+                Spacer(Modifier.size(12.dp))
+                Button(
+                    onClick = { viewModel.continueWithoutBind() },
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceVariant, contentColor = Color.White),
+                ) { Text("Continue anyway") }
+            }
         }
 
         Spacer(Modifier.height(32.dp))

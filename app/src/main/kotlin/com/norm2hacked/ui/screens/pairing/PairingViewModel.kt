@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.norm2hacked.ble.BleConnectionState
 import com.norm2hacked.ble.BleManager
 import com.norm2hacked.data.preferences.WatchPreferences
+import com.norm2hacked.domain.usecase.BindResult
+import com.norm2hacked.domain.usecase.BindWatchUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,18 +20,29 @@ import javax.inject.Inject
 
 private const val TAG = "PairingViewModel"
 
+/** Where the first-run bind handshake is, once the link is up (see [BindWatchUseCase]). */
+sealed class BindStatus {
+    data object NotStarted : BindStatus()
+    data object Binding : BindStatus()
+    data object Done : BindStatus()
+    data class Failed(val message: String) : BindStatus()
+}
+
 data class PairingUiState(
     val isScanning: Boolean = false,
     val scanResults: List<BluetoothDevice> = emptyList(),
     val connectionState: BleConnectionState = BleConnectionState.Disconnected,
+    /** The link is up *and* the watch is bound (or was already) — time to leave this screen. */
     val isConnected: Boolean = false,
     val macError: String? = null,
+    val bindStatus: BindStatus = BindStatus.NotStarted,
 )
 
 @HiltViewModel
 class PairingViewModel @Inject constructor(
     private val bleManager: BleManager,
     private val watchPreferences: WatchPreferences,
+    private val bindWatch: BindWatchUseCase,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PairingUiState())
@@ -37,6 +50,7 @@ class PairingViewModel @Inject constructor(
 
     private val scanResultMap = linkedMapOf<String, BluetoothDevice>()
     private var scanCollectJob: Job? = null
+    private var bindJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -45,7 +59,12 @@ class PairingViewModel @Inject constructor(
                 when (cs) {
                     is BleConnectionState.Ready -> {
                         watchPreferences.saveDeviceMac(cs.device.address)
-                        _state.update { it.copy(isConnected = true) }
+                        // This screen is the app's bind flow, so a link that comes up here gets
+                        // the handshake a fresh watch is waiting for. Once per link: Ready can
+                        // re-emit on a reconnect, and the watch must not see bindStart twice.
+                        if (bindJob?.isActive != true && _state.value.bindStatus == BindStatus.NotStarted) {
+                            bind()
+                        }
                     }
                     is BleConnectionState.Disconnected,
                     is BleConnectionState.Error -> {
@@ -56,6 +75,30 @@ class PairingViewModel @Inject constructor(
             }
         }
         startScan()
+    }
+
+    /** Run (or re-run, after a failure) the bind handshake on the current link. */
+    fun bind() {
+        bindJob = viewModelScope.launch {
+            _state.update { it.copy(bindStatus = BindStatus.Binding) }
+            when (val result = bindWatch.bind()) {
+                is BindResult.Bound, BindResult.AlreadyBound -> {
+                    Log.i(TAG, "bind: $result")
+                    _state.update { it.copy(bindStatus = BindStatus.Done, isConnected = true) }
+                }
+                is BindResult.Failed -> {
+                    Log.w(TAG, "bind failed at ${result.step}: ${result.message}")
+                    _state.update {
+                        it.copy(bindStatus = BindStatus.Failed("${result.step}: ${result.message}"))
+                    }
+                }
+            }
+        }
+    }
+
+    /** The user's call: go on to the app with a watch that did not bind. */
+    fun continueWithoutBind() {
+        _state.update { it.copy(isConnected = true) }
     }
 
     fun startScan() {
