@@ -49,7 +49,7 @@ Two more, from the bind:
   in time because 8001 acknowledges bindStart at once.
 
 The watch is paced against the wall clock (``realtime=True``) because a host
-is answering it in real time. Runs in about 30 seconds: the bind has to wait
+is answering it in real time. Runs in about 50 seconds: the bind has to wait
 for the boot animation, since the pairing dialog needs the setup screen to
 open on top of.
 

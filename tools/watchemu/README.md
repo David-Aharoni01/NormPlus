@@ -1674,32 +1674,46 @@ status-check polls  (address, mask, expected) -> count
 
 ## What to build next
 
-In dependency order. These are tracked on the kanban board (`/kanban`).
+The emulator is good enough to work against today for two things: questions about what
+the firmware does (it has answered four the physical watch could not — the 8001/8003
+split, the pairing window, the Database Hash park, and `DEVICE_VERSION` being refused
+rather than ignored), and `:app`'s BLE stack end to end through the AVD. It is not yet
+good for anything that crosses a restart, anything that needs data on the watch, or
+casual use: measured on 2026-10-02, a boot to the UI is 18.9s (`--seconds 14 --no-ble`)
+and a bond-and-bind round trip is 51.9s (`test_ble_end_to_end.py`), every time.
 
-1. **Load UI resources from the NAND.** The render pipeline is known-good and the
-   resource path is mapped end to end (above), so what is left is one specific stall.
-   `0x00053A0C`, the SPI NAND read-cache call, blocks for ~1.1M instructions and returns
-   -1 having issued **no MSPI traffic at all** — no register writes, no PIO, no DMA, no
-   command-queue runs — so it is waiting on another task, not on the bus. The suspect is
-   a storage/MSPI worker: the only NAND traffic after init is a periodic 16- or 8-byte
-   DMA every ~11M instructions from `0x086680` → `0x050FD2` → `0x000B9BD4` (queue.c),
-   carrying garbage read out of the HAL scratch buffers the display path also uses.
-   Cheap thing to try first: only DMACMP is raised on the MSPI interrupt — the command
-   queue's own completion bits (CQUPD at 9, and a CQCMP bit) are not, and the driver
-   enables CQUPD. If the NAND driver waits on queue completion rather than DMA
-   completion, that alone explains the stall.
-2. **BLEIF -> HCI: done.** Power-on, the transport, the NZ8801 handshake and a real
-   radio behind it — see "The watch talks to its radio", "The radio is a Nationz NZ8801"
-   and "A real stack behind the seam". `:app` in the Pixel 8 AVD bonds with the emulated
-   watch and reads its battery, with no hardware anywhere (`--netsim`,
-   `launch-emulator.ps1 -Watch`).
+In the order to do them. All are on the kanban board (`/kanban`).
 
-   First-run setup is done too: the bind handshake (see "Binding, and three things the
-   firmware does about it") takes the emulated watch to its face, from the e2e test and
-   from `:app` in the AVD. What is left: the watch forgets all of it on restart until
-   #41 (flash persistence); `0x50023800`/`0x50023804` is still unmodelled MMIO the BLE
-   path touches; and the Database Hash finding wants checking against the physical
-   watch, since it would explain `BleManager`'s cold-connect penalty.
+1. **#41 — persist flash** (`--flash-state PATH`). The watch writes its own settings
+   (see "Internal flash, and where the watch keeps its settings") and its resources
+   live on the NAND; both die with the process today, so every run starts at "Select a
+   Language" and every AVD run needs the phone's bond removed. Everything below gets
+   cheaper behind it.
+2. **#49 — `normwatch cmd`**, a one-shot command harness: boot, bond, bind, write one
+   0x6F packet to 8001 (or 8003), print what comes back. Today the only way to ask the
+   firmware a question is to copy-edit the e2e test. This is what makes the emulator
+   the first place to answer a protocol question rather than the last.
+3. **#46 — snapshot and restore** a booted machine, so the 19s / 52s above become
+   sub-second. The biggest iteration win left; composes with #41.
+4. **#47 — golden-fingerprint test.** The equivalence checks that gate every
+   optimisation still live in throwaway scripts. Do it before #46 touches the run loop.
+5. **#50 — rehearse OTA type 8 against the emulated watch.** First establish whether a
+   resource update is served by the application (the DFU service is in its GATT table)
+   or by the first-stage bootloader, which is not in the image; only the first can be
+   rehearsed here. If it can, `request_reset()` has to re-enter the reset vector instead
+   of ending the run.
+6. **#51 — health records.** A fresh watch has no sport, sleep or HR records, so `:app`'s
+   sync only runs its empty paths against it. Drive the modelled accelerometer so the
+   firmware's own pedometer records steps.
+7. **#52 — script the AVD's stale-bond removal** for `launch-emulator.ps1 -Watch`.
+8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
+
+Not emulator work, but produced by it: **#48** — check the Database Hash park on the
+physical watch; if it holds, `BleManager`'s cold-connect story is describing that stall
+from the wrong side.
+
+Done, for the record: resources load from the NAND (#28, the stall this list used to
+lead with), and BLEIF → HCI through first-run setup (#25 and the bind).
 
 ## Relationship to the rest of the repo
 

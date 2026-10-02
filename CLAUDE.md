@@ -336,7 +336,7 @@ watch is on the air with it: it advertises as `Norm2#00000` at the physical watc
 (`--address`), a phone connects, pairs (LE *legacy* Just Works — the firmware's Pairing
 Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discovers the GATT
 table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
-firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host in ~10s;
+firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host in ~50s;
 `--netsim` does it with the Pixel 8 AVD (`launch-emulator.ps1 -Watch`).
 
 The seam answers three kinds of thing itself and forwards the rest: the download phase
@@ -1092,17 +1092,23 @@ BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's
 bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the companion
 app's post-QR handshake) and reads its battery, while the watch goes from "Select a
 Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
-all. Open cards:
+all. Open cards, in the order to do them (the README's "What to build next" says why):
 
-- **Database Hash on hardware** — the firmware parks Android's Read By Type for 0x2B2A
-  (see "Binding" in the README); check the physical watch does the same, and if so
-  rewrite `BleManager`'s cold-connect story and its watchdog around that.
-- **#41 flash persistence** (`--flash-state PATH`) — the cheap route: keep the watch
-  provisioned across runs so it starts past setup. Also unblocks #13 (OTA rehearsal).
-- **#46 snapshot/restore** — every probe currently pays a 12s boot; this is the biggest
-  iteration win left, and composes with #41.
+- **#41 flash persistence** (`--flash-state PATH`) — keep the watch provisioned across
+  runs so it starts past setup and keeps its bond. Everything below gets cheaper.
+- **#49 `normwatch cmd`** — one 0x6F question in one command, instead of a copy of the
+  e2e test.
+- **#46 snapshot/restore** — a boot to the UI is 18.9s and a bond-and-bind round trip
+  51.9s (measured 2026-10-02); this makes both sub-second, and composes with #41.
 - **#47 golden-fingerprint test** — the equivalence checks that gate every optimisation
   still live in throwaway scripts.
+- **#50 OTA type 8 against the emulated watch** — first find out whether the application
+  or the (absent) first-stage bootloader serves it.
+- **#51 health records** — so `SyncHealthDataUseCase` runs something other than its
+  empty paths; #52 script the AVD's bond removal; #53 the MMIO at `0x50023800`.
+- **#48 Database Hash on hardware** — not emulator work: the firmware parks Android's
+  Read By Type for 0x2B2A (see "Binding" in the README); check the physical watch does
+  the same, and if so rewrite `BleManager`'s cold-connect story and its watchdog.
 
 ### Pending features (priority order)
 
