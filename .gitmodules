@@ -1,0 +1,3 @@
+[submodule "NORM"]
+	path = NORM
+	url = https://github.com/David-Aharoni01/NormPlus-reference.git

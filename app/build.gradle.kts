@@ -48,7 +48,18 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // The watch's resource image, for the Firmware screen's "Re-flash Original Resources".
+    // It is the vendor's file, so it lives in the private NORM submodule, not in this repo:
+    // copied in at build time when the submodule is checked out, left out when it is not.
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/bundledFirmware"))
 }
+
+val copyBundledFirmware by tasks.registering(Copy::class) {
+    from(rootProject.file("NORM/assets")) { include("Picture_P03B_NORM2_0.4.bin") }
+    into(layout.buildDirectory.dir("generated/bundledFirmware/firmware"))
+}
+tasks.named("preBuild") { dependsOn(copyBundledFirmware) }
 
 dependencies {
     implementation(project(":protocol"))

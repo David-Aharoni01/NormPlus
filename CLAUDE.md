@@ -53,12 +53,13 @@ byte sequence, or modelling any register:
 ## Repo layout
 
 ```
-NORM/               the official companion app v1.1.18, unpacked with apktool
+NORM/               PRIVATE submodule (NormPlus-reference): the official companion app v1.1.18,
+                    unpacked with apktool, and the APK itself in _apk/ (Git LFS)
   smali*/cn/appscomm/, smali_classes2/com/appscomm/   its own code  <- READ THIS FIRST
   smali*/...        the bundled libraries (androidx, Google, RxJava, ...), kept for reference
   assets/           Apollo3_P03B_NORM2_F0.2B01.bin (the watch firmware the emulator runs),
-                    Picture_P03B_NORM2_0.4.bin (the resource image)
-bin/                NORM.apk + apktool_3.0.2.jar (gitignored)
+                    Picture_P03B_NORM2_0.4.bin (the resource image; the app build copies it in)
+bin/                NORM.apk + apktool_3.0.2.jar (gitignored; the same files are in NORM/_apk/)
 protocol/           :protocol -- pure JVM: framing, commands, the Apollo DFU session
 app/                :app -- the Android companion app (Kotlin + Compose)
 tools/
@@ -71,6 +72,26 @@ docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.
 
 Note the two "emulators": `tools/emulator/` runs the **phone**, `tools/watchemu/` runs the
 **watch**. They meet at `normwatch boot --netsim` / `launch-emulator.ps1 -Watch`.
+
+### This repository is public; the vendor's material is not
+
+`NormPlus` is a **public** repository. The official app's code, its resources and the watch
+firmware are the vendor's copyrighted material, and they live only in the **private**
+submodule at `NORM/` (`NormPlus-reference`) -- whose history was rewritten out of this one on
+2026-10-02. Hard rules:
+
+- **Never commit vendor files here**: no smali, no decompiled code, no firmware images, no
+  APKs, no resources lifted from the app. New vendor material goes into the `NORM/` repo
+  (commit and push it there, then commit the updated submodule pointer here).
+- Citing the smali by path and quoting a few lines in a comment or a doc is fine; copying
+  whole methods or files is not.
+- Builds and tests read vendor files from `NORM/` at run time (the app's bundled resource
+  image, the watch emulator's firmware) and must not copy them into tracked paths.
+
+**Getting `NORM/` on another machine:** `git clone --recurse-submodules
+https://github.com/David-Aharoni01/NormPlus.git` (signed in as the owner), or
+`git submodule update --init` in an existing clone. Without access to the private repo,
+regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM.apk -o NORM`.
 
 ## Where things are documented
 

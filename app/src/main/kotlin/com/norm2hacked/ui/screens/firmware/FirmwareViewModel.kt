@@ -84,7 +84,10 @@ class FirmwareViewModel @Inject constructor(
     fun flashBundled() {
         // Read from assets -- never a file:// URI, which ContentResolver rejects on Android 7+.
         flash(BUNDLED_RESOURCES) {
-            context.assets.open("firmware/$BUNDLED_RESOURCES").use { it.readBytes() }
+            // Copied in from the private NORM submodule at build time (app/build.gradle.kts).
+            runCatching { context.assets.open("firmware/$BUNDLED_RESOURCES").use { it.readBytes() } }
+                .getOrElse { throw OtaException("This build does not include the resource image " +
+                    "(it comes from the NORM submodule); choose the file instead") }
         }
     }
 

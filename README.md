@@ -18,6 +18,18 @@ verified on the watch), `protocol.md` (the wire protocol and firmware updates),
 
 ---
 
+## Getting the code
+
+```powershell
+git clone --recurse-submodules https://github.com/David-Aharoni01/NormPlus.git
+```
+
+`NORM/` is a **private** submodule: the official NORM app unpacked with apktool, which the
+protocol work reads and the watch emulator runs. It is the vendor's material, so it is not in
+this public repository. Without access to it, unpack your own copy of the app into `NORM/`
+(`java -jar apktool_3.0.2.jar d NORM.apk -o NORM`); the Android app builds without it, minus
+the bundled resource image.
+
 ## Prerequisites
 
 - **JDK 17** (the Gradle toolchain targets JVM 17).
