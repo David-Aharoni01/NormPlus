@@ -474,9 +474,11 @@ are worth 1.95x rather than 2.5x. `--trace` and `machine.watch()` both need per-
 Python and switch the C hook off on their own.
 
 **Those figures are `--no-ble` figures** — they were all taken before the radio powered up,
-and they still hold with `--no-ble`. None of the switches became *inexact* when it did: the
-C hook and `--idle-skip` are still bit-identical, and the deadline quantum is off by the
-same <=0.4%. What changed is what they are worth, measured over the same 576M boot with the
+and they still hold with `--no-ble`. With the radio up the C hook is still bit-identical
+and the deadline quantum is off by the same <=0.4%, but `--idle-skip` is not quite: with
+the NZ8801 model answering it delivers exactly one STIMER interrupt fewer, lost once
+between 225M and 250M, everything else identical (#54, pinned in `tests/test_golden.py`).
+Radio off it is exact over a full boot. What changed is what they are worth, measured over the same 576M boot with the
 radio on: C hook **4.89x**, `--idle-skip` **1.09x**, deadline quantum **1.31x**. Say which
 of the two you measured — quoting a `--no-ble` figure for a BLE-on run is the mistake this
 note exists to prevent.
@@ -503,8 +505,11 @@ traced value. Two specific traps:
 Scratch probes are throwaway and live outside the repo; anything worth keeping becomes a
 test. Every optimisation so far has been accepted or rejected on a before/after
 fingerprint captured **on the same tree** (stash, capture, pop, capture) — comparing two
-settings within one build cannot catch a change that moved both. Card #47 is to make that
-a checked-in test instead of a scratchpad script.
+settings within one build cannot catch a change that moved both. That is now
+`tests/test_golden.py`: four deterministic workloads (radio off, radio on, a language tap,
+a swipe on the face from a bound-state fixture) against fingerprints recorded in
+`tests/golden.json`, in the ordinary test loop. After a change that is *meant* to move the
+watch, re-record with `test_golden.py --update` and read the diff it prints.
 
 ---
 
@@ -1111,7 +1116,7 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 21 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 22 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
@@ -1126,8 +1131,8 @@ build next" says why):
 - **#46 snapshot/restore** — a boot to the UI is 18.9s and a bond-and-bind round trip
   51.9s (measured 2026-10-02); this makes both sub-second, and composes with
   `--flash-state`.
-- **#47 golden-fingerprint test** — the equivalence checks that gate every optimisation
-  still live in throwaway scripts.
+- **#54 `--idle-skip` one tick short with the radio up** — found by the golden test
+  (#47, done); one lost STIMER between 225M and 250M.
 - **#50 OTA type 8 against the emulated watch** — first find out whether the application
   or the (absent) first-stage bootloader serves it.
 - **#51 health records** — so `SyncHealthDataUseCase` runs something other than its
