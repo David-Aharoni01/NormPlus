@@ -13,7 +13,7 @@ Reverse-engineering workspace for the **Norm 2 smartwatch**. The goals are:
 3. Patch or replace the watch firmware via OTA -- the firmware is understood in depth; see
    [`docs/firmware.md`](docs/firmware.md)
 4. Run the watch's own firmware on the PC, so the watch's behaviour can be observed and
-   changed without the hardware (`tools/watchemu/`)
+   changed without the hardware (the watch emulator, `normwatch`, in `tools/normplus/watch/`)
 
 ## Task tracking -- all work goes on the kanban board
 
@@ -33,7 +33,7 @@ session handoff.
 
 Every piece of code in this repo is grounded in something the watch or its app actually
 does — the NORM app smali for the protocol work, the firmware image itself for
-`tools/watchemu/`. Before implementing any command, parsing any response, deciding on any
+the watch emulator (`tools/normplus/watch/`). Before implementing any command, parsing any response, deciding on any
 byte sequence, or modelling any register:
 - **Read the corresponding smali** first. The source of truth is `NORM/smali_classes2/cn/appscomm/`. If the smali contradicts your assumptions, the smali wins.
 - **For firmware work, the image is the source of truth.** Never guess a register value, a
@@ -59,19 +59,22 @@ NORM/               PRIVATE submodule (NormPlus-reference): the official compani
   smali*/...        the bundled libraries (androidx, Google, RxJava, ...), kept for reference
   assets/           Apollo3_P03B_NORM2_F0.2B01.bin (the watch firmware the emulator runs),
                     Picture_P03B_NORM2_0.4.bin (the resource image; the app build copies it in)
-bin/                NORM.apk + apktool_3.0.2.jar (gitignored; the same files are in NORM/_apk/)
 protocol/           :protocol -- pure JVM: framing, commands, the Apollo DFU session
 app/                :app -- the Android companion app (Kotlin + Compose)
-tools/
-  emulator/         the Pixel 8 ANDROID emulator + Bumble HCI bridge, for running :app
-  watchemu/         the WATCH emulator: the watch's own Apollo3 firmware under Unicorn;
-                    `normwatch cmd --mac` also asks the PHYSICAL watch from the PC
-  firmware/         image_tool.py (verify / re-seal images), query_ota.py (vendor OTA server)
-docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.md, history.md
+tools/              the Python tools: one uv project (pyproject.toml, uv.lock at the root)
+  normplus/
+    watch/          the WATCH emulator (normwatch, normcmd): the watch's own Apollo3 firmware
+                    under Unicorn; normcmd --mac also asks the PHYSICAL watch from the PC
+    phone/          the Pixel 8 ANDROID emulator (normphone) + the Bumble HCI bridge, for :app
+    firmware/       image_tool.py (verify / re-seal), query_ota.py (the vendor OTA server): normfw
+    testing.py      normtest
+  tests/            the Python test suite: standalone scripts, run by normtest
+docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.md,
+                    watch-emulator-internals.md, android-emulator.md, history.md
 ```
 
-Note the two "emulators": `tools/emulator/` runs the **phone**, `tools/watchemu/` runs the
-**watch**. They meet at `normwatch boot --netsim` / `launch-emulator.ps1 -Watch`.
+Note the two "emulators": `normphone` (`tools/normplus/phone/`) runs the **phone**,
+`normwatch` (`tools/normplus/watch/`) runs the **watch**. They meet at `normwatch boot --netsim` / `normphone start --watch`.
 
 ### This repository is public; the vendor's material is not
 
@@ -104,14 +107,39 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 | `docs/protocol.md` | The 0x6F channel, CHECK/SET rules, the Apollo DFU update as the firmware answers it, the version string, key smali files, apktool |
 | `docs/firmware.md` | The watch firmware itself: image format, the two CRCs, hardware, the vendor OTA server, what can be patched |
 | `docs/watch-emulator.md` | The watch emulator in summary: boot, radio, NZ8801, architecture, performance switches |
-| `tools/watchemu/README.md` | The watch emulator in full -- read it before changing anything in `fw/` |
-| `tools/emulator/README.md` | The Android emulator and its Bluetooth bridge |
+| `docs/watch-emulator-internals.md` | The watch emulator in full -- read it before changing anything in `fw/` |
+| `docs/android-emulator.md` | The Android emulator and its Bluetooth bridge |
 | `docs/history.md` | Retired tools (`normlink-cli`) and corrected beliefs |
 | `README.md` | The human entry point: building, and asking a watch a question |
 
 ---
 
 ## Build Commands
+
+### Python tools (uv)
+
+Everything in Python is one uv project: `pyproject.toml` at the root, the code in
+`tools/normplus/`, the tests in `tools/tests/`. It installs five commands:
+
+| Command | What |
+|---|---|
+| `normwatch` | the watch emulator: `boot`, `info`, `modules` (`tools/normplus/watch/`) |
+| `normcmd` | one 0x6F question to a watch -- the emulated one, or the physical one with `--mac` |
+| `normphone` | the Android emulator: `setup`, `start [--watch / --no-bridge]`, `install`, `clear-bond`, `bridge` |
+| `normfw` | firmware images: `verify`, `seal`, `query-ota` |
+| `normtest` | the Python test suite, one file at a time (`normtest ota cmd`, `normtest ota -- --full`) |
+
+```bash
+uv sync                          # once, and after pulling: Python 3.11 + the pinned libraries (uv.lock)
+uv run normwatch info            # any command, from the repo, always the current code
+uv tool install --editable .     # once per machine: the commands on PATH, still editable
+```
+
+uv for everything: no pip, no `py -3.11`, no `PYTHONPATH`. In Claude's Bash, use
+`uv run <command>` (the `.venv` is not on that PATH). The commands find the repository from
+their own (editable) location, so they work from any directory.
+
+### Gradle (`:app`, `:protocol`)
 
 ```bash
 # Build debug APK (Android app)
@@ -122,13 +150,14 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 ./gradlew installDebug
 
 # Boot the test emulator (Pixel 8 AVD). Bluetooth-to-watch bridge is ON by default;
-# -NoBridge for a UI-only boot. See "Testing on the emulator".
-tools\emulator\launch-emulator.ps1
-tools\emulator\launch-emulator.ps1 -NoBridge
+# --no-bridge for a UI-only boot. See "Testing on the Android emulator".
+# (normphone install = ./gradlew installDebug)
+normphone start
+normphone start --no-bridge
 
 # Ask the PHYSICAL watch one 0x6F question from the PC (bleak, this PC's own adapter).
 # See "Asking the physical watch from the PC". Exit 0 a reply / 1 none / 2 setup failed.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
+normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
 
 # Run protocol unit tests (no BLE/Android needed)
 ./gradlew :protocol:test
@@ -140,54 +169,51 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payloa
 ./gradlew lint
 ```
 
-### Watch emulator (`tools/watchemu`) — Python 3.11, no Gradle
+### Watch emulator (`normwatch`, `normcmd`, `normtest`)
 
 ```bash
-# One-time: same interpreter the Android emulator's BLE bridge uses
-py -3.11 -m pip install -r tools/watchemu/requirements.txt
-
 # Boot the watch firmware and print a triage report. --seconds is watch time;
 # the default 30M-instruction budget is 0.6s, which is still inside the 8.3s
 # boot animation, so pass --seconds 18 to reach the UI.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 18
+normwatch boot --seconds 18
 # --no-ble is ~2.9x faster and reaches the same screen in --seconds 14; use it
 # whenever the run is not about the radio. See "The BLE controller" below.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 14 --no-ble
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --live        # window + mouse touch
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --screenshot out.png
+normwatch boot --seconds 14 --no-ble
+normwatch boot --live        # window + mouse touch
+normwatch boot --screenshot out.png
 # A radio behind the firmware's BLE stack (a bumble controller): the watch advertises.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --radio --seconds 18
+normwatch boot --radio --seconds 18
 # ...and the Android emulator's netsim endpoint on the same virtual air, so the
-# Pixel 8 AVD (launch-emulator.ps1 -Watch) pairs with the EMULATED watch.
+# Pixel 8 AVD (normphone start --watch) pairs with the EMULATED watch.
 # Implies --realtime. --hci-trace logs every packet across the seam.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
+normwatch boot --netsim --live
 # Keep the watch's flash between runs: bind it once, and every later run with the same
 # file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --netsim --live --flash-state watch.zip
 
 # Skip the boot: save the machine once past the boot animation, start there next time
 # (0.47s instead of 11s). Same switches on both; not with --radio/--netsim.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save-state ui.snap
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
+normwatch boot --seconds 9 --no-ble --save-state ui.snap
+normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
 # prints every reply decoded. ~4s from a bound state file, ~14s binding a fresh watch.
 # Hex or :protocol names; --char 8003 writes to the other write characteristic (a SET there
 # is never acknowledged); --no-bind skips the bind. --mac MAC asks the physical watch instead.
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --flash-state bound.zip
+normcmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
+normcmd 08 70 --payload 00 --flash-state bound.zip
 
 # Parse the image header / list source modules recovered from assert() strings
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
+normwatch info
+normwatch modules
 
 # Tests are standalone scripts, not pytest. Run one:
-PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_native_hook.py
+normtest native_hook
 
 # Run all of them (each exits non-zero on failure):
-for t in tools/watchemu/tests/test_*.py; do   PYTHONPATH=tools/watchemu py -3.11 "$t" >/dev/null || echo "FAIL $t"; done
+normtest
 
 # The C block hook builds itself on demand; to build it by hand:
-py -3.11 tools/watchemu/native/build.py
+uv run python tools/normplus/watch/native/build.py
 ```
 
 Build config: `app/build.gradle.kts` — compileSdk 35, minSdk 30, JVM 17 target.
@@ -205,14 +231,14 @@ Build config: `app/build.gradle.kts` — compileSdk 35, minSdk 30, JVM 17 target
 
 **`:app` is developed and tested on a local Android emulator** (not a physical phone) — a
 Pixel 8 AVD (`Pixel_8_API35`, AOSP Google-APIs Android 15 / API 35; no Android Studio). All
-tooling lives in `tools/emulator/` (see its `README.md` for the full story).
+tooling is `normphone` (`tools/normplus/phone/`; `docs/android-emulator.md` has the full story).
 
-- **Boot + install:** `tools\emulator\launch-emulator.ps1`, then `./gradlew installDebug`.
+- **Boot + install:** `normphone start`, then `./gradlew installDebug`.
   Always use the **debug** variant — the release build is unsigned and won't install.
 - **Real-watch BLE works in the emulator.** The emulator has no host Bluetooth radio, so a
   dedicated **USB BLE dongle (CSR8510 `0A12:0001`, driver swapped to WinUSB via Zadig)** is
-  bridged in via **Bumble**. `launch-emulator.ps1` starts this bridge by default (`-NoBridge`
-  = UI-only). The bridge is `tools/emulator/norm_emu_bridge.py` — a *custom* bridge, not stock
+  bridged in via **Bumble**. `normphone start` starts this bridge by default (`--no-bridge`
+  = UI-only). The bridge is `tools/normplus/phone/bridge.py` — a *custom* bridge, not stock
   `bumble-hci-bridge`, because it must (1) handle emulator 36.x's newer netsim `packet` proto
   field and (2) short-circuit `LE_GET_VENDOR_CAPABILITIES (0xFD53)`, which the CSR8510 ignores
   and which otherwise fatally aborts the guest BT stack. Don't "fix" the bridge by reverting
@@ -230,9 +256,9 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   --mac` uses (it bonds the watch with Windows on first use). Don't run the emulator BLE bridge,
   `normwatch cmd --mac` and the official app at the same time — they contend for the watch's
   single active connection.
-- **Rebuild from scratch:** `tools\emulator\setup.ps1` (SDK packages + AEHD + AVD + Bumble);
+- **Rebuild from scratch:** `normphone setup` (SDK packages + AEHD + AVD + Bumble);
   the Zadig WinUSB swap is the one manual step.
-- **The emulated watch instead of the real one:** `launch-emulator.ps1 -Watch` skips the dongle
+- **The emulated watch instead of the real one:** `normphone start --watch` skips the dongle
   and points the AVD at the watch emulator, which serves the same netsim endpoint itself
   (`normwatch boot --netsim --live`, start it first). `:app` bonds with it, binds it (the
   pairing screen's first-run handshake) and lands on the dashboard while the watch goes to
@@ -240,14 +266,14 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   `--flash-state FILE` and it keeps the bind and the bond: restart it with the same file and
   `:app` reconnects with its stored keys (the firmware answers the LTK request from flash),
   no wipe, no re-bind — verified on this AVD. Three things to expect: restarting the watch
-  means restarting the AVD too (`adb emu kill`, then `-Watch` again — the emulator's packet
+  means restarting the AVD too (`adb emu kill`, then `--watch` again — the emulator's packet
   streamer never reconnects to a new endpoint; bond and app data survive it); the AVD's bond
   has to be removed when the watch on the other end does not hold it — a new state file, or
-  after the physical watch (`adb root`, delete the `[4c:59:80:12:44:f1]` section of
-  `/data/misc/bluedroid/bt_config.conf`, toggle BT); and the first one or two connection
+  after the physical watch: `normphone clear-bond` (it deletes the `[4c:59:80:12:44:f1]`
+  section of `/data/misc/bluedroid/bt_config.conf` with BT off); and the first one or two connection
   attempts on a bonded reconnect stall in discovery before one goes through — the Database
   Hash park below, not the emulator. See "A real stack behind the seam", "Binding" and "The
-  watch keeps what it writes" in `tools/watchemu/README.md`.
+  watch keeps what it writes" in `docs/watch-emulator-internals.md`.
 
 `normwatch cmd --mac` (below) is the fastest headless way to ask the *physical* watch a
 0x6F question; without `--mac` the same command asks the emulated one, in ~4s from a bound
@@ -261,13 +287,13 @@ for exercising the full `:app` stack (`BleManager`, sync, UI) against either.
 **The fastest headless way to ask the physical watch a 0x6F question** — no APK, no AVD,
 and Claude can run it directly. It is `normwatch cmd` (see the watch emulator's build
 commands) with `--mac`: the same flow and the same decoder as against the emulated watch,
-over this PC's own Bluetooth adapter with bleak (`tools/watchemu/normwatch/physical.py`).
+over this PC's own Bluetooth adapter with bleak (`tools/normplus/watch/physical.py`).
 Where the two answers differ, the watches differ — this is how an emulator finding is
 checked on hardware.
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
+normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
+normcmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
 ```
 ```
    2.2s  phone: connected, paired, encryption not reported
@@ -277,8 +303,8 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --mac 4C:
    3.1s           = 0x08 BATTERY_POWER CHECK_RESPONSE [5f]
 ```
 
-**Watch MAC:** `4C:59:80:12:44:F1`. Needs `py -3.11 -m pip install -r
-tools/watchemu/requirements.txt` (bleak).
+**Watch MAC:** `4C:59:80:12:44:F1`. Needs `uv sync` (bleak is one of the
+dependencies).
 
 What it does, as `BindWatchUseCase` does: scan, connect, bond, subscribe to 8002/8004
 *before* the first write, checkInit (0x94 CHECK), the bind only if that reads 0
@@ -304,12 +330,12 @@ It replaced `normlink-cli` (`:cli`), removed 2026-10-02; `docs/history.md` has w
 
 ---
 
-## Working on the watch emulator (`tools/watchemu`)
+## Working on the watch emulator (`tools/normplus/watch`)
 
 It runs `NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` on an emulated Ambiq Apollo3 Blue under
 Unicorn. It is a hardware emulator, not a protocol mock: the behaviour comes from executing
 the watch's code, and the firmware image is the source of truth exactly as the smali is for
-the protocol. `docs/watch-emulator.md` summarises it; `tools/watchemu/README.md` explains it.
+the protocol. `docs/watch-emulator.md` summarises it; `docs/watch-emulator-internals.md` explains it.
 
 ### The invariants that break silently
 
@@ -380,7 +406,7 @@ watch, re-record with `test_golden.py --update` and read the diff it prints.
 - **Not within ~10s of the watch booting** -- an update opened over the boot animation
   overflows the UI task's stack (#57).
 - Anything new is rehearsed against the emulated watch first (`tests/test_ota.py`, then
-  `:app` through `launch-emulator.ps1 -Watch`), and only then on the physical watch.
+  `:app` through `normphone start --watch`), and only then on the physical watch.
 
 ## Git
 

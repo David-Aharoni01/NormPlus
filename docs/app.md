@@ -105,7 +105,7 @@ are added and `AttsCalculateDbHash()` is never called, so the read is parked for
 Android reads exactly that before `discoverServices()` on every connection after the bonding
 one. Against the emulated watch this reproduces the symptom precisely: the first one or two
 attempts stall in discovery and a later one goes through once the stack gives up on the hash.
-See "Binding" in `tools/watchemu/README.md`. Not yet confirmed on the physical watch; if it
+See "Binding" in `docs/watch-emulator-internals.md`. Not yet confirmed on the physical watch; if it
 holds, the SMP theory above is describing the same stall from the wrong side. One more piece
 of evidence against that theory: once the emulated watch was really asked for its key (see
 "The watch keeps what it writes"), Android logged the same `SMP state machine busy so

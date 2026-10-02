@@ -1,12 +1,12 @@
 # The watch emulator, the short version
 
-`tools/watchemu/README.md` is the long form: why each piece is the way it is, mostly as
+`docs/watch-emulator-internals.md` is the long form: why each piece is the way it is, mostly as
 write-ups of wrong answers. This is the summary that used to live in `CLAUDE.md`, which now
 keeps only the rules for working on it (the invariants that break silently, and how to make
 claims about the firmware).
 
-> **Two different things are called "the emulator" in this repo.** `tools/emulator/` is the
-> **Pixel 8 Android** emulator that runs `:app`. `tools/watchemu/` is the **watch** emulator
+> **Two different things are called "the emulator" in this repo.** `normphone` (`tools/normplus/phone/`) is the
+> **Pixel 8 Android** emulator that runs `:app`. `normwatch` (`tools/normplus/watch/`) is the **watch** emulator
 > that runs the watch's own firmware. This section is about the second one.
 
 Runs `NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` — the real firmware shipped inside the
@@ -15,7 +15,7 @@ involved. It is a hardware emulator, not a protocol mock: nothing reimplements w
 behaviour, the behaviour comes from executing the watch's code. The same "read the source
 of truth first" rule as the smali applies, with the firmware image as the source of truth.
 
-`tools/watchemu/README.md` is long and is the real documentation — it records *why* each
+`docs/watch-emulator-internals.md` is long and is the real documentation — it records *why* each
 piece is the way it is, mostly as post-mortems of wrong answers. Read it before changing
 anything in `fw/`.
 
@@ -157,7 +157,7 @@ Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discov
 table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
 firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host, then
 restarts the watch from its saved flash and reconnects with the stored keys, in ~32s;
-`--netsim` does it with the Pixel 8 AVD (`launch-emulator.ps1 -Watch`).
+`--netsim` does it with the Pixel 8 AVD (`normphone start --watch`).
 
 The seam answers three kinds of thing itself and forwards the rest: the download phase
 (not HCI), every OGF 0x3F vendor opcode (bumble answers those with silence), and the LE
@@ -285,10 +285,10 @@ modelled from the firmware's own driver sequences. 25 test files, all standalone
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
 bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the companion
 app's post-QR handshake) and reads its battery, while the watch goes from "Select a
-Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
+Language" to its face — the two emulators meet there, with no hardware at
 all. With `--flash-state` (#41, done) it stays that way across restarts: the watch boots to
 its face and the phone reconnects with its stored keys, and `normwatch cmd` (#49, done) asks
 it any 0x6F question in ~4s. `--save-state` / `--load-state` (#46, done) skip the boot for
 everything that is not about the radio: 0.47s to the UI instead of 11s, and a restored run
 lands on the golden fingerprints exactly.
-Open cards are on the board; `tools/watchemu/README.md`'s "What to build next" says why.
+Open cards are on the board; `docs/watch-emulator-internals.md`'s "What to build next" says why.

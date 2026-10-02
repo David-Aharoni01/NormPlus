@@ -133,12 +133,12 @@ sacrificial unit.
 | **IDT / Renesas P9027LP** wireless-charging RX | `wireless_charge_p9027lp.c` |
 | Stepper motors driving the physical hands | `..\..\Device\Watch\watch_cb.c` — `targetDegree`, `curDegree`, `deltDegree`, `restore` |
 | Crown + button | `..\..\Device\Key\key_irq.c`; UI text "Rotate the crown to set …" |
-| Accelerometer, **InvenSense family** (MPU-6xxx / ICM-206xx) at I2C **0x68** on IOM1 | `ew_dev_sensor.c` names no chip, but its register map is unmistakable — the driver writes SMPLRT_DIV 0x19, CONFIG 0x1A, GYRO/ACCEL_CONFIG 0x1B/0x1C/0x1D, FIFO_EN 0x23, INT_PIN_CFG/INT_ENABLE 0x37/0x38, USER_CTRL 0x6A, PWR_MGMT 0x6B/0x6C and reads WHO_AM_I 0x75 (observed under `tools/watchemu`) |
+| Accelerometer, **InvenSense family** (MPU-6xxx / ICM-206xx) at I2C **0x68** on IOM1 | `ew_dev_sensor.c` names no chip, but its register map is unmistakable — the driver writes SMPLRT_DIV 0x19, CONFIG 0x1A, GYRO/ACCEL_CONFIG 0x1B/0x1C/0x1D, FIFO_EN 0x23, INT_PIN_CFG/INT_ENABLE 0x37/0x38, USER_CTRL 0x6A, PWR_MGMT 0x6B/0x6C and reads WHO_AM_I 0x75 (observed under the watch emulator) |
 | `ew_dev_ots.c` | **unidentified** (temperature sensor? object transfer?) |
 
 ### The I2C bus, decoded by running the firmware
 
-Driver filenames say what the parts are; running the image under `tools/watchemu` says
+Driver filenames say what the parts are; running the image under the watch emulator (`normwatch`) says
 where they are and how they are spoken to. Both of these were read off the executing
 firmware, not from a datasheet.
 
@@ -177,7 +177,7 @@ coordinates clips each row to 340 pixels and shears the picture into diagonal no
 
 ### The resource partition, and how the firmware reads it
 
-Recovered by running the firmware under `tools/watchemu` and watching the bus; every
+Recovered by running the firmware under the watch emulator and watching the bus; every
 address below is from the image itself.
 
 **Images are files whose names are addresses.** `snprintf(buf, 20, "0x%x", addr)` at
@@ -288,11 +288,11 @@ usual CRC-32C configuration — which is why the standard variants all missed. N
 it is cryptographic: it is a plain error-detecting CRC with no secret, so **a patched image
 can be re-sealed and will pass whatever the bootloader checks.**
 
-`tools/firmware/image_tool.py` implements it:
+`normfw` (`tools/normplus/firmware/image_tool.py`) implements it:
 
 ```bash
-python tools/firmware/image_tool.py verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
-python tools/firmware/image_tool.py seal patched.bin --in-place
+normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
+normfw seal patched.bin --in-place
 ```
 
 `verify` parses the header and checks the length field, the image CRC, and the plausibility
@@ -325,14 +325,14 @@ Content-Type: application/json
 
 The app keeps `version[0:3]` and GETs `file_name` directly.
 
-**`tools/firmware/query_ota.py`** implements this (stdlib only, no deps):
+**`normfw query-ota` (`tools/normplus/firmware/query_ota.py`)** implements this (stdlib only, no deps):
 
 ```bash
-python tools/firmware/query_ota.py                          # current firmware for s21
-python tools/firmware/query_ota.py --enumerate              # probe every known model code
-python tools/firmware/query_ota.py --json                   # machine-readable
-python tools/firmware/query_ota.py --list-blobs             # try listing the Azure container
-python tools/firmware/query_ota.py --download build/firmware
+normfw query-ota                          # current firmware for s21
+normfw query-ota --enumerate              # probe every known model code
+normfw query-ota --json                   # machine-readable
+normfw query-ota --list-blobs             # try listing the Azure container
+normfw query-ota --download build/firmware
 ```
 
 `--download` also prints the size, SHA-256 and parsed Ambiq header of whatever it fetched.
@@ -470,7 +470,7 @@ weather), the ROI is much better here and the risk is zero.
 |---|---|
 | A base image to patch | **Have.** `NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin`, unencrypted |
 | The image is the build actually on the watch | **Likely, unconfirmed.** Watch reports `A0.2…B01`; the asset is `F0.2B01` with internal `A0.2R0.1T1.1H0.5B0.1` — the Apollo component matches. Confirm with `DEVICE_VERSION`, which currently times out (open bug) |
-| Re-seal a patched image so it validates | **Have.** §7 + `tools/firmware/image_tool.py` |
+| Re-seal a patched image so it validates | **Have.** §7 + `normfw` (`tools/normplus/firmware/image_tool.py`) |
 | Transport CRC-16 | **Have.** `ApolloOta.crc`, byte-verified against the smali, and accepted by the firmware (`04 01`) |
 | A wire implementation of the OTA | **Have, verified against the emulated watch.** `ApolloOtaSession` (`protocol/.../ota/ApolloOta.kt`, #56) replaced the never-run `ApolloOtaProtocol.kt`; a full resource update from `:app` in the AVD went through. Not yet run on the physical watch (#13) |
 | Understanding of the code well enough to patch it meaningfully | **Not yet.** 130 source filenames recovered, but no disassembly has been done. Nobody has opened it in Ghidra |

@@ -96,7 +96,7 @@ manager code and it overflows its stack (README).
    non-reflected with a zero seed, which is why the standard CRC-32C variants all miss it.
 
 Nothing here is cryptographic — no signature, no encryption. **A patched image can be
-re-sealed and will validate**: `python tools/firmware/image_tool.py seal patched.bin --in-place`.
+re-sealed and will validate**: `normfw seal patched.bin --in-place`.
 
 **Where updates come from.** The app's Apollo channel is the Retrofit
 `POST device/queryProductVersion` in `cn/appscomm/server/UrlService.smali`. The public
@@ -150,10 +150,10 @@ Smali is Dalvik bytecode assembly. Useful patterns:
 
 ```bash
 # Decompile (already done — output is NORM/)
-java -jar bin/apktool_3.0.2.jar d bin/NORM.apk -o NORM
+java -jar NORM/_apk/apktool_3.0.2.jar d NORM/_apk/NORM.apk -o NORM
 
 # Recompile after modifying smali (produces NORM/dist/NORM.apk)
-java -jar bin/apktool_3.0.2.jar b NORM
+java -jar NORM/_apk/apktool_3.0.2.jar b NORM
 
 # Sign the recompiled APK (requires a keystore)
 jarsigner -keystore my.keystore NORM/dist/NORM.apk alias_name

@@ -8,11 +8,12 @@ the PC.
 |-------------------|--------------------------------------------------------------------------------|
 | `:protocol`       | Pure-JVM library: packet framing, command codes, response parsing              |
 | `:app`            | Android companion app (Kotlin + Jetpack Compose)                               |
-| `tools/watchemu`  | The watch emulator (Python): the real firmware under Unicorn, a radio, a phone |
+| `tools/normplus` | The Python tools, one uv package: the watch emulator, the Android emulator launcher, firmware tools |
 
 Reference documentation is in `docs/`: `app.md` (the app's architecture and what is
 verified on the watch), `protocol.md` (the wire protocol and firmware updates),
-`firmware.md` (the watch's firmware), `watch-emulator.md`, and `history.md`.
+`firmware.md` (the watch's firmware), `watch-emulator.md` and `watch-emulator-internals.md`
+(the watch emulator), `android-emulator.md` (the Android emulator), and `history.md`.
 
 **Watch MAC (example used throughout):** `4C:59:80:12:44:F1`
 
@@ -35,14 +36,47 @@ the bundled resource image.
 
 - **JDK 17** (the Gradle toolchain targets JVM 17).
 - **For the app:** an Android device (minSdk 30) with USB debugging, or the Pixel 8 AVD
-  in `tools/emulator/`.
-- **For `normwatch`:** Python 3.11 and `py -3.11 -m pip install -r tools/watchemu/requirements.txt`.
+  (`normphone setup`, below).
+- **For the tools:** [uv](https://docs.astral.sh/uv/). It fetches Python 3.11 and every
+  library itself.
 
 > Commands below use PowerShell syntax (`.\gradlew`). On macOS/Linux use `./gradlew`.
 
 ---
 
-## Asking a watch a question from the PC (`normwatch cmd`)
+## The tools
+
+One install, from the repository root, puts five commands on your PATH. They stay linked to
+this checkout, so pulling new code updates them; after a pull that changes `pyproject.toml`,
+run the install again.
+
+```powershell
+uv tool install --editable .
+```
+
+| Command | What it does | Try |
+|---|---|---|
+| `normwatch` | Runs the watch's own firmware on the PC | `normwatch boot --live` (a window with the watch's screen) |
+| `normcmd` | Asks a watch one command and decodes the reply | `normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1` |
+| `normphone` | The Android emulator that runs the app | `normphone start`, `normphone start --watch`, `normphone install` |
+| `normfw` | Checks and re-seals firmware images | `normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` |
+| `normtest` | Runs the Python tests | `normtest`, or `normtest ota` |
+
+Every command takes `--help`. Without installing, `uv run <command>` works from inside the
+repository.
+
+**Run the app against the emulated watch, no hardware at all:**
+
+```powershell
+normwatch boot --netsim --live --flash-state watch.zip   # 1. the watch (keep it running)
+normphone start --watch                                  # 2. the phone, in a second terminal
+normphone install                                        # 3. the app, in a third
+```
+
+If the phone held a pairing with a different watch, `normphone clear-bond` forgets it; then
+tap *Pair* when Android asks.
+
+## Asking a watch a question from the PC (`normcmd`)
 
 One 0x6F command, sent the way the companion app sends it (to 8001, then `[03]` to 8002),
 with every reply decoded. By default it asks the **emulated** watch — the firmware boots on
@@ -51,10 +85,9 @@ PC's own Bluetooth adapter. Same flow, same decoder, so where the answers differ
 watches that differ.
 
 ```powershell
-$env:PYTHONPATH = "tools/watchemu"
-py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   # the real watch
-py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --flash-state bound.zip   # the emulated one
-py -3.11 -m normwatch cmd 07 71 --payload 3c --mac 4C:59:80:12:44:F1                 # a SET, in hex
+normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   # the real watch
+normcmd BATTERY_POWER CHECK --payload 00 --flash-state bound.zip   # the emulated one
+normcmd 07 71 --payload 3c --mac 4C:59:80:12:44:F1                 # a SET, in hex
 ```
 
 - Commands and actions by `:protocol` name (`DEVICE_VERSION`, `CHECK`) or in hex. A CHECK
@@ -66,7 +99,7 @@ py -3.11 -m normwatch cmd 07 71 --payload 3c --mac 4C:59:80:12:44:F1            
   connection, so close the companion app or `:app` first.
 - Exit status: 0 a reply came, 1 nothing came back, 2 the setup failed.
 
-`tools/watchemu/README.md` has the rest, including `--flash-state`, which keeps an emulated
+`docs/watch-emulator-internals.md` has the rest, including `--flash-state`, which keeps an emulated
 watch bound between runs. (This replaced `normlink-cli`, the `:cli` module, which wrote to
 8003 — where the firmware never acknowledges a SET.)
 
@@ -80,9 +113,10 @@ compileSdk 35 · minSdk 30 · JVM 17.
 ### Build / install / run
 
 ```powershell
-.\gradlew assembleDebug          # build the debug APK
-.\gradlew installDebug           # build + install on a connected device
+normphone start                  # the Android emulator (or plug in a phone)
+normphone install                # build the debug app and install it (= .\gradlew installDebug)
 
+.\gradlew assembleDebug          # just build the debug APK
 .\gradlew lint                   # run Android lint
 ```
 
@@ -101,6 +135,8 @@ open the project in Android Studio and Run.
 ```powershell
 .\gradlew :protocol:test                                  # all protocol unit tests
 .\gradlew :protocol:test --tests "com.norm2hacked.protocol.PacketTest"   # a single class
+.\gradlew :app:testDebugUnitTest                         # the app's unit tests
+normtest                                                 # the Python tools' tests (~5 min)
 ```
 
 `:protocol` is pure JVM (no Android/BLE), so its tests run fast with no device.
@@ -113,10 +149,10 @@ The decompiled companion app (the source of truth for the protocol) lives in `NO
 
 ```powershell
 # Decompile (already done — output is NORM/)
-java -jar bin\apktool_3.0.2.jar d bin\NORM.apk -o NORM
+java -jar NORM\_apk\apktool_3.0.2.jar d NORM\_apk\NORM.apk -o NORM
 
 # Recompile after editing smali (produces NORM\dist\NORM.apk)
-java -jar bin\apktool_3.0.2.jar b NORM
+java -jar NORM\_apk\apktool_3.0.2.jar b NORM
 ```
 
 ---
@@ -124,10 +160,11 @@ java -jar bin\apktool_3.0.2.jar b NORM
 ## Quick reference
 
 ```powershell
-.\gradlew installDebug            # build + install the Android app
-.\gradlew :protocol:test          # run protocol tests
-.\gradlew lint                    # lint the app
-
-# ask the physical watch its battery level
-$env:PYTHONPATH = "tools/watchemu"; py -3.11 -m normwatch cmd 08 70 --payload 00 --mac 4C:59:80:12:44:F1
+uv tool install --editable .      # once: the five commands on your PATH
+normphone start                   # the Android emulator
+normphone install                 # build + install the Android app
+normwatch boot --live             # the watch's own firmware, in a window
+normcmd 08 70 --payload 00 --mac 4C:59:80:12:44:F1   # ask the physical watch its battery level
+normtest                          # the Python tests
+.\gradlew :protocol:test          # the protocol tests
 ```

@@ -67,7 +67,7 @@ real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and 
 puts them in a window as they arrive, with the mouse acting as a finger:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --live --no-trace
+normwatch boot --live --no-trace
 ```
 
 Click and drag on the window to touch the panel. `--screenshot out.png` still captures
@@ -144,21 +144,21 @@ optimisation tests use, since with the radio on there is much less idle time to 
 ## Running it
 
 ```bash
-py -3.11 -m pip install -r tools/watchemu/requirements.txt
+uv sync
 ```
 
 Then, from the repo root (Python 3.11 — the same interpreter the emulator BLE bridge uses):
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot
+normwatch boot
 ```
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
+normwatch info
 ```
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
+normwatch modules
 ```
 
 | Command | What it does |
@@ -170,7 +170,7 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
 
 Two switches put a radio behind the firmware's BLE stack: `--radio` (a bumble controller,
 alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's netsim
-endpoint on PORT — default 8877 — so `launch-emulator.ps1 -Watch` gives the AVD the
+endpoint on PORT — default 8877 — so `normphone start --watch` gives the AVD the
 emulated watch as its Bluetooth peer). `--netsim` paces the watch against the wall clock;
 `--hci-trace` logs every packet across the seam. See "A real stack behind the seam".
 
@@ -179,7 +179,7 @@ exists, saved at exit -- a closed window and Ctrl-C included. Bind the watch onc
 later run with the same file starts on the watch face, bonded:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --netsim --live --flash-state watch.zip
 ```
 
 `cmd` asks the firmware one question. It boots the watch, puts a bumble host on the same
@@ -188,7 +188,7 @@ air (on the radio's own loop -- no port, so it runs beside a live AVD), pairs, d
 frame and `[03]` to 8002, and prints everything that comes back, decoded:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --no-bind
+normcmd 08 70 --payload 00 --no-bind
 ```
 ```
    3.0s  phone: connected, paired, encrypted
@@ -205,8 +205,8 @@ boot animation being most of it; without, ~4s. So bind once into a state file an
 everything after it from there:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --flash-state bound.zip
+normcmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
+normcmd 03 70 --payload 06 --flash-state bound.zip
 ```
 
 `--flash-state` is read only for `cmd` unless `--save` is given, so probing never rewrites
@@ -219,7 +219,7 @@ nothing did, 2 the setup failed. The watch and the phone are `fw/phone.py`'s
 **`--mac MAC` asks the physical watch instead**, over this PC's own Bluetooth adapter:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
+normcmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
 ```
 
 Same flow, same frames, same decoder -- `physical.PhysicalPhone` is `Phone` over bleak,
@@ -240,7 +240,7 @@ second. See "Snapshots".
 ### The live window
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --live --scale 2 --no-trace
+normwatch boot --live --scale 2 --no-trace
 ```
 
 The emulator runs on a worker thread and Tk owns the main one; only the framebuffer and
@@ -284,7 +284,7 @@ no coverage), `--force-gestures` (see below), `--json`.
 ## How it is put together
 
 ```
-normwatch/fw/
+normplus/watch/fw/
   image.py        Ambiq image header: link address, payload, both CRCs
   machine.py      The machine: memory map, MMIO bus, run loop, exception delivery
   cortexm.py      ARMv7-M private peripheral block: SCB, SysTick, NVIC + exceptions
@@ -300,7 +300,7 @@ native/
   watchemu_hook.c The per-block timing hook, so the hot path never enters Python
   build.py        Finds MSVC and builds it; fasthook.py calls this on demand
 tests/            Each file is a standalone script -- run it directly:
-                  PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/<name>.py
+                  normtest <name>
 ```
 
 Memory map, per `docs/firmware.md` §4:
@@ -409,7 +409,7 @@ Guarded by `tests/test_exception_entry.py`, which reproduces it from the firmwar
 memcpy bytes:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_exception_entry.py
+normtest exception_entry
 ```
 
 ### Touch reaches the firmware, swipes do not reach the UI
@@ -460,7 +460,7 @@ coordinates (below) and the missing TE line was stretching the UI cycle to 153 m
 (below). Neither changes the outcome: with a 61 ms cycle the cancel simply lands more
 often. Suppressing that one `bic` is the only thing that does, and then all four
 directions work and open four different pages, so everything else on the path is sound.
-That is what `--force-gestures` does (`normwatch/fw/patches.py`), and it is off by
+That is what `--force-gestures` does (`normplus/watch/fw/patches.py`), and it is off by
 default because it is **not** what the shipped firmware does.
 
 ### The swipe killer is the low-power dialog, not the watch face
@@ -959,7 +959,7 @@ None of them is a bug in the watch; all of them are pinned by `tests/test_ble_li
   uses (five `LE_Encrypt` calls: c1 twice, s1 once).
 - An opcode bumble has no class for becomes a generic `HCI_Command`, and the dispatcher
   answers one of those with silence. `VirtualController` answers every command: vendor
-  opcodes get the Command Complete `norm_emu_bridge.py` already proved Android accepts,
+  opcodes get the Command Complete `normplus/phone/bridge.py` already proved Android accepts,
   everything else the Command Status a real controller gives (Unknown HCI Command).
 - `LocalLink.send_acl_data` stamps every LE data PDU with the sender's *random* address.
   The watch uses its public one, so every ATT response it sent arrived at the phone from
@@ -988,13 +988,13 @@ controller claims the bit; it is BR/EDR-only and changes nothing on the LE side.
 `asyncio.get_running_loop().call_soon` on the *sender's* loop, so controllers that are to
 hear each other must live on the same one. That is `Radio`: one thread, one loop, one
 link. `AndroidLink` serves the Android emulator's netsim endpoint on it (the transport is
-imported from `tools/emulator/netsim_transport.py`, which owns the fix for emulator 36.x's
+imported from `normplus.phone.netsim_transport`, which owns the fix for emulator 36.x's
 `packet` field) with a second `VirtualController` behind it -- the phone in the AVD and
 the watch in the emulator are two controllers on one piece of air.
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live     # the watch, on port 8877
-tools\emulator\launch-emulator.ps1 -Watch                                # the phone, pointed at it
+normwatch boot --netsim --live     # the watch, on port 8877
+normphone start --watch                                # the phone, pointed at it
 ```
 
 `--netsim` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
@@ -1175,7 +1175,7 @@ Two things that follow for the AVD:
   end does not hold that bond: a new state file, or after the physical watch.
 - **Restarting the watch means restarting the AVD.** The emulator's packet streamer does
   not reconnect to a new endpoint; the guest's HCI times out on `RESET` and a Bluetooth
-  toggle does not bring it back. `adb emu kill` and `launch-emulator.ps1 -Watch` again; the
+  toggle does not bring it back. `adb emu kill` and `normphone start --watch` again; the
   bond and `:app`'s data are on the guest's data partition and survive it.
 
 One more observation, for #48: on those reconnects Android logs `smp_link_encrypted: SMP
@@ -1437,8 +1437,8 @@ probe. `--save-state PATH` writes the whole machine at the end of a run; `--load
 starts the next run there instead of booting:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save-state ui.snap
-PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
+normwatch boot --seconds 9 --no-ble --save-state ui.snap
+normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 ```
 
 The second command is 0.47s from start to screenshot, the interpreter included, and draws
@@ -1512,7 +1512,7 @@ It is in the ordinary test loop (about a minute), so nothing has to remember to 
 After a change that is *meant* to move the watch, re-record and read the diff it prints:
 
 ```bash
-PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_golden.py --update
+normtest golden -- --update
 ```
 
 The fixture is a watch bound over BLE by `normwatch cmd ... --save`; rebuilding it gives
@@ -1727,7 +1727,7 @@ silently attributed to whichever unrelated neighbour owns the closest pool entry
 not hypothetical — it is why the low-power dialog was written up as
 `ui_notify_skipPairingConfirm_dlg.c` for a while, from a pool entry over a kilobyte away.
 
-`AssertMap` (`normwatch/fw/assertsites.py`) decodes the call sites instead. Every assert
+`AssertMap` (`normplus/watch/fw/assertsites.py`) decodes the call sites instead. Every assert
 in this firmware calls the handler at `0x000305B0` with `r0 = __FILE__`, `r1 = line`,
 `r2 = expression`, so reading back the `ADR` that set `r0` gives an exact fact: 467 sites
 across 106 modules, each certain, including `system_power_manager_task.c`,
@@ -1857,7 +1857,7 @@ still sees a normal command.
 Replies come back the same way but on DQ1/SO, so the bit lands in bit 1 of each nibble;
 the firmware's own un-packer at `0x000534EC` rebuilds a byte from bit 5 and bit 1 of four
 consecutive received bytes. A model that does not undo this sees opcode `0xEE` and
-answers nothing. `tools/watchemu/tests/test_spinand_expansion.py` pins the codec against
+answers nothing. `tools/tests/test_spinand_expansion.py` pins the codec against
 both firmware routines, transcribed instruction for instruction, over all 256 values.
 
 `0x6B` READ FROM CACHE x4 really is a four-lane data phase, so *its* payload is raw -
@@ -2017,7 +2017,7 @@ In the order to do them. All are on the kanban board (`/kanban`).
 6. **#51 — health records.** A fresh watch has no sport, sleep or HR records, so `:app`'s
    sync only runs its empty paths against it. Drive the modelled accelerometer so the
    firmware's own pedometer records steps.
-7. **#52 — script the AVD's stale-bond removal** for `launch-emulator.ps1 -Watch`.
+7. **#52 — script the AVD's stale-bond removal** for `normphone start --watch`.
 8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
 9. **#54 — `--idle-skip` loses one STIMER tick with the radio up**, once, between 225M
    and 250M.
@@ -2035,9 +2035,9 @@ lead with), and BLEIF → HCI through first-run setup (#25 and the bind).
 
 ## Relationship to the rest of the repo
 
-- `tools/emulator/` runs the **phone** side (Pixel 8 AVD) and bridges a real BT dongle to a
+- `normphone` (`tools/normplus/phone/`) runs the **phone** side (Pixel 8 AVD) and bridges a real BT dongle to a
   real watch. `watchemu` is the other end: no watch. They meet at `--netsim` /
-  `launch-emulator.ps1 -Watch`, where the AVD's Bluetooth is the emulated watch's radio.
-- `tools/firmware/image_tool.py` verifies and re-seals images; `watchemu`'s `image.py` is the
+  `normphone start --watch`, where the AVD's Bluetooth is the emulated watch's radio.
+- `normfw` (`tools/normplus/firmware/image_tool.py`) verifies and re-seals images; `watchemu`'s `image.py` is the
   loader's view of the same format and independently implements both CRCs.
 - `docs/firmware.md` is the analysis this is built on. It is worth reading first.
