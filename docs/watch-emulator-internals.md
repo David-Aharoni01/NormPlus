@@ -1410,8 +1410,20 @@ last thing it writes is NAND page 0.
 
 **The data is stop-and-wait, in 200-byte pieces.** Each 2 KB page goes as ten 200-byte
 pieces and a 48 (`OtaApolloCommand.addMiddleCommand`), each piece in 128-byte writes, and
-the watch answers every piece with `03 01 <01, or 02 at a page boundary> <bytes so far,
-LE32>`. Our Kotlin sends MTU-sized chunks to 1531 and waits every tenth.
+the watch answers every piece with `03 01 <01, or 02 at a page boundary, or 04 for the
+last piece> <bytes so far, LE32>`. Our Kotlin sends MTU-sized chunks to 1531 and waits every tenth.
+
+**A main-MCU update stages, then resets (#67).** The unmodified
+`Apollo3_P03B_NORM2_F0.2B01.bin` sent as type 1 (`tests/test_ota_mcu.py`; `--full` is ~15
+min, since the app sends this type in 20-byte writes) goes through the same responder: SET
+`02 01`, eight 128 KB blocks erased at the header's address `0x0FC00000`, the 365 pages
+programmed in place, the last piece answered `03 01 04 <total>`, CRC `04 01`, REBOOT
+`05 01`. Then the application copies the image's 44-byte header from staging into internal
+flash at `0x0001E000` and asks for a system reset, and the run stops there (`StopReason`
+"reset"): on the watch the next thing to run is the first-stage bootloader, which is not
+in the image. So the staging half is proven and the copy is not -- `docs/firmware.md` §5
+has the exact state the bootloader is handed. The test pins it, and marks a page just past
+the 1 MB to show the erase stops where the firmware says.
 
 **The NAND model had never been written to.** The driver sends a PROGRAM LOAD as two MSPI
 transfers -- opcode and column (`02 00 00`), then the 2048 bytes on their own (PIO,

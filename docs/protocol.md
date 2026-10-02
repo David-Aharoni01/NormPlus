@@ -71,11 +71,26 @@ A reply is `[command][status][...]`; status `01` is success, anything else is fa
    survives, so it can be re-sent).
 5. Data → 1532 in **200-byte pieces** (each 2 KB page as ten 200s and a 48; the rest in
    200s), each written in 128-byte (type 4) or 20-byte writes. **Every piece** is answered
-   `03 01 01|02 <bytes so far LE32>`; `02` marks a completed page, programmed in place.
+   `03 01 01|02|04 <bytes so far LE32>`; `02` marks a completed page, programmed in place,
+   and `04` the piece that ends the image on a short page.
 6. CRC `[04]` → `04 01`. CRC-16/CCITT init `0xFFFF` as `[lo, hi, 0, 0]` (`OtaUtil`),
    over the content -- accepted by the firmware.
 7. REBOOT `[05]` → `05 01`. For a resource update the watch does **not** reset; it shows
    "Upgrade Success". It erases and programs NAND page 0 at the end (a record).
+
+**A main-MCU update (type 1) is the same conversation, staged** (rehearsed with the
+unmodified `Apollo3_P03B_NORM2_F0.2B01.bin` against the emulated watch, #67,
+`tests/test_ota_mcu.py`; not run on the physical watch). Its SET header is
+`02 01 00 00 c0 0f c0 66 0b 00 79 19 00 00 0a`. The SET handler takes the address from
+the header -- the file's own first four bytes, `0x0FC00000`; the constant is nowhere in
+the firmware -- and the OTA task erases eight 128 KB blocks from it, 1 MB of staging. The
+data goes as 4013 pieces in **20-byte writes** (`OtaApolloCommand.create`: `0x80` is for the
+picture type only), each page programmed in place, the last piece answered
+`03 01 04 <total>`. CRC `04 01`, REBOOT `05 01` -- and then the watch **resets**. Before
+resetting it reads the image's 44-byte header back from staging, checks it, and programs it
+into internal flash at `0x0001E000`; what runs after the reset is the first-stage bootloader,
+which is not in the image and which the emulator therefore cannot run. The full staged
+result is in `docs/firmware.md` §5.
 
 **Do not start one during the first ~10 s after the watch boots.** An OTA screen opened over
 the boot animation sends the UI task into unbounded recursion in the notify / window

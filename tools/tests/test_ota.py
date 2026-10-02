@@ -169,8 +169,10 @@ def test_each_piece_is_answered_with_the_running_count():
     for i, (piece, reply) in enumerate(zip(ota_pieces(CONTENT), r["pieces"])):
         total += len(piece)
         assert reply is not None, f"no answer to piece {i}"
-        page_done = total % 2048 == 0
-        assert reply[:3] == bytes([0x03, 0x01, 0x02 if page_done else 0x01]), (i, reply.hex(" "))
+        # 02 when a page completes; 04 for the piece that ends the blob on a short
+        # page (the OTA task's events 0x20 and 0x40, 0x0005A46C / 0x0005A4BE).
+        flag = 0x04 if total == len(CONTENT) else 0x02 if total % 2048 == 0 else 0x01
+        assert reply[:3] == bytes([0x03, 0x01, flag]), (i, reply.hex(" "))
         assert int.from_bytes(reply[3:7], "little") == total, (i, reply.hex(" "))
 
 

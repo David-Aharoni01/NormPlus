@@ -215,6 +215,7 @@ eight-bit indices.
 
 ```
 internal flash  0x00000000 – 0x0001FFFF   bootloader + config (128 KB reserved)
+                0x0001E000                a type-1 update's record: the image header (§5, #67)
                 0x00020000 – 0x000D6693   application (747,156 B)
                                           (Apollo3 Blue flash ends at 0x000FFFFF)
 SRAM            0x10000000 – 0x1005FFFF   384 KB, stack top 0x1005FA50
@@ -250,6 +251,43 @@ you would be replacing.** A custom image that fails to boot, or boots but doesn'
 Whether the first-stage bootloader has its own independent recovery (re-checking the staged
 NAND image, or a GPIO-forced entry) is **unknown** — the header's OverrideGPIO field is
 0xFFFFFFFF, i.e. disabled, which is not encouraging.
+
+### What the application hands the bootloader (#67)
+
+Rehearsed by sending the unmodified image as update type 1 to the emulated watch
+(`tools/tests/test_ota_mcu.py`, `normtest ota_mcu -- --full`, ~15 min). Every step is
+accepted, and when REBOOT has been answered this is the state of the watch:
+
+```
+SPI NAND  0x0FC00000-0x0FCB66BF  file[4:], byte for byte: the 44-byte header, then the
+                                 0xB6694-byte payload, in 365 pages. The last page is
+                                 programmed whole from a buffer that is not cleared, so
+                                 past the image it holds page 363's bytes at the same
+                                 offsets -- not 0xFF
+          0x0FCB6800-0x0FCFFFFF  erased: the rest of the eight 128 KB blocks the SET
+                                 erased (0x0005A292); nothing outside them is touched
+internal  0x0001E000-0x0001E02B  file[4:0x30] -- link 0x00020000, staging 0x0FC00000,
+flash                            length 0xB6694, image CRC 0xD392D741, SP, reset vector --
+                                 read back from staging, checked and programmed there by
+                                 the OTA task on REBOOT (0x0005A538-0x0005A59C); the rest
+                                 of that 8 KB page erased. No other internal-flash write.
+CPU       SYSRESETREQ            the application resets; on the watch the bootloader runs
+```
+
+The checks the task makes on that header before writing it: the staging address below
+`0x10000000`, the length at most 1 MB, the word at +0x28 equal to 1, and the reset vector
+at or above the link address and below link + 4 x length (a loose bound, as written).
+Fail one and the record is not written; a status routine is called with 5 instead
+(`0x0005A588`). A patched image keeps every one of these fields, so it passes them.
+
+**This is where the rehearsal stops.** The bootloader in the low 128 KB is not in the OTA
+image, and #66 found its low ~32-48 KB read-protected over 0xEE, so the emulator has nothing
+to run after the reset -- the copy from NAND into internal flash at `0x00020000`, whatever it
+checks, and what it does with the record at `0x0001E000` (clear it? keep it?) are the one
+part of a main-firmware update that cannot be rehearsed. (The stale bytes past the image in
+the last staged page are harmless if it copies the header's length, which is also exactly what
+the image CRC covers; whether it copies whole pages instead is not known.) That page *is* above the protected
+region, so on the physical watch 0xEE can read it before and after an update, read-only.
 
 ---
 
@@ -484,7 +522,7 @@ weather), the ROI is much better here and the risk is zero.
 | The image is the build actually on the watch | **Likely, unconfirmed.** Watch reports `A0.2…B01`; the asset is `F0.2B01` with internal `A0.2R0.1T1.1H0.5B0.1` — the Apollo component matches. Confirm with `DEVICE_VERSION`, which currently times out (open bug) |
 | Re-seal a patched image so it validates | **Have.** §7 + `normfw` (`tools/normplus/firmware/image_tool.py`) |
 | Transport CRC-16 | **Have.** `ApolloOta.crc`, byte-verified against the smali, and accepted by the firmware (`04 01`) |
-| A wire implementation of the OTA | **Have, verified against the emulated watch.** `ApolloOtaSession` (`protocol/.../ota/ApolloOta.kt`, #56) replaced the never-run `ApolloOtaProtocol.kt`; a full resource update from `:app` in the AVD went through. Not yet run on the physical watch (#13) |
+| A wire implementation of the OTA | **Have, verified against the emulated watch.** `ApolloOtaSession` (`protocol/.../ota/ApolloOta.kt`, #56) replaced the never-run `ApolloOtaProtocol.kt`; a full resource update from `:app` in the AVD went through. A main-MCU (type 1) update of the unmodified image is rehearsed against the emulated watch up to the reset (#67, §5); the bootloader's copy cannot be. Not yet run on the physical watch (#13, #70) |
 | Understanding of the code well enough to patch it meaningfully | **Not yet.** 130 source filenames recovered, but no disassembly has been done. Nobody has opened it in Ghidra |
 | A recovery path if a flash goes wrong | **None known.** Per §5 the OTA responder lives in the image being replaced; SWD status unknown |
 | A spare device | **No** |

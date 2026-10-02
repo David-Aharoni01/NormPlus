@@ -30,12 +30,15 @@ class ApolloOtaTest {
 
     private fun hex(b: ByteArray) = b.joinToString(" ") { "%02x".format(it) }
 
-    private val resources: ByteArray by lazy {
+    private fun asset(name: String): ByteArray {
         var dir: File? = File(".").absoluteFile
         while (dir != null && !File(dir, "NORM/assets").isDirectory) dir = dir.parentFile
-        File(dir ?: error("NORM/assets not found above the working directory"),
-            "NORM/assets/Picture_P03B_NORM2_0.4.bin").readBytes()
+        return File(dir ?: error("NORM/assets not found above the working directory"),
+            "NORM/assets/$name").readBytes()
     }
+
+    private val resources: ByteArray by lazy { asset("Picture_P03B_NORM2_0.4.bin") }
+    private val firmware: ByteArray by lazy { asset("Apollo3_P03B_NORM2_F0.2B01.bin") }
 
     // -- the frames -----------------------------------------------------------------
 
@@ -47,6 +50,20 @@ class ApolloOtaTest {
             hex(ApolloOta.setHeader(ApolloOta.TYPE_PICTURE_LANGUAGE, image.address, image.content)))
         assertEquals("a3 8c 00 00", hex(ApolloOta.crc(image.content)))
         assertEquals("01 02 22 06 00", hex(ApolloOta.init(image.content)))
+    }
+
+    @Test
+    fun `the frames for the main firmware are the ones the firmware accepted`() {
+        // tools/tests/test_ota_mcu.py: SET 02 01, every piece, CRC 04 01, REBOOT 05 01,
+        // the image staged at 0x0FC00000 unchanged.
+        val image = OtaImage.parse(firmware)
+        assertEquals(ApolloOta.TYPE_APOLLO, ApolloOta.updateTypeFor("Apollo3_P03B_NORM2_F0.2B01.bin"))
+        assertEquals("00 00 c0 0f", hex(image.address))                     // 0x0FC00000
+        assertEquals("02 01 00 00 c0 0f c0 66 0b 00 79 19 00 00 0a",
+            hex(ApolloOta.setHeader(ApolloOta.TYPE_APOLLO, image.address, image.content)))
+        assertEquals("01 c0 66 0b 00", hex(ApolloOta.init(image.content)))
+        assertEquals(4013, ApolloOta.pieces(image.content).size)
+        assertEquals(0x14, ApolloOta.writeSize(ApolloOta.TYPE_APOLLO))
     }
 
     @Test
@@ -130,7 +147,10 @@ class ApolloOtaTest {
         val fw = FakeFirmware()
         assertContains(assertFailsWith<OtaException> { run(fw, type = 1) }.message!!, "Main-firmware")
         assertEquals(0, fw.control.size)
-        assertEquals(OtaStep.DONE, run(FakeFirmware(), type = 1, allowMcu = true).last().step)
+        val allowed = FakeFirmware()
+        assertEquals(OtaStep.DONE, run(allowed, type = 1, allowMcu = true).last().step)
+        assertEquals(1, allowed.control[2][1].toInt())
+        assertTrue(allowed.dataWrites.all { it <= 0x14 }, "a type-1 data write over 20 bytes")
     }
 
     @Test

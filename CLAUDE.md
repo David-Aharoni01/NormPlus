@@ -433,8 +433,10 @@ watch, re-record with `test_golden.py --update` and read the diff it prints.
   the watch without its UI until it is re-sent (the OTA code survives in internal flash).
 - **Not within ~10s of the watch booting** -- an update opened over the boot animation
   overflows the UI task's stack (#57).
-- Anything new is rehearsed against the emulated watch first (`tests/test_ota.py`, then
-  `:app` through `normphone start --watch`), and only then on the physical watch.
+- Anything new is rehearsed against the emulated watch first (`tests/test_ota.py`, and
+  `tests/test_ota_mcu.py` for a main-MCU image, then `:app` through `normphone start
+  --watch`), and only then on the physical watch. A type-1 rehearsal ends at the watch's
+  reset: the bootloader's copy that follows cannot be emulated (`docs/firmware.md` §5).
 
 ## Git
 

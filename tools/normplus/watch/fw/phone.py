@@ -125,13 +125,23 @@ OTA_BT_PARAM = bytes([0x10, 0x02])
 #: The update types the firmware's SET handler accepts (0x0003B8A8): it stores
 #: a slot for each of 1-4 and answers anything else [02 00]. 4 is the resource
 #: partition -- cn.appscomm.bluetooth.ota's UPDATE_TYPE_PICTURE_LANGUAGE. The
-#: 8 in cn.appscomm.ota's getUpdateType ("Picture...") is refused.
+#: 8 in cn.appscomm.ota's getUpdateType ("Picture...") is refused. 1 is the main
+#: MCU: staged in NAND at the SET header's address (0x0FC00000 for the vendor
+#: image), eight 128 KB blocks erased first, and REBOOT resets the watch into
+#: the bootloader (tests/test_ota_mcu.py).
 OTA_TYPE_MCU, OTA_TYPE_TOUCH, OTA_TYPE_HEART_RATE, OTA_TYPE_RESOURCES = 1, 2, 3, 4
 #: The last byte of the SET header (PACKAGE_COUNT).
 OTA_PACKAGE_COUNT = 0x0A
 #: The app's write size for the resource type (OtaApolloCommand.create:
 #: 0x80 for type 8 there, 0x14 otherwise); needs an ATT MTU of at least 131.
 OTA_WRITE_SIZE = 0x80
+#: ...and for every other type, the main MCU's included.
+OTA_WRITE_SIZE_OTHER = 0x14
+
+
+def ota_write_size(update_type: int) -> int:
+    """Bytes per data write for *update_type*, as ``ApolloOta.writeSize``."""
+    return OTA_WRITE_SIZE if update_type == OTA_TYPE_RESOURCES else OTA_WRITE_SIZE_OTHER
 
 
 def apollo_crc(data: bytes) -> bytes:
@@ -620,10 +630,12 @@ class Phone(Conversation):
         await self.peer.write_value(self.dfu["1531"], data, with_response=False)
         return await self._dfu_reply(timeout)
 
-    async def dfu_piece(self, piece: bytes, *, timeout: float = 5.0) -> Optional[bytes]:
-        """One data piece to 0x1532, in OTA_WRITE_SIZE writes; the watch's answer."""
-        for at in range(0, len(piece), OTA_WRITE_SIZE):
-            await self.peer.write_value(self.dfu["1532"], piece[at:at + OTA_WRITE_SIZE],
+    async def dfu_piece(self, piece: bytes, *, timeout: float = 5.0,
+                        write_size: int = OTA_WRITE_SIZE) -> Optional[bytes]:
+        """One data piece to 0x1532, in *write_size* writes (``ota_write_size``
+        for the update's type); the watch's answer."""
+        for at in range(0, len(piece), write_size):
+            await self.peer.write_value(self.dfu["1532"], piece[at:at + write_size],
                                         with_response=False)
         return await self._dfu_reply(timeout)
 
