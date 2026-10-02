@@ -3,6 +3,7 @@
     py -3.11 -m normwatch info  NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
     py -3.11 -m normwatch boot  NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
     py -3.11 -m normwatch modules NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
+    py -3.11 -m normwatch cmd   08 70 --payload 00
 """
 
 from __future__ import annotations
@@ -60,6 +61,132 @@ def cmd_modules(args) -> int:
         print(f"  {module}")
     return 0
 
+
+def cmd_command(args) -> int:
+    """Boot the watch, connect a phone the way the app does, send one frame.
+
+    The phone is a bumble host on the radio's own loop (``phone.Phone.on_air``),
+    so no port is opened and this runs beside a live AVD. It pairs, and --
+    unless told not to -- does what BindWatchUseCase does: checkInit, and the
+    bind only if the watch says it is not initialised. Then the frame, the
+    [03] trigger, and every notification that comes back, decoded.
+
+    Exit status: 0 a reply came, 1 nothing came back, 2 the setup failed.
+    """
+    import asyncio
+    import time
+
+    from .fw.phone import (BIND_END, BIND_START, DATETIME, Deframer, EmulatedWatch,
+                           ack, action_byte, command_byte, describe, frame)
+
+    try:
+        code = command_byte(args.cmd_code)
+        action = action_byte(args.action)
+        payload = bytes.fromhex(args.payload) if args.payload else b""
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    packet = frame(code, action, payload)
+
+    state = Path(args.flash_state) if args.flash_state else None
+    if args.save and state is None:
+        print("error: --save needs --flash-state PATH", file=sys.stderr)
+        return 2
+    if state is not None and not state.exists() and not args.save:
+        print(f"error: no flash state at {state} (add --save to create it)", file=sys.stderr)
+        return 2
+
+    t0 = time.monotonic()
+
+    def say(text: str) -> None:
+        print(f"{time.monotonic() - t0:6.1f}s  {text}", flush=True)
+
+    try:
+        watch = EmulatedWatch(args.image, args.resources, address=args.address,
+                              flash_state=state if state is not None and state.exists() else None)
+    except flashstate.FlashStateMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if state is not None and state.exists():
+        say(f"watch: started from {state}")
+    watch.start()
+    result = {"replies": [], "failed": None}
+
+    async def flow(phone) -> None:
+        if not await phone.find(args.address):
+            result["failed"] = f"{args.address} was never heard advertising"
+            return
+        await phone.connect(args.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        say(f"phone: connected, paired, {'encrypted' if phone.encrypted else 'NOT encrypted'}")
+        if not args.no_bind:
+            init = await phone.check_init()
+            if init == 1:
+                say("watch: initialised (checkInit 1), not binding")
+            elif init == 0:
+                say("watch: in first-run setup (checkInit 0); binding once the setup screen is up")
+                if not await watch.past_boot_animation(timeout=90):
+                    result["failed"] = "the setup screen never came up"
+                    return
+                bound = await phone.bind()
+                expected = [ack(BIND_START), ack(DATETIME), ack(BIND_END)]
+                if list(bound.values()) != expected:
+                    got = ", ".join((r or b"").hex(" ") or "nothing" for r in bound.values())
+                    result["failed"] = f"the bind was not acknowledged: {got}"
+                    return
+                # Acknowledged is not done: the firmware writes its init flag
+                # (0xFA000) when the "Pairing Success" dialog closes, about two
+                # seconds after bindEnd. Until then checkInit still reads 0, and
+                # a --save taken now would keep an unbound watch.
+                for _ in range(30):
+                    await asyncio.sleep(0.5)
+                    if await phone.check_init() == 1:
+                        break
+                else:
+                    result["failed"] = ("the bind was acknowledged but the watch never "
+                                        "reported itself initialised")
+                    return
+                say("watch: bound (bind acknowledged, checkInit now 1)")
+            else:
+                result["failed"] = "checkInit got no answer"
+                return
+        phone.clear()
+        say(f"-> {args.char}  {packet.hex(' ')}    {describe(packet)}")
+        await phone.send(packet, char=args.char, trigger=not args.no_trigger)
+        result["replies"] = await phone.replies(timeout=args.timeout)
+        await phone.disconnect()
+
+    try:
+        watch.drive(flow, timeout=args.timeout + 150)
+    except Exception as exc:  # noqa: BLE001 - reported, and the watch still stops
+        result["failed"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        # Not after a failed setup: a half-done bind is not a state worth keeping.
+        keep = args.save and not result["failed"]
+        saved = watch.stop(save_to=state if keep else None)
+
+    status = 0
+    if result["failed"]:
+        say(f"failed: {result['failed']}")
+        status = 2
+    else:
+        deframers, whole = {}, 0
+        for char, value in result["replies"]:
+            say(f"<- {char}  {value.hex(' ')}")
+            for done in deframers.setdefault(char, Deframer()).feed(value):
+                whole += 1
+                say(f"         = {describe(done)}")
+        if not whole:
+            say(f"no reply within {args.timeout:g}s"
+                + (" (a SET written to 8003 is never acknowledged)"
+                   if args.char == "8003" and action == 0x71 else ""))
+            status = 1
+    if args.save:
+        say(f"watch: flash saved to {state}" if keep and saved
+            else "watch: flash NOT saved")
+    return status
 
 #: Keys 1-5 in the live window drive the GPIO pins the firmware enables interrupts
 #: on (2, 3, 10, 16, 38), minus 28 which is the touch panel. Pin 3 is the button:
@@ -466,6 +593,41 @@ def main(argv=None) -> int:
                              "Refuses a file saved against another image.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
+
+    p_cmd = sub.add_parser(
+        "cmd", help="boot the watch, connect a phone the way the app does, send one "
+                    "0x6F command and print every reply")
+    p_cmd.add_argument("cmd_code", metavar="CMD",
+                       help="command byte in hex (08) or a CommandCode name (BATTERY_POWER)")
+    p_cmd.add_argument("action", metavar="ACTION",
+                       help="action byte in hex (70, 71) or an Action name (CHECK, SET)")
+    p_cmd.add_argument("--payload", default="", metavar="HEX",
+                       help="payload in hex, e.g. 00 or '0a 0b'. A CHECK needs its one "
+                            "byte: the watch ignores one without it")
+    p_cmd.add_argument("--char", choices=["8001", "8003"], default="8001",
+                       help="the characteristic to write: 8001 is what the companion app "
+                            "and :app use (SETs are acknowledged), 8003 is what "
+                            "normlink-cli uses (SETs never are). Default 8001")
+    p_cmd.add_argument("--no-trigger", action="store_true",
+                       help="do not write [03] to 8002 after the frame")
+    p_cmd.add_argument("--no-bind", action="store_true",
+                       help="skip checkInit and the bind: ask the watch as first-run "
+                            "setup leaves it")
+    p_cmd.add_argument("--timeout", type=float, default=5.0, metavar="S",
+                       help="seconds to wait for replies (default 5)")
+    p_cmd.add_argument("--flash-state", metavar="PATH", default=None,
+                       help="start from this saved flash (see boot --flash-state). Read "
+                            "only: probing never rewrites it unless --save is given")
+    p_cmd.add_argument("--save", action="store_true",
+                       help="write the flash back to --flash-state at exit, creating it -- "
+                            "the bind, this phone's bond, and whatever the command changed")
+    p_cmd.add_argument("--image", default=str(DEFAULT_IMAGE),
+                       help=f"firmware .bin (default: {DEFAULT_IMAGE})")
+    p_cmd.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                       help="resource blob loaded into the emulated NAND")
+    p_cmd.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
+                       help="the watch's BD address (default: the physical watch's)")
+    p_cmd.set_defaults(func=cmd_command)
 
     args = parser.parse_args(argv)
     if getattr(args, "seconds", None):

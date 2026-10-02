@@ -166,6 +166,7 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
 | `info` | Parses the Ambiq image header, checks both CRCs, prints the vector table |
 | `modules` | Lists the source files recovered from the firmware's `assert()` strings |
 | `boot` | Runs the firmware and prints a triage report |
+| `cmd` | Boots the watch, connects a phone the way the app does, sends one 0x6F command, prints every reply |
 
 Two switches put a radio behind the firmware's BLE stack: `--radio` (a bumble controller,
 alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's netsim
@@ -180,6 +181,39 @@ later run with the same file starts on the watch face, bonded:
 ```bash
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
 ```
+
+`cmd` asks the firmware one question. It boots the watch, puts a bumble host on the same
+air (on the radio's own loop -- no port, so it runs beside a live AVD), pairs, does what
+`BindWatchUseCase` does (checkInit, and the bind only if the watch says 0), writes the
+frame and `[03]` to 8002, and prints everything that comes back, decoded:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --no-bind
+```
+```
+   3.0s  phone: connected, paired, encrypted
+   3.0s  -> 8001  6f 08 70 01 00 00 8f    0x08 BATTERY_POWER CHECK [00]
+   3.5s  <- 8002  6f 08 80 01 00 4d 8f
+   3.5s           = 0x08 BATTERY_POWER CHECK_RESPONSE [4d]
+```
+
+Commands and actions take hex or `:protocol`'s names (`DEVICE_VERSION CHECK`); command
+names are read from `CommandCode.kt`. `--char 8003` writes where `normlink-cli` does,
+`--no-trigger` leaves out the `[03]`, `--no-bind` asks the watch as first-run setup leaves
+it. With the bind it takes ~22s, the boot animation being most of it; without, ~4s. So
+bind once into a state file and ask everything after it from there:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --flash-state bound.zip
+```
+
+`--flash-state` is read only for `cmd` unless `--save` is given, so probing never rewrites
+an AVD's state file. "Bound" means checkInit reads 1, not that bindEnd was acknowledged:
+the firmware writes its init flag when the "Pairing Success" dialog closes, two seconds
+later, and a state saved before then is an unbound watch. Exit status: 0 a reply came, 1
+nothing did, 2 the setup failed. The watch and the phone are `fw/phone.py`'s
+`EmulatedWatch` and `Phone`, which `tests/test_ble_end_to_end.py` uses too.
 
 ### The live window
 
@@ -1777,10 +1811,9 @@ In the order to do them. All are on the kanban board (`/kanban`).
 
 1. ~~**#41 — persist flash**~~ -- done: `--flash-state PATH`, see "The watch keeps what it
    writes". It also closed a ninth bumble gap (the firmware was never asked for its key).
-2. **#49 — `normwatch cmd`**, a one-shot command harness: boot, bond, bind, write one
-   0x6F packet to 8001 (or 8003), print what comes back. Today the only way to ask the
-   firmware a question is to copy-edit the e2e test. This is what makes the emulator
-   the first place to answer a protocol question rather than the last.
+2. ~~**#49 — `normwatch cmd`**~~ -- done: one 0x6F question in ~4s from a bound state
+   file, see "Running it". Its first answers: `DEVICE_VERSION CHECK [06]` is refused
+   (status 1) on a bound watch as on an unbound one, and gets silence over 8003.
 3. **#46 — snapshot and restore** a booted machine, so the 19s / 52s above become
    sub-second. The biggest iteration win left; composes with #41.
 4. **#47 — golden-fingerprint test.** The equivalence checks that gate every

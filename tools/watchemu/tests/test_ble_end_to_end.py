@@ -60,31 +60,29 @@ is answering it in real time. Runs in about 100 seconds: the bind has to wait
 for the boot animation, since the pairing dialog needs the setup screen to
 open on top of, and the restart is a second boot.
 
+The watch and the phone are ``normwatch.fw.phone``'s ``EmulatedWatch`` and
+``Phone`` -- the same code ``normwatch cmd`` runs -- with the phone going
+through the netsim endpoint, which is the path the AVD takes.
+
 Run with:  PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_ble_end_to_end.py
 """
 import asyncio
 import hashlib
 import sys
 import tempfile
-import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from normwatch.fw import flashstate
-from normwatch.fw import image as image_mod
-from normwatch.fw.blelink import (OPCODE_LE_ENCRYPT, OPCODE_LE_GENERATE_DHKEY,
-                                  AndroidLink, BumbleController, Radio)
-from normwatch.fw.devices import (attach_ble_controller, attach_motion_sensor,
-                                  attach_mspi_devices, attach_pmu,
-                                  attach_touch_panel)
-from normwatch.fw.machine import Apollo3Machine
+from normwatch.fw.blelink import OPCODE_LE_ENCRYPT, OPCODE_LE_GENERATE_DHKEY
+from normwatch.fw.phone import (BOOT_ANIMATION_FRAMES, CHECK, SET, WATCH,
+                                EmulatedWatch, datetime_payload, frame)
 
 REPO = Path(__file__).resolve().parents[3]
 IMAGE = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
 RESOURCES = REPO / "NORM/assets/Picture_P03B_NORM2_0.4.bin"
 
-WATCH = "4C:59:80:12:44:F1"
 #: Not the bridge's 8877, so this can run beside a live Android emulator.
 PORT = 8898
 #: Watch time the run may take; the host is done long before.
@@ -109,23 +107,18 @@ CHECK_INIT = bytes.fromhex("6f94700100008f")
 #: The generic acknowledgement: [6F][01 RESPONSE][81 SET_RESPONSE][02 00][cmd][status][8F].
 def ack(cmd: int, status: int = 0) -> bytes:
     return bytes([0x6F, 0x01, 0x81, 0x02, 0x00, cmd, status, 0x8F])
-#: The boot animation is 134 frames; the first-run setup screen is what the
-#: panel draws after it, and the pairing dialog opens on top of that.
-BOOT_ANIMATION_FRAMES = 134
+#: The clock the bind sets, as a time rather than bytes.
+BIND_TIME = datetime(2026, 9, 16, 8, 3, 0, tzinfo=timezone(timedelta(hours=3)))
 
 _result = None
 _restarted = None
-
-
-def quiet(*a, **k):
-    pass
 
 
 def run_once():
     """Boot, pair, query and bind; cached."""
     global _result
     if _result is None:
-        _result = boot_with_a_phone(phone)
+        _result = boot_with_a_phone(first_run)
     return _result
 
 
@@ -138,61 +131,33 @@ def run_restarted():
         if first.get("keystore") is None or not STATE.exists():
             _restarted = {"error": "the first run left no bond or no flash state"}
         else:
-            _restarted = boot_with_a_phone(
-                lambda outcome, machine, display: phone_again(
-                    outcome, machine, display, first["keystore"]),
-                flash_state=STATE)
+            _restarted = boot_with_a_phone(again, flash_state=STATE,
+                                           keystore=first["keystore"])
     return _restarted
 
 
-def boot_with_a_phone(phone_flow, *, flash_state=None):
-    """Boot the watch on a thread and drive it from a bumble host.
+def boot_with_a_phone(flow, *, flash_state=None, keystore=None):
+    """Boot the watch, run ``flow(phone, watch, outcome)`` against it over netsim.
 
     With *flash_state* the watch starts from that saved flash. Either way its
     flash is saved to STATE once the CPU has stopped.
     """
-    img = image_mod.load(IMAGE)
-    m = Apollo3Machine(img, log=quiet, trace=None, fast_hook=True, ble=True,
-                       realtime=True)
-    devices = attach_mspi_devices(m, resource_blob=RESOURCES, log=quiet)
-    if flash_state is not None:
-        flashstate.load(flash_state, m, devices["nand"], log=quiet)
-    attach_touch_panel(m, log=quiet)
-    attach_motion_sensor(m, log=quiet)
-    attach_pmu(m, log=quiet)
-    radio = Radio()
-    controller = attach_ble_controller(
-        m, BumbleController(WATCH, radio=radio, log=quiet), log=quiet)
-    android = AndroidLink(radio, PORT, log=quiet)
-
-    stats = {}
-
-    def worker():
-        stats["run"] = m.run(max_instructions=BUDGET_SECONDS * 48_000_000,
-                             slice_size=4_000_000)
-
-    thread = threading.Thread(target=worker, name="watch-cpu", daemon=True)
-    thread.start()
+    watch = EmulatedWatch(IMAGE, RESOURCES, address=WATCH, flash_state=flash_state,
+                          netsim_port=PORT)
+    watch.start(seconds=BUDGET_SECONDS)
     outcome = {}
     try:
-        asyncio.run(asyncio.wait_for(phone_flow(outcome, m, devices["display"]),
-                                     PHONE_TIMEOUT_S))
+        watch.drive(lambda phone: flow(phone, watch, outcome),
+                    timeout=PHONE_TIMEOUT_S, keystore=keystore)
     except Exception as exc:  # noqa: BLE001 - the tests report it
         outcome["error"] = f"{type(exc).__name__}: {exc}"
     finally:
-        m.stop_requested = True
-        thread.join(timeout=60)
-        android.close()
-        radio.close()
-    # Only once the CPU has stopped: a save taken while it runs can catch a
-    # page between its erase and its program.
-    if thread.is_alive():
+        stopped = watch.stop(save_to=STATE)
+    if not stopped:
         outcome.setdefault("error", "the watch's CPU did not stop")
-    else:
-        flashstate.save(STATE, m, devices["nand"])
-    outcome["machine"] = m
-    outcome["controller"] = controller
-    outcome["stats"] = stats.get("run")
+    outcome["machine"] = watch.machine
+    outcome["controller"] = watch.controller
+    outcome["stats"] = watch.stats
     return outcome
 
 
@@ -200,216 +165,91 @@ def fingerprint(display) -> str:
     return hashlib.md5(bytes(display.framebuffer)).hexdigest()[:12]
 
 
-async def phone(outcome: dict, machine, display) -> None:
-    from bumble.device import Device, Peer
-    from bumble.hci import Address
-    from bumble.pairing import PairingConfig, PairingDelegate
-    from bumble.transport import open_transport
+async def settled_screen(display, *, unlike=None) -> str:
+    """The screen once it has held for three seconds (and differs from *unlike*).
 
-    async with await open_transport(f"android-netsim:localhost:{PORT}") as (src, sink):
-        device = Device.with_hci("phone", Address("F0:F1:F2:F3:F4:F5"), src, sink)
-        await device.power_on()
-
-        # Scan until the watch shows up (its radio is up at ~0.1s of watch time).
-        seen = {}
-        device.on("advertisement", lambda adv: seen.setdefault(
-            str(adv.address), (adv.data.get(0x09), bytes(adv.data_bytes))))
-        await device.start_scanning(legacy=True)
-        for _ in range(100):
-            if any(a.startswith(WATCH) for a in seen):
-                break
-            await asyncio.sleep(0.1)
-        await device.stop_scanning()
-        outcome["seen"] = seen
-        if not any(a.startswith(WATCH) for a in seen):
-            return
-
-        device.pairing_config_factory = lambda conn: PairingConfig(
-            sc=True, mitm=False, bonding=True,
-            delegate=PairingDelegate(io_capability=PairingDelegate.NO_OUTPUT_NO_INPUT))
-        connection = await device.connect(f"{WATCH}/P", timeout=10)
-        outcome["connected"] = True
-        await asyncio.wait_for(connection.pair(), 20)
-        outcome["encrypted"] = connection.is_encrypted
-        # The phone's half of the bond, for the restart.
-        outcome["keystore"] = device.keystore
-
-        peer = Peer(connection)
-        await asyncio.wait_for(peer.discover_all(), 30)
-        outcome["services"] = {
-            str(s.uuid)[-4:]: [str(c.uuid)[-4:] for c in s.characteristics]
-            for s in peer.services}
-
-        main = next(s for s in peer.services if str(s.uuid).endswith("6006"))
-        char = {str(c.uuid)[-4:]: c for c in main.characteristics}
-        replies = []
-        got = asyncio.get_running_loop().create_future()
-
-        def on_notify(value):
-            replies.append(bytes(value))
-            if not got.done():
-                got.set_result(bytes(value))
-
-        await peer.subscribe(char["8002"], on_notify)
-        await peer.subscribe(char["8004"], on_notify)
-        # What normlink-cli does: the frame to 8003, then [03] to 8002 to make
-        # the watch process it, then the answer arrives as a notification.
-        await peer.write_value(char["8003"], BATTERY_CHECK, with_response=True)
-        await peer.write_value(char["8002"], b"\x03", with_response=False)
-        try:
-            await asyncio.wait_for(got, 10)
-        except asyncio.TimeoutError:
-            pass
-        outcome["replies"] = replies
-
-        # -- the bind ----------------------------------------------------------
-        # The pairing dialog opens on top of the setup screen, so wait for the
-        # boot animation to finish and the setup screen to be drawn -- and
-        # then for the emulator to catch up with the wall clock. Drawing that
-        # screen puts the watch behind real time, and while it is behind, the
-        # firmware's few-millisecond window between handing over a reply and
-        # clearing its command buffer (see ``Air``) is tens of milliseconds
-        # of the phone's time, wider than the connection interval that keeps
-        # a phone's next write out of it.
-        for _ in range(400):
-            if display.frames > BOOT_ANIMATION_FRAMES:
-                break
-            await asyncio.sleep(0.1)
-        for _ in range(300):
-            if machine.realtime_lag < 0.01:
-                break
-            await asyncio.sleep(0.1)
-        outcome["frames_at_bind"] = display.frames
-        outcome["lag_at_bind"] = machine.realtime_lag
-        outcome["screen_before"] = fingerprint(display)
-
-        async def exchange(frame: bytes, timeout: float = 10) -> bytes | None:
-            """A frame to 8001 (the companion app's write characteristic) plus
-            the [03] trigger; the next notification is the reply.
-
-            Sent the moment the previous reply is in, on purpose: the firmware
-            clears its 8001 buffer some milliseconds *after* handing over a
-            reply, and a frame that lands in between is wiped and answered
-            ``00 02``. ``Air`` keeps that from happening the way a radio does
-            (one connection event per interval), and this is where it shows.
-            """
-            reply = asyncio.get_running_loop().create_future()
-            waiting.append(reply)
-            await peer.write_value(char["8001"], frame, with_response=True)
-            await peer.write_value(char["8002"], b"\x03", with_response=False)
-            try:
-                return await asyncio.wait_for(reply, timeout)
-            except asyncio.TimeoutError:
-                return None
-
-        waiting: list = []
-
-        def on_bind_notify(value):
-            for w in waiting:
-                if not w.done():
-                    w.set_result(bytes(value))
-            waiting.clear()
-
-        await peer.subscribe(char["8002"], on_bind_notify)
-        bind = {}
-        bind["init_before"] = await exchange(CHECK_INIT)
-        bind["start"] = await exchange(BIND_START)
-        bind["datetime"] = await exchange(SET_DATETIME)
-        bind["end"] = await exchange(BIND_END)
-        # "Pairing Success" shows for two seconds, then the watch face; wait
-        # for a screen that holds longer than that.
-        stable, last = 0, None
-        for _ in range(300):
-            await asyncio.sleep(0.1)
-            now = fingerprint(display)
-            stable = stable + 1 if now == last else 0
-            last = now
-            if stable >= 30 and now != outcome["screen_before"]:
-                break
-        bind["screen_after"] = last
-        bind["init_after"] = await exchange(CHECK_INIT)
-        outcome["bind"] = bind
-
-        await connection.disconnect()
-        outcome["disconnected"] = True
+    Three seconds is longer than the bind's "Pairing Success", so a settled
+    screen after the bind is the face.
+    """
+    stable, last = 0, None
+    for _ in range(300):
+        await asyncio.sleep(0.1)
+        now = fingerprint(display)
+        stable = stable + 1 if now == last else 0
+        last = now
+        if stable >= 30 and (unlike is None or now != unlike):
+            break
+    return last
 
 
-async def phone_again(outcome: dict, machine, display, keystore) -> None:
+async def first_run(phone, watch, outcome: dict) -> None:
+    found = await phone.find()
+    outcome["seen"] = phone.seen
+    if not found:
+        return
+    await phone.connect()
+    outcome["connected"] = True
+    await phone.pair()
+    outcome["encrypted"] = phone.encrypted
+    # The phone's half of the bond, for the restart.
+    outcome["keystore"] = phone.keystore
+    outcome["services"] = await phone.discover()
+    await phone.listen()
+    # What normlink-cli does: the frame to 8003, then [03] to 8002 to make
+    # the watch process it, then the answer arrives as a notification.
+    reply = await phone.exchange(BATTERY_CHECK, char="8003")
+    outcome["replies"] = [reply] if reply else []
+
+    # -- the bind ----------------------------------------------------------------
+    await watch.past_boot_animation(timeout=70)
+    outcome["frames_at_bind"] = watch.display.frames
+    outcome["lag_at_bind"] = watch.machine.realtime_lag
+    outcome["screen_before"] = fingerprint(watch.display)
+    bind = {"init_before": await phone.exchange(CHECK_INIT)}
+    bind.update(await phone.bind(clock=datetime_payload(BIND_TIME)))
+    bind["screen_after"] = await settled_screen(watch.display, unlike=outcome["screen_before"])
+    bind["init_after"] = await phone.exchange(CHECK_INIT)
+    outcome["bind"] = bind
+
+    await phone.disconnect()
+    outcome["disconnected"] = True
+
+
+async def again(phone, watch, outcome: dict) -> None:
     """The phone from the first run, back after the watch restarted."""
-    from bumble.device import Device, Peer
-    from bumble.hci import Address
-    from bumble.transport import open_transport
+    if not await phone.find():
+        return
+    await phone.connect()
+    # No pair(). The phone's keys are the first run's; the watch's
+    # controller asks the firmware for its key for this EDIV/Rand, and it
+    # has one only if its flash kept the bond. Without it the answer is
+    # negative and this raises PIN or Key Missing.
+    await phone.encrypt()
+    outcome["encrypted"] = phone.encrypted
+    outcome["paired_again"] = phone.paired
+    await phone.discover()
 
-    async with await open_transport(f"android-netsim:localhost:{PORT}") as (src, sink):
-        device = Device.with_hci("phone", Address("F0:F1:F2:F3:F4:F5"), src, sink)
-        device.keystore = keystore
-        await device.power_on()
+    # Whatever the watch shows once the boot animation is over and the
+    # screen has held for three seconds: a provisioned watch goes to its
+    # face, a fresh one to "Select a Language".
+    await watch.past_boot_animation(timeout=70)
+    outcome["screen"] = await settled_screen(watch.display)
+    outcome["frames"] = watch.display.frames
 
-        seen = set()
-        device.on("advertisement", lambda adv: seen.add(str(adv.address)))
-        await device.start_scanning(legacy=True)
-        for _ in range(100):
-            if any(a.startswith(WATCH) for a in seen):
-                break
-            await asyncio.sleep(0.1)
-        await device.stop_scanning()
-        if not any(a.startswith(WATCH) for a in seen):
-            return
+    await phone.listen()
+    outcome["init"] = await phone.exchange(CHECK_INIT)
+    await phone.disconnect()
+    outcome["disconnected"] = True
 
-        connection = await device.connect(f"{WATCH}/P", timeout=10)
-        paired = []
-        connection.on(connection.EVENT_PAIRING, lambda *a: paired.append(a))
-        # No pair(). The phone's keys are the first run's; the watch's
-        # controller asks the firmware for its key for this EDIV/Rand, and it
-        # has one only if its flash kept the bond. Without it the answer is
-        # negative and this raises PIN or Key Missing.
-        await asyncio.wait_for(connection.encrypt(), 10)
-        outcome["encrypted"] = connection.is_encrypted
-        outcome["paired_again"] = bool(paired)
 
-        peer = Peer(connection)
-        await asyncio.wait_for(peer.discover_all(), 30)
-        main = next(s for s in peer.services if str(s.uuid).endswith("6006"))
-        char = {str(c.uuid)[-4:]: c for c in main.characteristics}
-
-        # Whatever the watch shows once the boot animation is over and the
-        # screen has held for three seconds: a provisioned watch goes to its
-        # face, a fresh one to "Select a Language".
-        for _ in range(400):
-            if display.frames > BOOT_ANIMATION_FRAMES:
-                break
-            await asyncio.sleep(0.1)
-        for _ in range(300):
-            if machine.realtime_lag < 0.01:
-                break
-            await asyncio.sleep(0.1)
-        stable, last = 0, None
-        for _ in range(300):
-            await asyncio.sleep(0.1)
-            now = fingerprint(display)
-            stable = stable + 1 if now == last else 0
-            last = now
-            if stable >= 30:
-                break
-        outcome["frames"] = display.frames
-        outcome["screen"] = last
-
-        got = asyncio.get_running_loop().create_future()
-
-        def on_notify(value):
-            if not got.done():
-                got.set_result(bytes(value))
-
-        await peer.subscribe(char["8002"], on_notify)
-        await peer.write_value(char["8001"], CHECK_INIT, with_response=True)
-        await peer.write_value(char["8002"], b"\x03", with_response=False)
-        try:
-            outcome["init"] = await asyncio.wait_for(got, 10)
-        except asyncio.TimeoutError:
-            outcome["init"] = None
-
-        await connection.disconnect()
-        outcome["disconnected"] = True
+def test_the_phone_sends_the_companion_apps_bytes():
+    """The frames ``phone.py`` builds are the ones the smali and :protocol pin."""
+    assert frame(0x08, CHECK, b"\x00") == BATTERY_CHECK
+    assert frame(0x94, CHECK, b"\x00") == CHECK_INIT
+    assert frame(0x93, SET, b"\x02") == BIND_START
+    assert frame(0x94, SET, b"\x01") == BIND_END
+    assert frame(0x04, SET, datetime_payload(BIND_TIME)) == SET_DATETIME, \
+        frame(0x04, SET, datetime_payload(BIND_TIME)).hex(" ")
 
 
 def test_the_watch_is_on_the_air_as_itself():
