@@ -10,6 +10,10 @@ the PC.
 | `:app`            | Android companion app (Kotlin + Jetpack Compose)                               |
 | `tools/watchemu`  | The watch emulator (Python): the real firmware under Unicorn, a radio, a phone |
 
+Reference documentation is in `docs/`: `app.md` (the app's architecture and what is
+verified on the watch), `protocol.md` (the wire protocol and firmware updates),
+`firmware.md` (the watch's firmware), `watch-emulator.md`, and `history.md`.
+
 **Watch MAC (example used throughout):** `4C:59:80:12:44:F1`
 
 ---
