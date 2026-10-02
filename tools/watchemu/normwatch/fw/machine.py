@@ -235,6 +235,10 @@ class Apollo3Machine:
         #: it was reading two bytes out of the emulator to find out each time.
         #: Invalidated wholesale whenever flash is programmed.
         self._wait_cache: dict[int, bool] = {}
+        #: Internal-flash pages (8 KB, by index) the firmware has erased or
+        #: programmed, or that a saved flash state put back. What
+        #: ``--flash-state`` keeps between runs; see flashstate.py.
+        self.flash_dirty: set[int] = set()
 
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M4)
@@ -363,7 +367,8 @@ class Apollo3Machine:
     #: see, not one we want to hide.
     flash_programs_without_erase = 0
 
-    def write_flash(self, addr: int, data: bytes, *, erase: bool = False) -> None:
+    def write_flash(self, addr: int, data: bytes, *, erase: bool = False,
+                    persist: bool = True) -> None:
         """Programming path used by the boot ROM flash helpers.
 
         Programming NOR flash can only clear bits; setting one needs a page
@@ -371,12 +376,19 @@ class Apollo3Machine:
         invisible here and a corrupt page on the watch, which is the worst place
         to find out — so a program ANDs with what is already there, and a
         program that needed a bit it could not set is counted.
+
+        *persist* says whether this is the watch's own write, which
+        ``--flash-state`` carries into the next run. A patch is not: pass
+        False, or the next run gets the patch without asking for it.
         """
         if not (FLASH_BASE <= addr < FLASH_BASE + FLASH_SIZE):
             self.log(f"  [flash] refusing a write outside internal flash at 0x{addr:08X}")
             return
         # Code the run loop has already classified may have just changed under it.
         self._wait_cache.clear()
+        if persist:
+            page = BootRom.PAGE_SIZE
+            self.flash_dirty.update(range(addr // page, (addr + len(data) - 1) // page + 1))
         if erase:
             self.uc.mem_write(addr, data)
             return

@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+from .fw import flashstate
+from .fw.bootrom import BootRom
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
 from .fw.devices import (attach_ble_controller, attach_mspi_devices,
@@ -173,6 +175,19 @@ def cmd_boot(args) -> int:
                              ble=not args.no_ble, realtime=realtime)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
+    # Before anything runs and before any patch: the restored flash is the
+    # watch as it was left, and a patch goes on top of it, never into it.
+    flash_state = Path(args.flash_state) if args.flash_state else None
+    if flash_state is not None:
+        if flash_state.exists():
+            try:
+                flashstate.load(flash_state, machine, devices["nand"], log=log)
+            except flashstate.FlashStateMismatch as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+        else:
+            log(f"  [flash] no state at {flash_state} yet: starting from the shipped "
+                f"image, and saving there at exit")
     devices["touch"] = attach_touch_panel(machine, log=log)
     devices["motion"] = attach_motion_sensor(machine, log=log)
     devices["battery"], devices["charger"] = attach_pmu(
@@ -214,10 +229,19 @@ def cmd_boot(args) -> int:
         hold = int(parts[2], 0) if len(parts) > 2 and parts[2] else None
         machine.press_button(pin, at, hold)
 
-    if args.live:
-        stats = _run_live(machine, devices, args, log=log)
-    else:
-        stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice)
+    try:
+        if args.live:
+            stats = _run_live(machine, devices, args, log=log)
+        else:
+            stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice)
+    finally:
+        # Also on Ctrl-C and a closed window: that is how --netsim sessions
+        # end. Stopping between an erase and its program loses that page,
+        # as pulling the battery at that instant would on the watch.
+        if flash_state is not None:
+            saved = flashstate.save(flash_state, machine, devices["nand"])
+            log(f"  [flash] saved {len(saved['flash_pages'])} flash pages and "
+                f"{len(saved['nand_pages'])} NAND pages to {flash_state}")
 
     if args.json:
         print(json.dumps({
@@ -235,6 +259,8 @@ def cmd_boot(args) -> int:
             "display_frames": devices["display"].frames,
             "display_pixel_bytes": devices["display"].pixel_bytes,
             "boot_animation": boot_animation_note(machine).strip(),
+            "flash_state": str(flash_state) if flash_state is not None else None,
+            "flash_pages_written": [f"0x{i * BootRom.PAGE_SIZE:08X}" for i in sorted(machine.flash_dirty)],
         }, indent=2))
         if args.screenshot:
             devices["display"].save_png(args.screenshot)
@@ -432,6 +458,12 @@ def main(argv=None) -> int:
                         help="never let watch time run ahead of wall time. Needed "
                              "whenever something outside keeps real time -- a phone on "
                              "the radio -- and on by default with --netsim.")
+    p_boot.add_argument("--flash-state", metavar="PATH", default=None,
+                        help="keep the watch's flash in PATH between runs: restored "
+                             "at start if the file exists, saved at exit (Ctrl-C and "
+                             "a closed window included). A watch bound once then "
+                             "starts past first-run setup and keeps its bond. "
+                             "Refuses a file saved against another image.")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 

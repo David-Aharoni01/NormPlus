@@ -69,12 +69,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import sys
 import threading
 from pathlib import Path
 from typing import Optional
 
-from bumble import hci
+from bumble import hci, ll
 from bumble.controller import Controller
 from bumble.core import PhysicalTransport
 from bumble.crypto import EccKey, e as aes_e
@@ -123,6 +124,30 @@ def _opcode_ogf(opcode: int) -> int:
     return (opcode >> 10) & 0x3F
 
 
+#: Vol 6 Part B 5.2: an LL procedure the peer never answers ends the
+#: connection after 40 s with LL Response Timeout (0x22).
+LL_RESPONSE_TIMEOUT_S = 40.0
+
+
+@dataclasses.dataclass
+class StartEncRsp(ll.ControlPdu):
+    """LL_START_ENC_RSP, standing for the whole start-encryption handshake.
+
+    On air the two ends exchange encrypted LL_START_ENC_REQ / _RSP and either
+    both decrypt or the MIC fails; here the peripheral has already compared
+    the keys, so this only tells the central it worked.
+    """
+    opcode = ll.ControlPdu.Opcode.LL_START_ENC_RSP
+
+
+@dataclasses.dataclass
+class RejectInd(ll.ControlPdu):
+    """LL_REJECT_IND: the peripheral's host has no key for this central."""
+    opcode = ll.ControlPdu.Opcode.LL_REJECT_IND
+
+    error_code: int
+
+
 class VirtualController(Controller):
     """Bumble's ``Controller``, minus the silence.
 
@@ -141,6 +166,12 @@ class VirtualController(Controller):
         #: 7.8.16: the filter accept list, which bumble accepts entries for
         #: and never consults.
         self.filter_accept_list: set = set()
+        #: Peripheral side: connection handle -> the LTK the central started
+        #: encryption with, until this end's host answers the request.
+        self.ltk_requests: dict[int, bytes] = {}
+        #: What each LTK request was answered with, in order: "match",
+        #: "mismatch", "negative" or "timeout". The tests read it.
+        self.ltk_answers: list[str] = []
 
     # -- the filter accept list, actually used ------------------------------
 
@@ -221,6 +252,114 @@ class VirtualController(Controller):
         else:
             self._send_hci_command_status(unknown, command.op_code)
         return None
+
+    # -- encryption: the peripheral's host is asked for its key --------------
+
+    def on_hci_le_enable_encryption_command(
+            self, command: hci.HCI_LE_Enable_Encryption_Command) -> None:
+        """7.8.24 on the central -- which then waits to hear how it went.
+
+        Bumble's reports success on both ends at once ("For now, just setup
+        the encryption without asking the host"), so the peripheral's host was
+        never asked for its key. For the watch that meant the firmware never
+        looked up a bond and could never refuse one: a phone holding keys the
+        watch had forgotten still came up encrypted, and a test that a bond
+        survived a restart passed with the restart's flash thrown away. The
+        answer now comes from the peer (``on_ll_control_pdu``): StartEncRsp,
+        RejectInd, or a TerminateInd if the keys did not match.
+        """
+        connection = self.find_connection_by_handle(command.connection_handle)
+        if (self.link is None or connection is None
+                or connection.transport != PhysicalTransport.LE):
+            return super().on_hci_le_enable_encryption_command(command)
+        connection.send_ll_control_pdu(ll.EncReq(
+            rand=command.random_number,
+            ediv=command.encrypted_diversifier,
+            ltk=command.long_term_key))
+        self._send_hci_command_status(hci.HCI_COMMAND_STATUS_PENDING, command.op_code)
+        return None
+
+    def on_ll_control_pdu(self, sender_address, packet) -> None:
+        connection = self.le_connections.get(sender_address)
+        if connection is None or not isinstance(packet, (ll.EncReq, StartEncRsp, RejectInd)):
+            return super().on_ll_control_pdu(sender_address, packet)
+        if isinstance(packet, ll.EncReq):
+            # 7.7.65.5: the peripheral's host supplies the key for this
+            # Rand/EDIV -- the STK while pairing, a stored LTK after it.
+            handle = connection.handle
+            self.ltk_requests[handle] = bytes(packet.ltk)
+            self.send_hci_packet(hci.HCI_LE_Long_Term_Key_Request_Event(
+                connection_handle=handle,
+                random_number=bytes(packet.rand),
+                encryption_diversifier=packet.ediv))
+            asyncio.get_running_loop().call_later(
+                LL_RESPONSE_TIMEOUT_S, self._ltk_request_timed_out, connection, handle)
+        elif isinstance(packet, StartEncRsp):
+            self._encryption_changed(connection, hci.HCI_ErrorCode.SUCCESS, enabled=1)
+        else:
+            # 7.7.8: the central's host hears why, and the link stays up.
+            self._encryption_changed(connection, packet.error_code, enabled=0)
+        return None
+
+    def on_hci_le_long_term_key_request_reply_command(
+            self, command: hci.HCI_LE_Long_Term_Key_Request_Reply_Command):
+        """7.8.25: the host's key. The same as the central's, or the link dies.
+
+        On air a wrong key is a MIC failure on the first encrypted PDU and both
+        ends drop the connection with 0x3D; nothing reports "wrong key".
+        """
+        handle = command.connection_handle
+        connection = self.find_le_connection_by_handle(handle)
+        expected = self.ltk_requests.pop(handle, None)
+        if connection is None or expected is None:
+            return hci.HCI_StatusAndConnectionHandleReturnParameters(
+                status=hci.HCI_ErrorCode.COMMAND_DISALLOWED_ERROR, connection_handle=handle)
+        if bytes(command.long_term_key) == expected:
+            self.ltk_answers.append("match")
+            # Deferred so the Command Complete for this reply goes out first.
+            asyncio.get_running_loop().call_soon(self._encryption_started, connection)
+        else:
+            self.ltk_answers.append("mismatch")
+            asyncio.get_running_loop().call_soon(
+                self._drop, connection, hci.HCI_ErrorCode.CONNECTION_TERMINATED_DUE_TO_MIC_FAILURE_ERROR)
+        return hci.HCI_StatusAndConnectionHandleReturnParameters(
+            status=hci.HCI_ErrorCode.SUCCESS, connection_handle=handle)
+
+    def on_hci_le_long_term_key_request_negative_reply_command(
+            self, command: hci.HCI_LE_Long_Term_Key_Request_Negative_Reply_Command):
+        """7.8.26: no key. The central is told PIN or Key Missing (0x06)."""
+        handle = command.connection_handle
+        connection = self.find_le_connection_by_handle(handle)
+        if connection is None or self.ltk_requests.pop(handle, None) is None:
+            return hci.HCI_StatusAndConnectionHandleReturnParameters(
+                status=hci.HCI_ErrorCode.COMMAND_DISALLOWED_ERROR, connection_handle=handle)
+        self.ltk_answers.append("negative")
+        connection.send_ll_control_pdu(RejectInd(
+            error_code=hci.HCI_ErrorCode.PIN_OR_KEY_MISSING_ERROR))
+        return hci.HCI_StatusAndConnectionHandleReturnParameters(
+            status=hci.HCI_ErrorCode.SUCCESS, connection_handle=handle)
+
+    def _encryption_started(self, connection) -> None:
+        self._encryption_changed(connection, hci.HCI_ErrorCode.SUCCESS, enabled=1)
+        connection.send_ll_control_pdu(StartEncRsp())
+
+    def _encryption_changed(self, connection, status: int, *, enabled: int) -> None:
+        self.send_hci_packet(hci.HCI_Encryption_Change_Event(
+            status=status, connection_handle=connection.handle,
+            encryption_enabled=enabled))
+
+    def _ltk_request_timed_out(self, connection, handle: int) -> None:
+        if self.ltk_requests.pop(handle, None) is None:
+            return
+        self.ltk_answers.append("timeout")
+        self._drop(connection, hci.HCI_ErrorCode.LMP_OR_LL_RESPONSE_TIMEOUT_ERROR)
+
+    def _drop(self, connection, reason: int) -> None:
+        """Both ends lose the connection, as a link-layer failure does."""
+        if self.le_connections.get(connection.peer_address) is not connection:
+            return
+        connection.send_ll_control_pdu(ll.TerminateInd(error_code=reason))
+        self.on_le_disconnected(connection, reason)
 
     def on_hci_read_remote_version_information_command(
             self, command: hci.HCI_Read_Remote_Version_Information_Command) -> None:

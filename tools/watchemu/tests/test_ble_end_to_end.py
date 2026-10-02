@@ -48,21 +48,30 @@ Two more, from the bind:
   then the watch face. The app's sequential send queue only gets bindEnd out
   in time because 8001 acknowledges bindStart at once.
 
+And one from flash persistence (#41): **the watch keeps what it wrote.** The
+first run's flash is saved (``flashstate``) and the watch is booted a second
+time from it. It comes up past first-run setup without a bind, answers
+checkInit with 1, and the phone encrypts the link with the keys it stored in
+the first run, without pairing -- which only works because the firmware wrote
+its half of the bond to 0xFE000 the moment the first link was encrypted.
+
 The watch is paced against the wall clock (``realtime=True``) because a host
-is answering it in real time. Runs in about 50 seconds: the bind has to wait
+is answering it in real time. Runs in about 100 seconds: the bind has to wait
 for the boot animation, since the pairing dialog needs the setup screen to
-open on top of.
+open on top of, and the restart is a second boot.
 
 Run with:  PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_ble_end_to_end.py
 """
 import asyncio
 import hashlib
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from normwatch.fw import flashstate
 from normwatch.fw import image as image_mod
 from normwatch.fw.blelink import (OPCODE_LE_ENCRYPT, OPCODE_LE_GENERATE_DHKEY,
                                   AndroidLink, BumbleController, Radio)
@@ -80,6 +89,10 @@ WATCH = "4C:59:80:12:44:F1"
 PORT = 8898
 #: Watch time the run may take; the host is done long before.
 BUDGET_SECONDS = 60
+#: Wall-clock seconds a phone flow may take before the run counts as hung.
+PHONE_TIMEOUT_S = 150
+#: Where each run leaves the watch's flash; the restart boots from it.
+STATE = Path(tempfile.mkdtemp(prefix="watchemu-e2e-")) / "watch-flash.zip"
 #: The 0x6F protocol's battery CHECK: [6F][08][70 CHECK][len 1][payload 00][8F].
 #: The payload byte is required -- the watch ignores the command without it.
 BATTERY_CHECK = bytes.fromhex("6f08700100008f")
@@ -101,6 +114,7 @@ def ack(cmd: int, status: int = 0) -> bytes:
 BOOT_ANIMATION_FRAMES = 134
 
 _result = None
+_restarted = None
 
 
 def quiet(*a, **k):
@@ -108,15 +122,41 @@ def quiet(*a, **k):
 
 
 def run_once():
-    """Boot the watch on a thread and drive it from a bumble host; cached."""
+    """Boot, pair, query and bind; cached."""
     global _result
-    if _result is not None:
-        return _result
+    if _result is None:
+        _result = boot_with_a_phone(phone)
+    return _result
 
+
+def run_restarted():
+    """The same watch switched off and on: a second boot from the flash the
+    first run left, met by the same phone holding the keys it stored; cached."""
+    global _restarted
+    if _restarted is None:
+        first = run_once()
+        if first.get("keystore") is None or not STATE.exists():
+            _restarted = {"error": "the first run left no bond or no flash state"}
+        else:
+            _restarted = boot_with_a_phone(
+                lambda outcome, machine, display: phone_again(
+                    outcome, machine, display, first["keystore"]),
+                flash_state=STATE)
+    return _restarted
+
+
+def boot_with_a_phone(phone_flow, *, flash_state=None):
+    """Boot the watch on a thread and drive it from a bumble host.
+
+    With *flash_state* the watch starts from that saved flash. Either way its
+    flash is saved to STATE once the CPU has stopped.
+    """
     img = image_mod.load(IMAGE)
     m = Apollo3Machine(img, log=quiet, trace=None, fast_hook=True, ble=True,
                        realtime=True)
     devices = attach_mspi_devices(m, resource_blob=RESOURCES, log=quiet)
+    if flash_state is not None:
+        flashstate.load(flash_state, m, devices["nand"], log=quiet)
     attach_touch_panel(m, log=quiet)
     attach_motion_sensor(m, log=quiet)
     attach_pmu(m, log=quiet)
@@ -135,7 +175,8 @@ def run_once():
     thread.start()
     outcome = {}
     try:
-        asyncio.run(phone(outcome, m, devices["display"]))
+        asyncio.run(asyncio.wait_for(phone_flow(outcome, m, devices["display"]),
+                                     PHONE_TIMEOUT_S))
     except Exception as exc:  # noqa: BLE001 - the tests report it
         outcome["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -143,10 +184,15 @@ def run_once():
         thread.join(timeout=60)
         android.close()
         radio.close()
+    # Only once the CPU has stopped: a save taken while it runs can catch a
+    # page between its erase and its program.
+    if thread.is_alive():
+        outcome.setdefault("error", "the watch's CPU did not stop")
+    else:
+        flashstate.save(STATE, m, devices["nand"])
     outcome["machine"] = m
     outcome["controller"] = controller
     outcome["stats"] = stats.get("run")
-    _result = outcome
     return outcome
 
 
@@ -185,6 +231,8 @@ async def phone(outcome: dict, machine, display) -> None:
         outcome["connected"] = True
         await asyncio.wait_for(connection.pair(), 20)
         outcome["encrypted"] = connection.is_encrypted
+        # The phone's half of the bond, for the restart.
+        outcome["keystore"] = device.keystore
 
         peer = Peer(connection)
         await asyncio.wait_for(peer.discover_all(), 30)
@@ -286,6 +334,84 @@ async def phone(outcome: dict, machine, display) -> None:
         outcome["disconnected"] = True
 
 
+async def phone_again(outcome: dict, machine, display, keystore) -> None:
+    """The phone from the first run, back after the watch restarted."""
+    from bumble.device import Device, Peer
+    from bumble.hci import Address
+    from bumble.transport import open_transport
+
+    async with await open_transport(f"android-netsim:localhost:{PORT}") as (src, sink):
+        device = Device.with_hci("phone", Address("F0:F1:F2:F3:F4:F5"), src, sink)
+        device.keystore = keystore
+        await device.power_on()
+
+        seen = set()
+        device.on("advertisement", lambda adv: seen.add(str(adv.address)))
+        await device.start_scanning(legacy=True)
+        for _ in range(100):
+            if any(a.startswith(WATCH) for a in seen):
+                break
+            await asyncio.sleep(0.1)
+        await device.stop_scanning()
+        if not any(a.startswith(WATCH) for a in seen):
+            return
+
+        connection = await device.connect(f"{WATCH}/P", timeout=10)
+        paired = []
+        connection.on(connection.EVENT_PAIRING, lambda *a: paired.append(a))
+        # No pair(). The phone's keys are the first run's; the watch's
+        # controller asks the firmware for its key for this EDIV/Rand, and it
+        # has one only if its flash kept the bond. Without it the answer is
+        # negative and this raises PIN or Key Missing.
+        await asyncio.wait_for(connection.encrypt(), 10)
+        outcome["encrypted"] = connection.is_encrypted
+        outcome["paired_again"] = bool(paired)
+
+        peer = Peer(connection)
+        await asyncio.wait_for(peer.discover_all(), 30)
+        main = next(s for s in peer.services if str(s.uuid).endswith("6006"))
+        char = {str(c.uuid)[-4:]: c for c in main.characteristics}
+
+        # Whatever the watch shows once the boot animation is over and the
+        # screen has held for three seconds: a provisioned watch goes to its
+        # face, a fresh one to "Select a Language".
+        for _ in range(400):
+            if display.frames > BOOT_ANIMATION_FRAMES:
+                break
+            await asyncio.sleep(0.1)
+        for _ in range(300):
+            if machine.realtime_lag < 0.01:
+                break
+            await asyncio.sleep(0.1)
+        stable, last = 0, None
+        for _ in range(300):
+            await asyncio.sleep(0.1)
+            now = fingerprint(display)
+            stable = stable + 1 if now == last else 0
+            last = now
+            if stable >= 30:
+                break
+        outcome["frames"] = display.frames
+        outcome["screen"] = last
+
+        got = asyncio.get_running_loop().create_future()
+
+        def on_notify(value):
+            if not got.done():
+                got.set_result(bytes(value))
+
+        await peer.subscribe(char["8002"], on_notify)
+        await peer.write_value(char["8001"], CHECK_INIT, with_response=True)
+        await peer.write_value(char["8002"], b"\x03", with_response=False)
+        try:
+            outcome["init"] = await asyncio.wait_for(got, 10)
+        except asyncio.TimeoutError:
+            outcome["init"] = None
+
+        await connection.disconnect()
+        outcome["disconnected"] = True
+
+
 def test_the_watch_is_on_the_air_as_itself():
     r = run_once()
     assert "error" not in r, r["error"]
@@ -311,6 +437,10 @@ def test_the_phone_connects_and_pairs():
         "(AuthReq 0x01 in its Pairing Response); if that changed, so did the firmware")
     assert r["controller"].unanswered == [], \
         [hex(o) for o in r["controller"].unanswered]
+    # The watch's controller asked its host for the key once, for the STK,
+    # and the firmware's answer matched the phone's.
+    assert r["controller"].controller.ltk_answers == ["match"], \
+        r["controller"].controller.ltk_answers
 
 
 def test_the_firmware_serves_its_gatt_table():
@@ -350,6 +480,25 @@ def test_the_bind_takes_the_watch_out_of_first_run_setup():
         (b.get("init_before") or b"").hex(" ")
     assert b.get("init_after") == bytes.fromhex("6f94800100018f"), \
         (b.get("init_after") or b"").hex(" ")
+
+
+def test_the_watch_comes_back_bound_after_a_restart():
+    first, r = run_once(), run_restarted()
+    assert "error" not in r, r["error"]
+    # The phone's stored keys encrypted the link and nothing paired: the
+    # firmware was asked for its key and had the right one, so it kept its
+    # half of the bond (0xFE000) across the restart.
+    assert r.get("encrypted"), "the restarted watch did not accept the stored keys"
+    assert not r.get("paired_again"), "the phone had to pair again"
+    assert r["controller"].controller.ltk_answers == ["match"], \
+        r["controller"].controller.ltk_answers
+    # No bind in this run, and the firmware says it is initialised...
+    assert r.get("init") == bytes.fromhex("6f94800100018f"), (r.get("init") or b"").hex(" ")
+    # ...and it did not stop at first-run setup.
+    assert r.get("frames", 0) > BOOT_ANIMATION_FRAMES, r.get("frames")
+    assert r.get("screen") not in (None, first.get("screen_before")), \
+        ("still on the setup screen", r.get("screen"))
+    assert not r["machine"].faults, list(r["machine"].faults)
 
 
 def test_the_run_was_clean():

@@ -52,10 +52,15 @@ BLE stack comes all the way up behind a bumble controller and advertises as `Nor
 with `--netsim` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
 emulated watch, *binds* it the way the companion app does after a QR scan -- bindStart,
 setDateTime, bindEnd -- and the watch leaves first-run setup for its watch face, showing
-the time the phone set. A bumble host does the same in `tests/test_ble_end_to_end.py`, in
-about twenty seconds. See "A real stack behind the seam" for the things bumble does not do
-that each looked like a hang, and "Binding, and three things the firmware does about it"
-for what the bind taught.
+the time the phone set. A bumble host does the same in `tests/test_ble_end_to_end.py`.
+See "A real stack behind the seam" for the things bumble does not do that each looked like
+a hang, and "Binding, and three things the firmware does about it" for what the bind
+taught.
+
+**And it remembers.** `--flash-state PATH` keeps what the firmware wrote to its flash, so a
+watch bound once boots straight to its face and keeps its bond: the phone reconnects with
+the keys it stored, and the firmware answers the key request from its own flash. See "The
+watch keeps what it writes".
 
 **The watch draws its screen, live, and you can touch it.** LVGL renders and flushes
 real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and `--live`
@@ -167,6 +172,14 @@ alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's n
 endpoint on PORT — default 8877 — so `launch-emulator.ps1 -Watch` gives the AVD the
 emulated watch as its Bluetooth peer). `--netsim` paces the watch against the wall clock;
 `--hci-trace` logs every packet across the seam. See "A real stack behind the seam".
+
+`--flash-state PATH` keeps the watch's flash between runs: restored at start if the file
+exists, saved at exit -- a closed window and Ctrl-C included. Bind the watch once and every
+later run with the same file starts on the watch face, bonded:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
+```
 
 ### The live window
 
@@ -1018,6 +1031,81 @@ advertising address. On the AVD, expect the first two connection attempts after 
 to stall on the hash read and the third to bind; the watch's pairing dialog is only opened
 by the attempt that gets through.
 
+### The watch keeps what it writes (`--flash-state`), and a ninth gap
+
+A real watch keeps its flash when it restarts. The emulator began every run from the
+shipped image, so every run started at "Select a Language" and every phone had to pair
+and bind again. Logging every `nv_page_erase` / `nv_program_main` and every NAND program
+or erase over a boot, a bond and a bind shows what there is to keep, and that all of it is
+the firmware's own doing:
+
+| page | written | what it is |
+|---|---|---|
+| `0x1C000` | every boot, a full page | the boot record (#39) |
+| `0xDE000` | at boot | the canned quick replies: "Call me later.", "In meeting.", ... |
+| `0xFE000` | the moment the link is encrypted | the bond |
+| `0x18000` | at bindStart | `04`, the LE32 epoch setDateTime sent, `01` |
+| `0xE0000-0xF7FFF` | the bind erases all of it | blank on a fresh emulated watch anyway |
+| `0xF8000` | the bind | |
+| `0xFA000` | boot, then ~20 times during the bind | byte 0: `ff` after a boot, `01` once bound |
+
+No NAND page is programmed or erased in any of it.
+
+`--flash-state PATH` (`fw/flashstate.py`) saves exactly the pages the firmware wrote --
+`Apollo3Machine.flash_dirty` and `SpiNand.dirty`, tracked at the two write paths -- into a
+zip (`manifest.json`, `flash/0x000FA000.bin`, `nand/<page>.bin`; `unzip -l` shows it), and
+puts them back over a fresh machine before anything runs. A page restored and never
+touched again is saved again, an erased page stays erased, the save is atomic, and a file
+saved against another image or resource blob is refused rather than half-applied. A patch
+is not the watch writing its flash: `--force-gestures` writes with `persist=False`, or a
+later run without the flag would get the patch anyway. Stopping between an erase and its
+program loses that page, as pulling the battery at that instant would.
+
+What it does not keep is the clock: the RTC is not flash, so a restarted watch shows
+`12:00 SUN 01 JAN` until a phone sets the time.
+
+**The ninth gap: bumble never asked the watch for its key.** The first version of the
+restart test passed -- the phone's stored keys "encrypted" the restarted link without
+pairing -- and passed just the same with the restore thrown away. Bumble's controller
+reports encryption on both ends the moment the central asks for it ("For now, just setup
+the encryption without asking the host"), so the firmware never got an `LE Long Term Key
+Request`, never looked up a bond and could never refuse one. Every "encrypted" link with
+the emulated watch until now, the AVD's included, was encrypted without it. The
+peripheral's `VirtualController` now raises the request (7.7.65.5) with the central's
+Rand and EDIV and waits: the host's key equal to the central's encrypts both ends; a
+negative reply (7.8.26) gives the central `PIN or Key Missing` (0x06) and leaves the link
+up; a different key drops the link with 0x3D, which is what a MIC failure does on air;
+no answer in 40 s drops it with 0x22. Pairing goes through it too -- the firmware answers
+the STK request -- and `tests/test_ble_link.py` pins all three outcomes.
+
+With that, the restart is the real test. Against `:app` on the AVD, after a restart from
+the saved flash, the watch's HCI shows Android's request and the firmware's answer:
+
+```
+<- 04 3e 0d 05 01 00 18 e2 89 aa 58 2d 9a 44 b3 0c          LTK Request, Rand, EDIV 0x0CB3
+-> 01 1a 20 12 01 00 d2 84 77 f5 d5 50 22 fd 7b 29 ...      LTK Request Reply
+<- 04 08 04 00 01 00 01                                      Encryption Change, on
+```
+
+and the LTK, Rand and EDIV are byte for byte the `LE_KEY_PENC` Android stored when it
+bonded (`d28477f5...b2b1ad 18e289aa582d9a44 b30c`). With the restore disabled the firmware
+answers `01 1b 20` instead and the phone gets 0x06.
+
+Two things that follow for the AVD:
+
+- **Keep one state file per bond.** With the same file, the AVD's bond stays good across
+  watch restarts and nothing needs wiping. It only needs wiping when the watch on the other
+  end does not hold that bond: a new state file, or after the physical watch.
+- **Restarting the watch means restarting the AVD.** The emulator's packet streamer does
+  not reconnect to a new endpoint; the guest's HCI times out on `RESET` and a Bluetooth
+  toggle does not bring it back. `adb emu kill` and `launch-emulator.ps1 -Watch` again; the
+  bond and `:app`'s data are on the guest's data partition and survive it.
+
+One more observation, for #48: on those reconnects Android logs `smp_link_encrypted: SMP
+state machine busy so skipping encryption enable:1` -- the line `BleManager`'s cold-connect
+comment cites from the physical watch as evidence of racy encryption -- on links the wire
+shows encrypted with the right key. It does not by itself mean encryption failed.
+
 ### Turning the radio on moved the cost somewhere nobody had looked
 
 Powering up the BLE controller made a boot about 3.1x slower, and the obvious
@@ -1372,6 +1460,9 @@ The page geometry is confirmed against this image rather than assumed. Every
 | `(0, 0x0C)` | 0x18000 | `nv_program_main(src, 0x18000, 0x130 words)` |
 | `(1, 0x3D)` | 0xFA000 | `nv_program_main(src, 0xFA000, 0x130 words)` |
 
+Those are a boot's. A bond and a bind write more -- the whole list is in "The watch keeps
+what it writes".
+
 ### Which pin is which
 
 The firmware configures its own interrupt pins, and that configuration is the
@@ -1677,18 +1768,15 @@ status-check polls  (address, mask, expected) -> count
 The emulator is good enough to work against today for two things: questions about what
 the firmware does (it has answered four the physical watch could not — the 8001/8003
 split, the pairing window, the Database Hash park, and `DEVICE_VERSION` being refused
-rather than ignored), and `:app`'s BLE stack end to end through the AVD. It is not yet
-good for anything that crosses a restart, anything that needs data on the watch, or
-casual use: measured on 2026-10-02, a boot to the UI is 18.9s (`--seconds 14 --no-ble`)
+rather than ignored), and `:app`'s BLE stack end to end through the AVD. It was not
+good for anything that crosses a restart (#41 has fixed that), anything that needs data on
+the watch, or casual use: measured on 2026-10-02, a boot to the UI is 18.9s (`--seconds 14 --no-ble`)
 and a bond-and-bind round trip is 51.9s (`test_ble_end_to_end.py`), every time.
 
 In the order to do them. All are on the kanban board (`/kanban`).
 
-1. **#41 — persist flash** (`--flash-state PATH`). The watch writes its own settings
-   (see "Internal flash, and where the watch keeps its settings") and its resources
-   live on the NAND; both die with the process today, so every run starts at "Select a
-   Language" and every AVD run needs the phone's bond removed. Everything below gets
-   cheaper behind it.
+1. ~~**#41 — persist flash**~~ -- done: `--flash-state PATH`, see "The watch keeps what it
+   writes". It also closed a ninth bumble gap (the firmware was never asked for its key).
 2. **#49 — `normwatch cmd`**, a one-shot command harness: boot, bond, bind, write one
    0x6F packet to 8001 (or 8003), print what comes back. Today the only way to ask the
    firmware a question is to copy-edit the e2e test. This is what makes the emulator

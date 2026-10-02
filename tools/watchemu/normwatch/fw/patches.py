@@ -44,7 +44,9 @@ def force_gestures(machine, *, log=print) -> bool:
         log(f"  [patch] refusing --force-gestures: 0x{GESTURE_CANCEL_ADDRESS:08X} holds "
             f"{found.hex(' ')}, expected {GESTURE_CANCEL_EXPECTED.hex(' ')}")
         return False
-    machine.write_flash(GESTURE_CANCEL_ADDRESS, THUMB_NOP2)
+    # persist=False: a patch is not the watch writing its flash, and must not
+    # end up in a --flash-state file that a later, unpatched run loads.
+    machine.write_flash(GESTURE_CANCEL_ADDRESS, THUMB_NOP2, persist=False)
     log(f"  [patch] gesture cancel at 0x{GESTURE_CANCEL_ADDRESS:08X} replaced with NOPs — "
         f"swipes now reach the UI (this is NOT what the shipped firmware does)")
     return True

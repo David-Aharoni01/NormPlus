@@ -388,6 +388,120 @@ def test_a_phone_connects_the_way_android_does_and_reads_the_watchs_version():
     radio.close()
 
 
+# -- encryption: the watch is asked for its key ---------------------------------
+
+LTK = bytes(range(16))
+RAND = bytes.fromhex("0102030405060708")
+EDIV = 0x1234
+
+
+def connected():
+    """A phone connected to the watch; returns both ends and both handles."""
+    radio = Radio()
+    watch = booted(address=WATCH, radio=radio, name="watch")
+    phone = booted(address=PHONE, radio=radio, name="phone")
+    advertise(watch)
+    address = bytes.fromhex(WATCH.replace(":", ""))[::-1]
+    reply_to(phone, command(0x200D, bytes.fromhex(
+        "1000 1000 00 00".replace(" ", "")) + address + bytes.fromhex(
+        "00 1800 2800 0000 2a00 0000 0000".replace(" ", ""))))
+
+    def connection_complete(f):
+        return f[:2] == b"\x04\x3e" and f[3] == 0x01
+    ends = []
+    for end in (phone, watch):
+        seen = collect(end, connection_complete)
+        complete = next((f for f in seen if connection_complete(f)), None)
+        assert complete is not None and complete[4] == 0x00, [f.hex(" ") for f in seen]
+        ends.append(complete[5:7])
+    return radio, watch, phone, ends[0], ends[1]
+
+
+def encryption_change(f):
+    return f[:2] == b"\x04\x08"
+
+
+def disconnected(f):
+    return f[:2] == b"\x04\x05"
+
+
+def start_encryption(phone, watch, phone_handle, watch_handle):
+    """7.8.24 from the phone; returns the LTK request the watch's host got."""
+    told = reply_to(phone, command(0x2019, phone_handle + RAND
+                                   + EDIV.to_bytes(2, "little") + LTK))
+    status = next((f for f in told if f[:2] == b"\x04\x0f"), None)
+    assert status is not None and status[3] == 0x00, [f.hex(" ") for f in told]
+
+    def ltk_request(f):
+        return f[:2] == b"\x04\x3e" and f[3] == 0x05
+    seen = collect(watch, ltk_request)
+    request = next((f for f in seen if ltk_request(f)), None)
+    assert request is not None, [f.hex(" ") for f in seen]
+    # 7.7.65.5: the handle, then Rand and EDIV exactly as the phone gave them.
+    assert request[4:6] == watch_handle, request.hex(" ")
+    assert request[6:14] == RAND and request[14:16] == EDIV.to_bytes(2, "little"), \
+        request.hex(" ")
+    # And the phone has not been told anything yet: the watch has not answered.
+    told += frames(phone, wait=0.2)
+    assert not any(encryption_change(f) for f in told), \
+        ("the phone was told before the watch answered", [f.hex(" ") for f in told])
+    return request
+
+
+def test_the_watch_is_asked_for_its_key_and_the_right_one_encrypts():
+    """Bumble's controller reported every link encrypted without asking the
+    peripheral's host for its key, so the firmware never looked up a bond and
+    could never refuse one. The right key from the watch encrypts both ends."""
+    radio, watch, phone, phone_handle, watch_handle = connected()
+    start_encryption(phone, watch, phone_handle, watch_handle)
+    seen = reply_to(watch, command(0x201A, watch_handle + LTK))
+    seen += collect(watch, encryption_change)
+    # 7.8.25's Command Complete first, then 7.7.8.
+    kinds = [f[:2] for f in seen]
+    assert b"\x04\x0e" in kinds and b"\x04\x08" in kinds, [f.hex(" ") for f in seen]
+    assert kinds.index(b"\x04\x0e") < kinds.index(b"\x04\x08"), [f.hex(" ") for f in seen]
+    change = next(f for f in seen if encryption_change(f))
+    assert change[3] == 0x00 and change[4:6] == watch_handle and change[6] == 1, change.hex(" ")
+    seen = collect(phone, encryption_change)
+    change = next((f for f in seen if encryption_change(f)), None)
+    assert change is not None, [f.hex(" ") for f in seen]
+    assert change[3] == 0x00 and change[4:6] == phone_handle and change[6] == 1, change.hex(" ")
+    assert watch.controller.ltk_answers == ["match"]
+    radio.close()
+
+
+def test_a_watch_with_no_key_leaves_the_phone_unencrypted_and_connected():
+    """What a watch that lost its bond does: a negative reply, and the phone
+    hears PIN or Key Missing (0x06). The connection stays up."""
+    radio, watch, phone, phone_handle, watch_handle = connected()
+    start_encryption(phone, watch, phone_handle, watch_handle)
+    reply_to(watch, command(0x201B, watch_handle))
+    seen = collect(phone, encryption_change)
+    change = next((f for f in seen if encryption_change(f)), None)
+    assert change is not None, [f.hex(" ") for f in seen]
+    assert change[3] == 0x06 and change[6] == 0, change.hex(" ")
+    assert not any(disconnected(f) for f in seen + frames(watch, wait=0.2))
+    assert watch.controller.ltk_answers == ["negative"]
+    radio.close()
+
+
+def test_a_wrong_key_drops_the_link_on_both_ends():
+    """On air a key mismatch is a MIC failure on the first encrypted PDU:
+    both ends lose the connection with 0x3D and nobody hears "wrong key"."""
+    radio, watch, phone, phone_handle, watch_handle = connected()
+    start_encryption(phone, watch, phone_handle, watch_handle)
+    answered = reply_to(watch, command(0x201A, watch_handle + bytes(16)))
+    for end, handle, seen in ((phone, phone_handle, []), (watch, watch_handle, answered)):
+        seen = seen + collect(end, disconnected)
+        event = next((f for f in seen if disconnected(f)), None)
+        assert event is not None, (end.name, [f.hex(" ") for f in seen])
+        assert event[4:6] == handle and event[6] == 0x3D, event.hex(" ")
+        assert not any(encryption_change(f) and f[3] == 0 for f in seen), \
+            [f.hex(" ") for f in seen]
+    assert watch.controller.ltk_answers == ["mismatch"]
+    radio.close()
+
+
 # -- the interrupt that carries an unsolicited event ---------------------------
 
 def test_the_bleif_raises_the_ble_interrupt_when_data_arrives_unasked():

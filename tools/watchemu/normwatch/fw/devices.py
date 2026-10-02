@@ -24,6 +24,7 @@ outbound bytes as "a new command starts" and a subsequent read-only call as
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -169,6 +170,12 @@ class SpiNand(SpiDevice):
         self.command_count = 0
         self.pages_read = 0
         self.pages_written = 0
+        #: Pages programmed or erased (or put back by a saved flash state).
+        #: What ``--flash-state`` keeps between runs; see flashstate.py.
+        self.dirty: set[int] = set()
+        #: What was mounted at start, as (byte address, sha256 of the data):
+        #: a saved flash state is a difference from exactly this.
+        self.origin: list[tuple[int, str]] = []
         self.unknown_commands: dict[int, int] = {}
         # Partially received command, for opcodes whose arguments arrive in a
         # later transfer (see _feed).
@@ -223,6 +230,7 @@ class SpiNand(SpiDevice):
             chunk = data[i : i + self.page_size]
             page = self._page(first + i // self.page_size)
             page[: len(chunk)] = chunk
+        self.origin.append((byte_address, hashlib.sha256(data).hexdigest()))
         self.log(
             f"  [nand] loaded {len(data)} bytes at 0x{byte_address:08X} "
             f"(pages {first}..{first + (len(data) - 1) // self.page_size})"
@@ -371,6 +379,7 @@ class SpiNand(SpiDevice):
             if self.write_enabled:
                 self._page(row)[:] = self.cache
                 self.pages_written += 1
+                self.dirty.add(row)
             self.features[FEATURE_STATUS] &= ~(STATUS_OIP | STATUS_WEL)
             self.write_enabled = False
             return
@@ -386,6 +395,7 @@ class SpiNand(SpiDevice):
                 first = (row // self.pages_per_block) * self.pages_per_block
                 for page in range(first, first + self.pages_per_block):
                     self.pages.pop(page, None)
+                self.dirty.update(range(first, first + self.pages_per_block))
             self.features[FEATURE_STATUS] &= ~(STATUS_OIP | STATUS_WEL)
             self.write_enabled = False
             return
