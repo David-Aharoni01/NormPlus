@@ -56,9 +56,12 @@ the first run, without pairing -- which only works because the firmware wrote
 its half of the bond to 0xFE000 the moment the first link was encrypted.
 
 The watch is paced against the wall clock (``realtime=True``) because a host
-is answering it in real time. Runs in about 100 seconds: the bind has to wait
+is answering it in real time. Runs in about 35 seconds: the bind has to wait
 for the boot animation, since the pairing dialog needs the setup screen to
-open on top of, and the restart is a second boot.
+open on top of, and the restart is a second boot. Neither waits for the
+emulator to catch up with the wall clock -- ``Air`` makes that unnecessary,
+and waiting for it is what made this test fail on slow runs (#55): the watch
+ran out of its budget mid-bind.
 
 The watch and the phone are ``normwatch.fw.phone``'s ``EmulatedWatch`` and
 ``Phone`` -- the same code ``normwatch cmd`` runs -- with the phone going
@@ -70,6 +73,7 @@ import asyncio
 import hashlib
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -165,19 +169,27 @@ def fingerprint(display) -> str:
     return hashlib.md5(bytes(display.framebuffer)).hexdigest()[:12]
 
 
-async def settled_screen(display, *, unlike=None) -> str:
-    """The screen once it has held for three seconds (and differs from *unlike*).
+def watch_seconds(watch) -> float:
+    return watch.machine.cycles / watch.machine.CYCLES_PER_SECOND
+
+
+async def settled_screen(watch, *, unlike=None, timeout: float = 60) -> str:
+    """The screen once it has held for three seconds of *watch* time (and
+    differs from *unlike*).
 
     Three seconds is longer than the bind's "Pairing Success", so a settled
-    screen after the bind is the face.
+    screen after the bind is the face. Watch time, not wall time: the watch
+    is binding seconds behind the wall clock, and three wall seconds of a
+    slow run can be less than the dialog's two.
     """
-    stable, last = 0, None
-    for _ in range(300):
+    last, since = None, watch_seconds(watch)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         await asyncio.sleep(0.1)
-        now = fingerprint(display)
-        stable = stable + 1 if now == last else 0
-        last = now
-        if stable >= 30 and (unlike is None or now != unlike):
+        now = fingerprint(watch.display)
+        if now != last:
+            last, since = now, watch_seconds(watch)
+        elif watch_seconds(watch) - since >= 3 and (unlike is None or now != unlike):
             break
     return last
 
@@ -207,7 +219,7 @@ async def first_run(phone, watch, outcome: dict) -> None:
     outcome["screen_before"] = fingerprint(watch.display)
     bind = {"init_before": await phone.exchange(CHECK_INIT)}
     bind.update(await phone.bind(clock=datetime_payload(BIND_TIME)))
-    bind["screen_after"] = await settled_screen(watch.display, unlike=outcome["screen_before"])
+    bind["screen_after"] = await settled_screen(watch, unlike=outcome["screen_before"])
     bind["init_after"] = await phone.exchange(CHECK_INIT)
     outcome["bind"] = bind
 
@@ -233,7 +245,7 @@ async def again(phone, watch, outcome: dict) -> None:
     # screen has held for three seconds: a provisioned watch goes to its
     # face, a fresh one to "Select a Language".
     await watch.past_boot_animation(timeout=70)
-    outcome["screen"] = await settled_screen(watch.display)
+    outcome["screen"] = await settled_screen(watch)
     outcome["frames"] = watch.display.frames
 
     await phone.listen()

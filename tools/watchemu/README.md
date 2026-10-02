@@ -200,8 +200,9 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --no-bind
 Commands and actions take hex or `:protocol`'s names (`DEVICE_VERSION CHECK`); command
 names are read from `CommandCode.kt`. `--char 8003` writes to the other write
 characteristic (a SET there is never acknowledged), `--no-trigger` leaves out the `[03]`,
-`--no-bind` asks the watch as first-run setup leaves it. With the bind it takes ~22s, the boot animation being most of it; without, ~4s. So
-bind once into a state file and ask everything after it from there:
+`--no-bind` asks the watch as first-run setup leaves it. With the bind it takes ~14s, the
+boot animation being most of it; without, ~4s. So bind once into a state file and ask
+everything after it from there:
 
 ```bash
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
@@ -1080,6 +1081,26 @@ And two more gaps in the virtual air, each hit only once the phone reconnected:
   the emulator behind the wall clock (`Apollo3Machine.realtime_lag` says how far), and on
   the wall clock for data into the phone, which is what a phone keeps. The interval comes
   from the create-connection command and every `LE_Connection_Update` after it.
+
+**When to bind: once the setup screen is drawn, and no later (#55).** The bind's pairing
+dialog opens on top of "Select a Language", so a phone has to wait for it -- and *drawn*
+is the word. The animation is 135 of the panel's frames (its first is drawn as the
+animation opens, before the firmware's counter at `0x00075A7C` has counted one); "Select a
+Language" opens at 398.9M instructions and its first frame, the panel's 136th, lands
+somewhere between 402M and 420M (radio off). A bind sent at frame 135 is acknowledged,
+all three commands, and nothing happens: the dialog never shows, checkInit stays 0.
+`EmulatedWatch.past_boot_animation` waits for frame 136 (`FIRST_SCREEN_FRAME`). It used
+to wait for frame 135 and then for the emulator to catch up with the wall clock -- which
+hid the wrong frame, because catching up took long enough for 136 to be drawn, but on
+the idle setup screen the catch-up runs at ~0.1s a second and took up to 41s.
+`test_ble_end_to_end.py` gives each boot 60s of watch time, and on a slow run the bind
+landed at 54s and the watch's budget ran out under the next checkInit: a GATT timeout,
+then everything after it (#55). The catch-up was never needed -- `Air` puts data into the
+watch on the watch's clock, which is the whole of what the lag could break -- and binding
+3.7 to 11.4s behind the wall clock, under load, passed every time. The test went from
+100-155s to ~32s, and `cmd`'s bind from ~22s to ~14s. The screen checks that follow count
+*watch* seconds too: three wall seconds of a slow run can be less than "Pairing Success"'s
+two.
 
 `tests/test_ble_end_to_end.py` runs the bind back to back with no pauses and asserts the
 acknowledgements, the screen change and the init flag; `tests/test_ble_link.py` pins the
@@ -1973,7 +1994,8 @@ split, the pairing window, the Database Hash park, and `DEVICE_VERSION` being re
 rather than ignored), and `:app`'s BLE stack end to end through the AVD. It was not
 good for anything that crosses a restart (#41 has fixed that), anything that needs data on
 the watch, or casual use: measured on 2026-10-02, a boot to the UI is 18.9s (`--seconds 14 --no-ble`)
-and a bond-and-bind round trip is 51.9s (`test_ble_end_to_end.py`), every time.
+and a bond-and-bind round trip is 51.9s (`test_ble_end_to_end.py`), every time. (Since
+#55, ~18s: it no longer waits for the emulator to catch up with the wall clock.)
 
 In the order to do them. All are on the kanban board (`/kanban`).
 

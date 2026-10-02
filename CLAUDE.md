@@ -119,7 +119,7 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-sta
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save-state ui.snap
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
-# prints every reply decoded. ~4s from a bound state file, ~22s binding a fresh watch.
+# prints every reply decoded. ~4s from a bound state file, ~14s binding a fresh watch.
 # Hex or :protocol names; --char 8003 writes to the other write characteristic (a SET there
 # is never acknowledged); --no-bind skips the bind. --mac MAC asks the physical watch instead.
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
@@ -352,7 +352,7 @@ watch is on the air with it: it advertises as `Norm2#00000` at the physical watc
 Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discovers the GATT
 table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
 firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host, then
-restarts the watch from its saved flash and reconnects with the stored keys, in ~100s;
+restarts the watch from its saved flash and reconnects with the stored keys, in ~32s;
 `--netsim` does it with the Pixel 8 AVD (`launch-emulator.ps1 -Watch`).
 
 The seam answers three kinds of thing itself and forwards the rest: the download phase
@@ -405,8 +405,10 @@ too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead 
 wall clock and never tries to catch up; when the watch falls *behind* (drawing the pairing
 animation does it), `Apollo3Machine.realtime_lag` says by how much, and `Air` delivers
 data into the watch on the watch's clock so the firmware's timing windows stay the width
-the firmware expects. `--hci-trace` is the first thing to turn on when the two disagree
-about what was said.
+the firmware expects. So nothing waits for the watch to catch up: a phone binds once the
+setup screen is *drawn* -- the panel's 136th frame, not the animation's last -- and that
+is all (#55; README "Binding"). `--hci-trace` is the first thing to turn on when the two
+disagree about what was said.
 
 ### The invariants that break silently
 

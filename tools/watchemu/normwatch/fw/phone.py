@@ -51,6 +51,14 @@ PHONE = "F0:F1:F2:F3:F4:F5"
 #: ``ui_notify_poweroff_dlg.c``'s boot animation; the first-run setup screen is
 #: drawn after it, and the bind's pairing dialog opens on top of that.
 BOOT_ANIMATION_FRAMES = 134
+#: The panel's frame count once the first screen after the animation is on it
+#: ("Select a Language", or a bound watch's face). The animation is 135 of the
+#: panel's frames -- the first is drawn as it opens, at 5.2M instructions,
+#: before the firmware's own counter (0x00075A7C) has counted one -- and the
+#: next screen's first frame lands some way after its notify opens: radio off,
+#: notify 5 at 398.9M and frame 136 between 402M and 420M. A bind sent at frame
+#: 135 is acknowledged, but its pairing dialog never shows (#55).
+FIRST_SCREEN_FRAME = BOOT_ANIMATION_FRAMES + 2
 
 FLAG_START = 0x6F
 FLAG_END = 0x8F
@@ -343,20 +351,21 @@ class EmulatedWatch:
         return True
 
     async def past_boot_animation(self, *, timeout: float = 60) -> bool:
-        """Wait for the setup screen and for the emulator to catch up with the wall clock.
+        """Wait for the screen after the boot animation (``FIRST_SCREEN_FRAME``).
 
-        The bind's pairing dialog opens on top of the setup screen, so it has to
-        be drawn. And while the emulator is behind real time -- drawing that
-        screen puts it there -- the firmware's few-millisecond window between
-        handing over a reply and clearing its 8001 buffer is tens of
-        milliseconds of the phone's time (see ``Air``).
+        The bind's pairing dialog opens on top of the setup screen, so it has
+        to be there -- drawn, not just opened. How far the emulator is behind
+        the wall clock does not matter: ``Air`` delivers data into the watch
+        one connection interval later on the *watch's* clock, so the
+        firmware's few-millisecond window between handing over a reply and
+        clearing its 8001 buffer stays the width it expects; binding 3.7 to
+        11.4 s behind passed every time. This used to wait for the lag to fall
+        under 10 ms as well, which on the idle setup screen took up to ~40 s
+        and ran a test's watch out of its budget mid-bind (#55) -- and hid
+        that it was waiting for the wrong frame.
         """
         deadline = time.monotonic() + timeout
-        while self.display.frames <= BOOT_ANIMATION_FRAMES:
-            if time.monotonic() > deadline:
-                return False
-            await asyncio.sleep(0.1)
-        while self.machine.realtime_lag >= 0.01:
+        while self.display.frames < FIRST_SCREEN_FRAME:
             if time.monotonic() > deadline:
                 return False
             await asyncio.sleep(0.1)
