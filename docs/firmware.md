@@ -626,7 +626,11 @@ not up.
 - **128 bytes per request.** The shipped handler's buffer is 0x80 bytes on its stack
   (`sub sp, #0x8C`, `memset` of 0x80 at `0x000377B4`), and the 0x6F reply builder at
   `0x000393B8` refuses any frame of 255 bytes or more (`cmp #0xFF` on both paths). Raising it
-  means editing the handler's frame too -- a separate decision (#69).
+  to ~240 would mean editing the handler's own stack frame as well (`sub`/`add sp`, the
+  `memset` length, the reply capacity -- four more two-byte constants) for roughly half the
+  dump time. **Decided against (#69, owner's call): 128 stays.** A longer dump is worth more
+  than a patch that touches the handler's frame, because the image this becomes is the one
+  flashed to the only watch we have. Do not revisit it to save time.
 - **A read may span pages.** The driver clamps each transfer to the end of the page it is in
   (`0x0003E39C`-`0x0003E3BC`) and comes back for the rest, so nothing needs aligning.
 - **A read can lose the NAND to the UI, and must be retried.** The watch reads the NAND

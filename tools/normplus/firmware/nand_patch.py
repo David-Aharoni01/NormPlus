@@ -44,8 +44,10 @@ is not up.
 **Reply size is 128 bytes per request**, which is the shipped handler's own limit:
 its destination is a 0x80-byte stack buffer (``sub sp, #0x8C``; ``memset`` of 0x80
 at 0x000377B4) and the 0x6F reply builder at 0x000393B8 refuses any frame of 255
-bytes or more (``cmp #0xFF`` on both of its paths). Raising it would mean editing
-the handler's frame as well, which is a separate decision; see #69.
+bytes or more (``cmp #0xFF`` on both of its paths). Raising it to ~240 would mean
+editing the handler's own stack frame as well, and that was **decided against**
+(#69): a slower dump is worth more than a patch that touches the frame, since
+this image is the one that gets flashed to the only watch we have.
 
 Build one with::
 
