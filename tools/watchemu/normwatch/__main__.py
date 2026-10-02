@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from .fw import flashstate
+from .fw import flashstate, snapshot
 from .fw.bootrom import BootRom
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
@@ -208,7 +208,8 @@ def _run_live(machine, devices, args, *, log=print):
     def worker() -> None:
         try:
             result["stats"] = machine.run(
-                max_instructions=args.max_instructions, slice_size=args.slice
+                max_instructions=args.max_instructions, slice_size=args.slice,
+                resume=args.load_state is not None,
             )
         except BaseException as exc:  # surfaced after the window closes
             result["error"] = exc
@@ -305,6 +306,10 @@ def cmd_boot(args) -> int:
     # Before anything runs and before any patch: the restored flash is the
     # watch as it was left, and a patch goes on top of it, never into it.
     flash_state = Path(args.flash_state) if args.flash_state else None
+    if flash_state is not None and args.load_state:
+        print("error: --load-state brings its own flash; leave out --flash-state",
+              file=sys.stderr)
+        return 2
     if flash_state is not None:
         if flash_state.exists():
             try:
@@ -339,6 +344,16 @@ def cmd_boot(args) -> int:
                       f"(-BridgePort {args.netsim} if not the default)")
     elif args.ble_controller and not args.no_ble:
         controller = attach_ble_controller(machine, log=log)
+    # After every device is attached -- the snapshot names each by where it
+    # hangs off the machine -- and before any patch, which goes on top.
+    if args.load_state:
+        try:
+            snapshot.restore(args.load_state, machine, log=log)
+        except (OSError, snapshot.SnapshotMismatch, snapshot.SnapshotRefused) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        # The budget and --press times count from where the snapshot was taken.
+        args.max_instructions += machine._instructions
     if args.force_gestures:
         force_gestures(machine, log=print if quiet else log)
 
@@ -352,7 +367,9 @@ def cmd_boot(args) -> int:
     for spec in args.press or []:
         parts = spec.split(":")
         pin = int(parts[0], 0)
-        at = int(parts[1], 0) if len(parts) > 1 and parts[1] else args.max_instructions // 4
+        start = machine._instructions if args.load_state else 0
+        at = (start + int(parts[1], 0) if len(parts) > 1 and parts[1]
+              else start + (args.max_instructions - start) // 4)
         hold = int(parts[2], 0) if len(parts) > 2 and parts[2] else None
         machine.press_button(pin, at, hold)
 
@@ -360,7 +377,8 @@ def cmd_boot(args) -> int:
         if args.live:
             stats = _run_live(machine, devices, args, log=log)
         else:
-            stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice)
+            stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice,
+                                resume=args.load_state is not None)
     finally:
         # Also on Ctrl-C and a closed window: that is how --netsim sessions
         # end. Stopping between an erase and its program loses that page,
@@ -369,6 +387,19 @@ def cmd_boot(args) -> int:
             saved = flashstate.save(flash_state, machine, devices["nand"])
             log(f"  [flash] saved {len(saved['flash_pages'])} flash pages and "
                 f"{len(saved['nand_pages'])} NAND pages to {flash_state}")
+
+    state_saved = None
+    if args.save_state:
+        if stats.stop.kind in ("budget", "stopped"):
+            try:
+                state_saved = snapshot.save(args.save_state, machine)
+                log(f"  [state] saved {args.save_state}: {state_saved['bytes']:,} bytes at "
+                    f"{state_saved['instructions']:,} instructions")
+            except snapshot.SnapshotRefused as exc:
+                print(f"error: state not saved: {exc}", file=sys.stderr)
+        else:
+            print(f"error: state not saved: the run ended in a {stats.stop.kind}",
+                  file=sys.stderr)
 
     if args.json:
         print(json.dumps({
@@ -387,6 +418,8 @@ def cmd_boot(args) -> int:
             "display_pixel_bytes": devices["display"].pixel_bytes,
             "boot_animation": boot_animation_note(machine).strip(),
             "flash_state": str(flash_state) if flash_state is not None else None,
+            "state_loaded": args.load_state,
+            "state_saved": args.save_state if state_saved else None,
             "flash_pages_written": [f"0x{i * BootRom.PAGE_SIZE:08X}" for i in sorted(machine.flash_dirty)],
         }, indent=2))
         if args.screenshot:
@@ -591,6 +624,14 @@ def main(argv=None) -> int:
                              "a closed window included). A watch bound once then "
                              "starts past first-run setup and keeps its bond. "
                              "Refuses a file saved against another image.")
+    p_boot.add_argument("--save-state", metavar="PATH", default=None,
+                        help="at the end of the run, save the whole machine -- memory, "
+                             "CPU, every device -- to PATH. Not with --radio/--netsim: "
+                             "a bumble radio's state lives outside the machine")
+    p_boot.add_argument("--load-state", metavar="PATH", default=None,
+                        help="start from a machine saved with --save-state instead of "
+                             "booting; build it with the same switches. --seconds, "
+                             "--max-instructions and --press times then count from there")
     p_boot.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 

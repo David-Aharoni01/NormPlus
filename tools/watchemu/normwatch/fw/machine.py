@@ -231,6 +231,10 @@ class Apollo3Machine:
         #: not count it a second time. Mirrors watchemu_hook.c.
         self._stopped_address = None
         self._just_stopped = False
+        #: Where the last run stopped. Between slices the authoritative PC is a
+        #: local of run(), not the CPU register, so this is what a resumed run
+        #: (or a snapshot) starts from.
+        self._resume_pc = None
         #: PC -> "is this a WFI/WFE". The run loop asks after every handback, and
         #: it was reading two bytes out of the emulator to find out each time.
         #: Invalidated wholesale whenever flash is programmed.
@@ -676,15 +680,30 @@ class Apollo3Machine:
         self.cortexm.vtor = img.link_address
         self.reset_requested = False
 
-    def run(self, max_instructions: int = 50_000_000, slice_size: int = 4_000_000) -> RunStats:
+    def run(self, max_instructions: int = 50_000_000, slice_size: int = 4_000_000,
+            *, resume: bool = False) -> RunStats:
+        """Run from reset -- or, with *resume*, carry on where the last run stopped.
+
+        A resumed run starts at the PC the last one stopped on, with the
+        clocks, counters and pending exceptions as they were, so *max_instructions*
+        is the total since the boot rather than more on top. The budget never
+        shapes a quantum (only the idle fast-forward reads it), so running to B1
+        and resuming to B2 is the same run as going to B2 in one go -- which is
+        what lets a snapshot (snapshot.py) stand in for a boot.
+        """
         stats = RunStats()
-        self.reset()
-        pc = self.image.reset_vector
+        if resume:
+            if self._resume_pc is None:
+                raise RuntimeError("nothing to resume: this machine has not run")
+            pc = self._resume_pc
+        else:
+            self.reset()
+            pc = self.image.reset_vector
+            self._instructions = 0
+            self._quantum_cycles = 0
         started = time.time()
         self._last_fault_address = None
         self._faulted = None
-        self._instructions = 0
-        self._quantum_cycles = 0
         self._instruction_budget = max_instructions
         # Bound once: this is read after every handback — 776k times in a 200M
         # boot — and the binding's reg_read resolves a register class through a
@@ -806,6 +825,7 @@ class Apollo3Machine:
                     stats.stop = StopReason("stuck", verdict, pc)
                     break
 
+        self._resume_pc = pc
         stats.instructions = self._instructions
         stats.wall_seconds = time.time() - started
         if stats.stop is None:

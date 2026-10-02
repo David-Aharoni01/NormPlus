@@ -215,6 +215,10 @@ later, and a state saved before then is an unbound watch. Exit status: 0 a reply
 nothing did, 2 the setup failed. The watch and the phone are `fw/phone.py`'s
 `EmulatedWatch` and `Phone`, which `tests/test_ble_end_to_end.py` uses too.
 
+`--save-state PATH` / `--load-state PATH` skip the boot for anything that is not about the
+radio: save once past the boot animation, and every later run starts there in half a
+second. See "Snapshots".
+
 ### The live window
 
 ```bash
@@ -1336,6 +1340,63 @@ frame, not a pixel. Bisected: identical through 225M, one short from 250M on, an
 exactly one short at 450M, so it is one lost tick between ~4.7 and ~5.2s of watch time,
 not drift. Card #54; `tests/test_golden.py` pins it as it stands.
 
+### Snapshots: `--save-state` and `--load-state`
+
+A boot to the UI is ~400M instructions of boot animation, 11s of wall clock, paid by every
+probe. `--save-state PATH` writes the whole machine at the end of a run; `--load-state PATH`
+starts the next run there instead of booting:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save-state ui.snap
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
+```
+
+The second command is 0.47s from start to screenshot, the interpreter included, and draws
+the same screen. A snapshot is ~575 KB, saved in ~40 ms and restored in ~20 ms. With
+`--load-state`, `--seconds`, `--max-instructions` and `--press` times count from where
+the snapshot was taken.
+
+It is not an approximation of the run it came from. Saved part-way through each golden
+workload, restored **in another process**, and carried on -- with the tap or the swipe
+scheduled only after the restore -- every one lands on its golden fingerprint to the
+instruction (`tests/test_snapshot.py`). That rests on two things:
+
+- **`run(..., resume=True)`.** `run()` used to start from reset every time. Resumed, it
+  carries on from the PC the last run stopped at, with the clocks and pending exceptions
+  as they were, and its budget is the total since the boot. The budget never shapes a
+  quantum -- only the idle fast-forward reads it -- so running to B1 and resuming to B2
+  is the same run as going to B2 at once, which was checked before anything was saved.
+- **Everything comes across.** `fw/snapshot.py` saves memory (flash, the boot ROM window,
+  SRAM), the CPU, the native hook's counters and the Python state of every object
+  reachable from the machine -- 61 of them, from CortexM to the touch panel. A reference
+  from one to another is written as the other's path (`m.bus.by_base[0x50014000]`) and
+  comes back as the object at that path in a machine built the same way, so a new
+  attribute on a device is saved without anyone remembering to. Restore is strict: an
+  object the snapshot has and the machine does not, or the reverse, is an error naming it
+  (`the snapshot has Cw6303Pmu (m.sim_i2c.devices[98]) ... which this machine does not`),
+  as are a different image, a different hook, or a different `--no-ble` / `--idle-skip`.
+
+**Unicorn's CPU context does not travel.** Two things, each found by a crash:
+
+- The binding's pickling of a context (`UcContext.__setstate__`) casts a
+  `create_string_buffer` it does not keep, so the context points into freed memory; the
+  restore reads it and the process dies at exit (127).
+- A context is not position-independent: six of its words, at bytes 4080-4136 of 4660,
+  are per-engine heap pointers -- by their place in the structure most likely QEMU's MPU
+  region arrays. Copied into another engine, the restore writes through them -- an access
+  violation.
+
+So `_restore_cpu` copies the saved bytes into a context the target engine allocated
+itself, and every word that differs between two fresh engines, or between the saving
+process's blank context and this one's, keeps the target's own value: the general,
+special and FPU registers come across (checked across processes), the pointers do not.
+Unicorn's MPU is never configured anyway -- the PPB is CortexM's, in Python.
+
+What a snapshot cannot hold: a bumble radio (`--radio`, `--netsim`, `normwatch cmd`) --
+its link state lives in bumble, outside the machine; the NZ8801 model alone is fine. For
+BLE work `--flash-state` is the fast path. And stimulus still pending when it is saved.
+A snapshot is a pickle: load only ones you made.
+
 ### Golden fingerprints
 
 `tests/test_golden.py` records what the watch does over four fixed, deterministic runs
@@ -1854,9 +1915,9 @@ In the order to do them. All are on the kanban board (`/kanban`).
    (status 1) on a bound watch as on an unbound one, and gets silence over 8003.
 3. ~~**#47 — golden-fingerprint test**~~ -- done, and done first, because #46 changes
    the run loop: `tests/test_golden.py`, see "Golden fingerprints". It found #54.
-4. **#46 — snapshot and restore** a booted machine, so the 19s / 52s above become
-   sub-second. The biggest iteration win left; composes with #41. The golden test is
-   its acceptance check: a restored run has to land on the same fingerprint.
+4. ~~**#46 — snapshot and restore**~~ -- done: `--save-state` / `--load-state`, see
+   "Snapshots". A boot to the UI goes from 11s to 0.47s, and a snapshot restored in
+   another process lands on every golden fingerprint. Not with a bumble radio.
 5. **#50 — rehearse OTA type 8 against the emulated watch.** First establish whether a
    resource update is served by the application (the DFU service is in its GATT table)
    or by the first-stage bootloader, which is not in the image; only the first can be

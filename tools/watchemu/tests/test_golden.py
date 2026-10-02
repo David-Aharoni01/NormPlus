@@ -105,7 +105,8 @@ WORKLOADS = {
 }
 
 
-def run(name: str, *, idle_skip: bool = False) -> dict:
+def build(name: str, *, idle_skip: bool = False, stimulus: bool = True):
+    """The workload's machine, ready to run: (machine, devices, touch panel)."""
     w = WORKLOADS[name]
     m = Apollo3Machine(image_mod.load(IMAGE), log=quiet, trace=None, fast_hook=True,
                        ble=w.get("radio", False), idle_skip=idle_skip)
@@ -119,10 +120,18 @@ def run(name: str, *, idle_skip: bool = False) -> dict:
         attach_ble_controller(m, log=quiet)
     if w.get("gestures"):
         force_gestures(m, log=quiet)
-    if w.get("stimulus"):
+    if stimulus and w.get("stimulus"):
         w["stimulus"](m, touch)
-    stats = m.run(max_instructions=w["budget"], slice_size=4_000_000)
+    return m, devices, touch
 
+
+def run(name: str, *, idle_skip: bool = False) -> dict:
+    m, devices, touch = build(name, idle_skip=idle_skip)
+    stats = m.run(max_instructions=WORKLOADS[name]["budget"], slice_size=4_000_000)
+    return fingerprint(m, devices, touch, stats)
+
+
+def fingerprint(m, devices, touch, stats) -> dict:
     display = devices["display"]
     fb = bytes(display.framebuffer)
     read = lambda address, size: int.from_bytes(m.uc.mem_read(address, size), "little")
