@@ -1388,7 +1388,7 @@ image. It does, and the rehearsal (`tests/test_ota.py --full`) goes all the way 
 the unmodified `Picture_P03B_NORM2_0.4.bin` sent as the companion app sends it, CRC `04 01`,
 REBOOT `05 01`, all 197 pages of the partition identical to the file, "Upgrade Success" on
 the screen, and the watch boots from that flash exactly as before it. What it took to get
-there is mostly what `ApolloOtaProtocol.kt` gets wrong.
+there is mostly what `ApolloOtaProtocol.kt` got wrong (#56 replaced it).
 
 **UPGRADE_MODE is a mode switch, not a reboot.** `0x0E [00]` on 8001 is acknowledged and
 nothing resets: the DFU service (`1530`, `1531`/`1532`) is the running application's, served
@@ -2011,8 +2011,9 @@ In the order to do them. All are on the kanban board (`/kanban`).
    another process lands on every golden fingerprint. Not with a bumble radio.
 5. ~~**#50 — rehearse an OTA against the emulated watch**~~ -- done: the application
    serves it, the resource partition is type 4 (8 is refused), and a full update goes
-   through; see "Rehearsing an OTA". Next is **#56**, fixing `ApolloOtaProtocol.kt`
-   against it.
+   through; see "Rehearsing an OTA". **#56** then replaced `ApolloOtaProtocol.kt` with
+   `ApolloOtaSession` in `:protocol`, and the same update went through end to end from
+   `:app` in the AVD.
 6. **#51 — health records.** A fresh watch has no sport, sleep or HR records, so `:app`'s
    sync only runs its empty paths against it. Drive the modelled accelerometer so the
    firmware's own pedometer records steps.

@@ -4,6 +4,31 @@ Analysis of the firmware images bundled in the original companion APK
 (`NORM/assets/`), plus the vendor's OTA server. Everything below is derived from
 the binaries and the app's smali; inferences are flagged as such.
 
+> **Updated 2026-10 (#50, #56).** Where this document says the resource partition is
+> update type 8, read **4**: the watch's own SET handler accepts 1-4 and refuses 8, which
+> the watch emulator showed by running the firmware. The update protocol as the firmware
+> answers it is in `docs/protocol.md` ("Apollo DFU"), and the resource rehearsal has been
+> done against the emulated watch from `:app`.
+
+## Summary
+
+The Norm 2 runs an ODM firmware (Shenzhen Appscomm; the Allview Allwatch H looks like the same
+platform rebranded) on an **Ambiq Apollo3 Blue** — Cortex-M4F, 1 MB flash @0x00000000, 384 KB
+SRAM @0x10000000, integrated BLE 5. Board string `EW_WBT21-A`. The stack is **FreeRTOS 9** +
+the **AmbiqSuite** `ambiq_ble` Cordio host + **LVGL 5.x** for the UI, with a vendor `ew_` HAL.
+Hardware from the driver names: RM67162 AMOLED, WCN1F3549 touch, PixArt PAH8011 HR, CW6303
+PMU, IPUS PSRAM, SPI NAND, P9027LP wireless charging, stepper-driven physical hands.
+
+The image is **unencrypted, unpacked and unobfuscated**, and its 130 `assert()` `__FILE__`
+strings leak the whole source tree — so it is very tractable to analyse and patch.
+
+```
+internal flash  0x00000000–0x0001FFFF   bootloader + config (128 KB reserved)
+                0x00020000–0x000D6693   application
+external NAND   0x0C780000              resources / pictures      (update type 4; 8 is refused)
+                0x0FC00000              OTA staging               (update type 1)
+```
+
 ---
 
 ## 1. The images
@@ -19,7 +44,8 @@ image data behind a small table.
 
 Update types the OTA path understands (`OtaApolloCommand.getUpdateType`):
 `1` = Apollo (main MCU), `2` = TouchPanel, `3` = HeartRate, `8` = Picture / Language /
-WatchFace.
+WatchFace. **That is `cn.appscomm.ota`'s table; the firmware accepts only 1-4, and the
+resource partition is 4 (`cn.appscomm.bluetooth.ota`'s `UPDATE_TYPE_PICTURE_LANGUAGE`).**
 
 ---
 
@@ -276,7 +302,7 @@ from the actual payload and leaves every other field alone. Round-trip tested: p
 deep in the payload → `verify` flags the mismatch → `seal` → `verify` passes.
 
 The transport CRC-16 the phone sends in the OTA SET header needs no baking in —
-`ApolloOtaProtocol` computes it at flash time — but `verify` prints it so it can be
+`ApolloOta.crc` (in `:protocol`) computes it at flash time — but `verify` prints it so it can be
 cross-checked against the app's logs.
 
 **Still unknown:** whether the first-stage bootloader actually *checks* this field, and what
@@ -445,8 +471,8 @@ weather), the ROI is much better here and the risk is zero.
 | A base image to patch | **Have.** `NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin`, unencrypted |
 | The image is the build actually on the watch | **Likely, unconfirmed.** Watch reports `A0.2…B01`; the asset is `F0.2B01` with internal `A0.2R0.1T1.1H0.5B0.1` — the Apollo component matches. Confirm with `DEVICE_VERSION`, which currently times out (open bug) |
 | Re-seal a patched image so it validates | **Have.** §7 + `tools/firmware/image_tool.py` |
-| Transport CRC-16 | **Have.** `ApolloOtaProtocol.apolloCrc16`, byte-verified against the smali |
-| A wire implementation of the 5-step OTA | **Have, but NEVER RUN.** `app/src/main/kotlin/com/norm2hacked/protocol/ota/ApolloOtaProtocol.kt` — written in the initial commit `c0826d45`, untouched since, absent from the verified-on-device list |
+| Transport CRC-16 | **Have.** `ApolloOta.crc`, byte-verified against the smali, and accepted by the firmware (`04 01`) |
+| A wire implementation of the OTA | **Have, verified against the emulated watch.** `ApolloOtaSession` (`protocol/.../ota/ApolloOta.kt`, #56) replaced the never-run `ApolloOtaProtocol.kt`; a full resource update from `:app` in the AVD went through. Not yet run on the physical watch (#13) |
 | Understanding of the code well enough to patch it meaningfully | **Not yet.** 130 source filenames recovered, but no disassembly has been done. Nobody has opened it in Ghidra |
 | A recovery path if a flash goes wrong | **None known.** Per §5 the OTA responder lives in the image being replaced; SWD status unknown |
 | A spare device | **No** |
@@ -459,11 +485,11 @@ here and safely flashing a patched image, in priority order:
 2. **No recovery.** Until SWD is confirmed working, any main-MCU flash is one-shot.
 3. **No analysis.** We can re-seal an image but do not yet know where to patch.
 
-### The safe rehearsal: update type 8
+### The safe rehearsal: the resource image (update type 4, not 8)
 
 `UpdateType.PICTURE (0x08)` targets the **resource partition in external NAND at
 0x0C780000**, not internal flash — it cannot overwrite executable code, and
-`ApolloOtaProtocol` already supports it (with `MTU_WATCHFACE`). Re-flashing the *unmodified*
+`ApolloOtaSession` sends it (as type 4 -- see the note at the top). Re-flashing the *unmodified*
 `NORM/assets/Picture_P03B_NORM2_0.4.bin` exercises all five steps, the chunking, the ACK
 handling and the CRC end-to-end for zero net change.
 
@@ -488,7 +514,8 @@ Cheap and safe, in order:
    platform and dangerous to flash. See §8.
 2. ~~Try `--list-blobs`~~ — done, denied. The API's single record is the only enumeration.
 3. ~~Solve the image CRC~~ — done, §7. `image_tool.py seal` re-seals a patched image.
-4. **Rehearse the OTA path with update type 8** (§9a) — re-flash the unmodified resource
+4. ~~**Rehearse the OTA path with update type 8** (§9a)~~ -- done against the emulated watch,
+   as type 4 (#50, #56); on the physical watch it is #13 — re-flash the unmodified resource
    blob. This is the next thing to actually do: it converts "we have an OTA implementation"
    from an assumption into a fact, without risking the firmware.
 5. **Open the watch and probe for SWD test points.** Still the gate on any main-MCU flash,

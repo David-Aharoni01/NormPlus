@@ -53,7 +53,7 @@ private const val REKICK_DELAY_MS = 30_000L
 // remote-RSSI read (see BleManager.readRemoteRssi) that exercises the radio without touching the
 // command queue or expecting a protocol reply, so it can never fail the connection.
 //
-// Set <= 0 to disable. PENDING ON-DEVICE VERIFICATION (see CLAUDE.md warm-connection plan): if the
+// Set <= 0 to disable. PENDING ON-DEVICE VERIFICATION (see docs/app.md, "Warm-connection via BleService"): if the
 // watch is observed to drop genuinely idle links despite this, raise the cadence or switch to a
 // periodic battery CHECK; if the link never drops idle, this can be disabled to save a little power.
 private const val KEEPALIVE_INTERVAL_MS = 90_000L
@@ -62,7 +62,7 @@ private const val KEEPALIVE_INTERVAL_MS = 90_000L
  * Always-on foreground service that owns [BleManager]'s GATT link for the lifetime of the app
  * (and in the background). Holding the link alive is the key to fast reconnects: a brief drop
  * reconnects on a still-warm SMP/encryption state (BleManager's warm-reconnect path) instead of
- * paying the ~8s cold-connect SMP race. See "Warm-connection via BleService" in CLAUDE.md.
+ * paying the ~8s cold-connect SMP race. See "Warm-connection via BleService" in docs/app.md.
  *
  * Responsibilities:
  *  - Run as a typed (`connectedDevice`) foreground service so the OS keeps the process alive.
