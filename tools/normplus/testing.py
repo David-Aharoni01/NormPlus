@@ -26,8 +26,8 @@ def main(argv=None) -> int:
     if "--" in argv:
         at = argv.index("--")
         argv, passthrough = argv[:at], argv[at + 1:]
-    ap = argparse.ArgumentParser(prog="normtest", description=__doc__.split("\n\n")[0],
-                                 epilog=__doc__.split("\n\n", 2)[2],
+    ap = argparse.ArgumentParser(prog="normtest", description=__doc__.split("\n\n")[0].replace("``", ""),
+                                 epilog=__doc__.split("\n\n", 2)[2].replace("``", ""),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("names", nargs="*", help="run only test files whose name contains one of these")
     ap.add_argument("--list", action="store_true", help="list the test files and stop")

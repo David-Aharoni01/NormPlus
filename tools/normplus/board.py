@@ -188,8 +188,8 @@ def cmd_sync(args) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="normboard", description=__doc__.split("\n\n")[0],
-                                 epilog=__doc__.split("\n\n", 1)[1],
+    ap = argparse.ArgumentParser(prog="normboard", description=__doc__.split("\n\n")[0].replace("``", ""),
+                                 epilog=__doc__.split("\n\n", 1)[1].replace("``", ""),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command")
     sub.add_parser("all", help="every issue, Done included").set_defaults(func=cmd_list, all=True)

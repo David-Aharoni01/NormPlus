@@ -46,7 +46,7 @@ the bundled resource image.
 
 ## The tools
 
-One install, from the repository root, puts six commands on your PATH. They stay linked to
+One install, from the repository root, puts seven commands on your PATH. They stay linked to
 this checkout, so pulling new code updates them; after a pull that changes `pyproject.toml`,
 run the install again.
 
@@ -62,8 +62,9 @@ uv tool install --editable .
 | `normfw` | Checks and re-seals firmware images | `normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` |
 | `normtest` | Runs the Python tests | `normtest`, or `normtest ota` |
 | `normboard` | The task board: GitHub issues on the NormPlus project | `normboard`, `normboard show 13` |
+| `normhelp` | What every command is for, and the common recipes | `normhelp`, `normhelp phone start` |
 
-Every command takes `--help`. Without installing, `uv run <command>` works from inside the
+Every command takes `--help`, and `normhelp` explains them all. Without installing, `uv run <command>` works from inside the
 repository.
 
 **Run the app against the emulated watch, no hardware at all:**
@@ -161,7 +162,8 @@ java -jar NORM\_apk\apktool_3.0.2.jar b NORM
 ## Quick reference
 
 ```powershell
-uv tool install --editable .      # once: the six commands on your PATH
+uv tool install --editable .      # once: the seven commands on your PATH
+normhelp                          # what each of them is for, and the common recipes
 normphone start                   # the Android emulator
 normphone install                 # build + install the Android app
 normwatch boot --live             # the watch's own firmware, in a window

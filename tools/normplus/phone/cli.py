@@ -235,8 +235,8 @@ def cmd_bridge(args) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="normphone", description=__doc__.split("\n\n")[0],
-                                 epilog=__doc__.split("\n\n", 1)[1],
+    ap = argparse.ArgumentParser(prog="normphone", description=__doc__.split("\n\n")[0].replace("``", ""),
+                                 epilog=__doc__.split("\n\n", 1)[1].replace("``", ""),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sdk", help="the Android SDK (default: ANDROID_HOME, local.properties)")
     sub = ap.add_subparsers(dest="command", required=True)

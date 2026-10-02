@@ -139,7 +139,7 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 ### Python tools (uv)
 
 Everything in Python is one uv project: `pyproject.toml` at the root, the code in
-`tools/normplus/`, the tests in `tools/tests/`. It installs six commands:
+`tools/normplus/`, the tests in `tools/tests/`. It installs seven commands:
 
 | Command | What |
 |---|---|
@@ -149,6 +149,7 @@ Everything in Python is one uv project: `pyproject.toml` at the root, the code i
 | `normfw` | firmware images: `verify`, `seal`, `query-ota` |
 | `normtest` | the Python test suite, one file at a time (`normtest ota cmd`, `normtest ota -- --full`) |
 | `normboard` | the task board: GitHub issues on the NormPlus project (see "Task tracking") |
+| `normhelp` | what every command is for, the common recipes; `normhelp <tool> [subcommand]` for its help |
 
 ```bash
 uv sync                          # once, and after pulling: Python 3.11 + the pinned libraries (uv.lock)
