@@ -1997,7 +1997,7 @@ the watch, or casual use: measured on 2026-10-02, a boot to the UI is 18.9s (`--
 and a bond-and-bind round trip is 51.9s (`test_ble_end_to_end.py`), every time. (Since
 #55, ~18s: it no longer waits for the emulator to catch up with the wall clock.)
 
-In the order to do them. All are on the kanban board (`/kanban`).
+In the order to do them. All are GitHub issues on the NormPlus board (`normboard`).
 
 1. ~~**#41 — persist flash**~~ -- done: `--flash-state PATH`, see "The watch keeps what it
    writes". It also closed a ninth bumble gap (the firmware was never asked for its key).

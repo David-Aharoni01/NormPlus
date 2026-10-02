@@ -20,6 +20,7 @@ normcmd = "normplus.watch.__main__:cmd_main"
 normphone = "normplus.phone.cli:main"
 normfw = "normplus.firmware.cli:main"
 normtest = "normplus.testing:main"
+normboard = "normplus.board:main"
 
 [build-system]
 requires = ["uv_build>=0.11.13,<0.12"]

@@ -1,7 +1,7 @@
 # The Android app and `:protocol`
 
 How `:app` and `:protocol` are built, and what has been verified on the watch. Moved out of
-`CLAUDE.md` (which keeps the rules and how to run things); the kanban board has what is still
+`CLAUDE.md` (which keeps the rules and how to run things); the GitHub board (`normboard`) has what is still
 to do.
 
 ## `:protocol` Module (Shared JVM Library)

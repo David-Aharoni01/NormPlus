@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 It holds the rules and how to run things. Reference material lives in `docs/` (see "Where
-things are documented"), and what is left to do lives on the kanban board -- not here.
+things are documented"), and what is left to do lives on the GitHub board (`normboard`) -- not here.
 
 ## Purpose
 
@@ -15,19 +15,39 @@ Reverse-engineering workspace for the **Norm 2 smartwatch**. The goals are:
 4. Run the watch's own firmware on the PC, so the watch's behaviour can be observed and
    changed without the hardware (the watch emulator, `normwatch`, in `tools/normplus/watch/`)
 
-## Task tracking -- all work goes on the kanban board
+## Task tracking -- GitHub issues on the NormPlus board
 
-The board is local SQLite at `~/.claude/kanban-dbs/Norm+.db` (no server, no auth) and is the
-single source of truth for what is planned, in progress and done -- not prose lists in this
-file, and not TODO comments in code. `/kanban` shows it; `/kanban add <title>`,
-`/kanban move <ID> <status>` (follow the Move Protocol matrix), `/kanban context` for a
-session handoff.
+Work is tracked as **issues on `David-Aharoni01/NormPlus`**, shown on the GitHub project
+board **NormPlus** (https://github.com/users/David-Aharoni01/projects/1: Todo / In Progress /
+Done). It is the single source of truth for what is planned, in progress and done -- not prose
+lists in this file, and not TODO comments in code. Issue numbers continue the local kanban
+board this replaced (2026-10-02), so every `#N` in the docs and in commit messages is issue N.
 
-- **Before starting any non-trivial work, there must be a card for it.** Create it first.
-- **Discovering follow-up work means filing a card**, not appending to a list here.
-- **Dependencies** go on the first non-blank line of the description as `Depends on: #ID`.
-- **Levels:** L1 quick, L2 standard, L3 full. Anything crossing firmware / protocol / app is L3.
-- **Split a card** if it exceeds ~1h, spans two layers, is hard to roll back, or is uncertain.
+`normboard` (`tools/normplus/board.py`) does the board in one step; `gh` does everything else:
+
+```bash
+uv run normboard                          # what is open: In Progress, then Todo, by priority
+uv run normboard show 56                  # one issue with its comments
+uv run normboard new "Title" -p high -l emulator -f body.md [--start]
+uv run normboard start 56                 # -> In Progress, when work begins
+uv run normboard note 56 -f finding.md    # a finding, a result, a commit hash
+uv run normboard done 56 -m "Done in <sha>: ..."   # closes it; the board says Done
+```
+
+- **Before starting any non-trivial work, there must be an issue for it**, In Progress on the
+  board. Create it first (`normboard new ... --start`).
+- **Discovering follow-up work means filing an issue**, not appending to a list here.
+- **Findings and results go on the issue as comments**, with the commit hashes. A commit
+  message saying `Fixes #56` closes the issue when it reaches `main`.
+- **Dependencies** go on the first line of the body: `Depends on: #N`.
+- **Labels:** `priority: high|medium|low`, plus areas (`emulator`, `firmware`, `ota`, `ble`,
+  `protocol`, `app`, `tooling`, ...).
+- **Split an issue** if it exceeds ~1h, spans two layers, is hard to roll back, or is uncertain.
+- **The repository is public, so the issues are.** Findings, not vendor code excerpts or
+  personal data.
+- `gh` is at `C:\Program Files\GitHub CLI\gh.exe`, signed in with the `project` scope;
+  `normboard` finds it there. The old board is archived at
+  `D:\NormPlus-backup\kanban-Norm+-2026-10-02.json`; the `/kanban` skills are not used here.
 
 ## Code Quality Standards
 
@@ -119,7 +139,7 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 ### Python tools (uv)
 
 Everything in Python is one uv project: `pyproject.toml` at the root, the code in
-`tools/normplus/`, the tests in `tools/tests/`. It installs five commands:
+`tools/normplus/`, the tests in `tools/tests/`. It installs six commands:
 
 | Command | What |
 |---|---|
@@ -128,6 +148,7 @@ Everything in Python is one uv project: `pyproject.toml` at the root, the code i
 | `normphone` | the Android emulator: `setup`, `start [--watch / --no-bridge]`, `install`, `clear-bond`, `bridge` |
 | `normfw` | firmware images: `verify`, `seal`, `query-ota` |
 | `normtest` | the Python test suite, one file at a time (`normtest ota cmd`, `normtest ota -- --full`) |
+| `normboard` | the task board: GitHub issues on the NormPlus project (see "Task tracking") |
 
 ```bash
 uv sync                          # once, and after pulling: Python 3.11 + the pinned libraries (uv.lock)

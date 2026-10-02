@@ -291,4 +291,4 @@ its face and the phone reconnects with its stored keys, and `normwatch cmd` (#49
 it any 0x6F question in ~4s. `--save-state` / `--load-state` (#46, done) skip the boot for
 everything that is not about the radio: 0.47s to the UI instead of 11s, and a restored run
 lands on the golden fingerprints exactly.
-Open cards are on the board; `docs/watch-emulator-internals.md`'s "What to build next" says why.
+Open issues are on the GitHub board (`normboard`); `docs/watch-emulator-internals.md`'s "What to build next" says why.
