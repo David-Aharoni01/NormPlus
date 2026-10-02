@@ -119,6 +119,12 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
 # file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
 
+# Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
+# prints every reply decoded. ~4s from a bound state file, ~22s binding a fresh watch.
+# Hex or :protocol names; --char 8003 writes where normlink-cli does; --no-bind skips the bind.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --flash-state bound.zip
+
 # Parse the image header / list source modules recovered from assert() strings
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch modules
@@ -187,8 +193,10 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   Hash park below, not the emulator. See "A real stack behind the seam", "Binding" and "The
   watch keeps what it writes" in `tools/watchemu/README.md`.
 
-`normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
-the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
+`normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol
+against the *physical* watch; `normwatch cmd` does the same against the emulated one in ~4s,
+over 8001 as the app writes. The AVD is for exercising the full `:app` stack (`BleManager`,
+sync, UI) against either.
 
 ---
 
@@ -1088,7 +1096,7 @@ agile delegate). The bridge sidesteps all of this.
 
 Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ignores empty-payload commands. Wire packet: `[6F][cmd][0x70][01][00][00][8F]`. Confirmed on the physical watch through the Kotlin CLI: `BATTERY_POWER`, `SCREEN_BRIGHTNESS` → 60, `TOTAL_SPORT_SLEEP_COUNT` → 29 sport. (Still pending verification in the Android `:app` on-device.)
 
-**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue). Over 8001 (which `:app` uses) the emulated watch answers it with the generic `6F 01 81 02 00 03 01`, i.e. status 1, refused; over 8003 (the CLI) nothing comes back for any SET-style refusal, which is the "timeout".
+**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue). Over 8001 (which `:app` uses) the emulated watch answers it with the generic `6F 01 81 02 00 03 01`, i.e. status 1, refused — bound or not; over 8003 (the CLI) nothing comes back for any SET-style refusal, which is the "timeout". `normwatch cmd 03 70 --payload 06` shows both.
 
 ### CHECK commands — fixed (pending on-device verification)
 
@@ -1103,7 +1111,7 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 20 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 21 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
@@ -1111,11 +1119,10 @@ bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the 
 app's post-QR handshake) and reads its battery, while the watch goes from "Select a
 Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
 all. With `--flash-state` (#41, done) it stays that way across restarts: the watch boots to
-its face and the phone reconnects with its stored keys. Open cards, in the order to do them
-(the README's "What to build next" says why):
+its face and the phone reconnects with its stored keys, and `normwatch cmd` (#49, done) asks
+it any 0x6F question in ~4s. Open cards, in the order to do them (the README's "What to
+build next" says why):
 
-- **#49 `normwatch cmd`** — one 0x6F question in one command, instead of a copy of the
-  e2e test.
 - **#46 snapshot/restore** — a boot to the UI is 18.9s and a bond-and-bind round trip
   51.9s (measured 2026-10-02); this makes both sub-second, and composes with
   `--flash-state`.
