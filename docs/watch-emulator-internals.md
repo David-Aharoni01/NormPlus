@@ -1840,6 +1840,50 @@ tell the object at `0x0C780000` is the face background: it decodes as 360x360
 `TRUE_COLOR`, and exactly 259,200 bytes of payload follow it. The glyphs are
 `TRUE_COLOR_ALPHA`, three bytes a pixel, mostly one colour with a varying alpha.
 
+### Most of the watch's images are not in the resource image (#64)
+
+Run the watch live and almost every screen comes out wrong: "No / data" in grey over and
+over, sometimes two of them a few pixels apart ("NNo ddata"), arcs cut off, the
+notification screen black. It looks like broken drawing. It is not: **it is LVGL's own
+placeholder for an image it could not decode**, and every one of those images is missing
+from the emulated NAND.
+
+`lv_draw_img` (`0x000A1504`, the source in r2) draws the string `"No\ndata"` (at
+`0x000A15C8`) over the image's area on two branches: `0x000A1554` when the source is NULL,
+and `0x000A1524` when `lv_img_draw_core` (`0x000A59B4`) fails. Logging the source at the
+entry and counting the second branch, over a tour of ten screens:
+
+```
+187 resources opened        10 present: all inside 0x0C780000 - 0x0C7E2202
+                            177 blank
+167 "No data" placeholders  every one a blank resource
+
+blank, clustered:  0x026DA430 - 0x0496BDAB   142 images  (~36 MB)
+                   0x04E1152B - 0x04E1C617     3
+                   0x08CBF981 - 0x0902DDC9    16          (~3.6 MB)
+                   0x0AA58ACE - 0x0AA6E973    12
+                   0x0C53D84A - 0x0C55619A     4
+```
+
+The emulated NAND holds one thing: `Picture_P03B_NORM2_0.4.bin`, the 401 KB resource image
+the companion app ships, at `0x0C780000`. The physical watch also carries resources that
+were programmed at the factory -- tens of megabytes from `0x026DA430` upwards -- which no
+file in the app contains (its only binaries are the firmware and that resource image). The
+firmware reads those pages, gets `0xFF`, and does exactly what it would on a watch that did
+not have them. The doubled labels are two image objects whose placeholders overlap.
+
+**The boot animation is the plainest case.** Its 134 frames are 360x360 `TRUE_COLOR` images
+at `0x0288B517 + n * 0x3F484` -- a 4-byte header and 259,200 bytes of pixels each -- and all
+134 are missing. That is why it has always run black ("The watch was never stuck"): not a
+display problem, a NAND with nothing at those addresses.
+
+`fw/resources.py` (`MissingResources`) does this counting all the time now: the live
+window's status line says "N images not in the NAND", and the boot report lists the missing
+ranges. `tests/test_resources.py` pins that every placeholder is a blank resource, so a
+change that really breaks drawing shows up as a placeholder for an image the NAND *does*
+have. Getting the resources themselves -- off the physical watch, or from the vendor's
+update channel -- is #65.
+
 ### The NAND sees every command bit-expanded
 
 The storage driver keeps the MSPI configured for four lanes, so it cannot clock an

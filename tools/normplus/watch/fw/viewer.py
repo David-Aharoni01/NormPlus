@@ -77,12 +77,16 @@ class WatchWindow:
         title: str = "Norm 2",
         buttons: Optional[dict] = None,
         log=print,
+        extra_status=None,
     ) -> None:
         self.machine = machine
         self.display = display
         self.touch = touch
         self.scale = max(1, int(scale))
         self.log = log
+        #: Optional callable whose text is appended to the status line (e.g. how many
+        #: images the firmware could not draw because the NAND does not have them).
+        self.extra_status = extra_status
         #: ``{key: gpio_pin}`` — pressing the key presses that button.
         self.buttons = buttons or {}
 
@@ -204,6 +208,7 @@ class WatchWindow:
             text=(
                 f"{state}  {instructions / 1e6:,.1f}M instr  {rate}"
                 f"{self.display.frames} panel frames  {self._frames_shown} shown"
+                + (f"  {extra}" if (extra := self.extra_status() if self.extra_status else "") else "")
             ),
             foreground="#c86464" if self._stopped else "#8a8a99",
         )

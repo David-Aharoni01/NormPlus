@@ -26,11 +26,14 @@ from .fw.devices import (attach_ble_controller, attach_mspi_devices,
                          attach_motion_sensor, attach_pmu, attach_touch_panel)
 from .fw.machine import Apollo3Machine
 from .fw.patches import force_gestures
+from .fw.resources import MissingResources
 from .fw.rtos import format_tasks
 from .fw.symbols import SymbolMap
 from .fw.trace import Tracer
 
 DEFAULT_IMAGE = paths.FIRMWARE
+#: Flash states under here are read-only to `boot --flash-state` (test_golden hashes them).
+FIXTURES = (paths.TESTS / "fixtures").resolve()
 DEFAULT_RESOURCES = paths.RESOURCES
 
 
@@ -236,7 +239,7 @@ def cmd_command(args) -> int:
 LIVE_KEYS = {"1": 2, "2": 3, "3": 10, "4": 16, "5": 38}
 
 
-def _run_live(machine, devices, args, *, log=print):
+def _run_live(machine, devices, args, *, log=print, missing_images=None):
     """Run the firmware with its screen in a window, the mouse driving touch."""
     import threading
 
@@ -263,6 +266,7 @@ def _run_live(machine, devices, args, *, log=print):
         title=f"Norm 2 — {Path(args.image).name}",
         buttons=LIVE_KEYS,
         log=log,
+        extra_status=missing_images.status if missing_images is not None else None,
     )
     try:
         window.run(thread)
@@ -342,6 +346,9 @@ def cmd_boot(args) -> int:
                              ble=not args.no_ble, realtime=realtime)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
+    # Kept off the machine (a snapshot walks the machine): which images the firmware drew
+    # as "No data" because the NAND does not have them (fw/resources.py, #64).
+    missing_images = MissingResources(machine)
     # Before anything runs and before any patch: the restored flash is the
     # watch as it was left, and a patch goes on top of it, never into it.
     flash_state = Path(args.flash_state) if args.flash_state else None
@@ -414,7 +421,7 @@ def cmd_boot(args) -> int:
 
     try:
         if args.live:
-            stats = _run_live(machine, devices, args, log=log)
+            stats = _run_live(machine, devices, args, log=log, missing_images=missing_images)
         else:
             stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice,
                                 resume=args.load_state is not None)
@@ -422,7 +429,10 @@ def cmd_boot(args) -> int:
         # Also on Ctrl-C and a closed window: that is how --netsim sessions
         # end. Stopping between an erase and its program loses that page,
         # as pulling the battery at that instant would on the watch.
-        if flash_state is not None:
+        if flash_state is not None and flash_state.resolve().is_relative_to(FIXTURES):
+            # A test fixture is read, never rewritten: the golden fingerprints hash it.
+            log(f"  [flash] {flash_state} is a test fixture: not saved")
+        elif flash_state is not None:
             saved = flashstate.save(flash_state, machine, devices["nand"])
             log(f"  [flash] saved {len(saved['flash_pages'])} flash pages and "
                 f"{len(saved['nand_pages'])} NAND pages to {flash_state}")
@@ -482,6 +492,7 @@ def cmd_boot(args) -> int:
     print(machine.cortexm.summary())
     for device in devices.values():
         print(device.summary())
+    print(missing_images.summary())
     print(format_tasks(machine, symbols))
     print(machine.bootrom.summary())
     print(machine.bus.by_base[0x5000C000].summary())

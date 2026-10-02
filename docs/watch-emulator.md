@@ -42,6 +42,14 @@ Two facts that cost a lot to rediscover, in this order:
    `tests/test_ble_end_to_end.py` and `:app`'s pairing screen both do exactly that now.
    `--flash-state FILE` keeps it: a watch bound once boots straight to its face.
 
+**Most screens show "No data", and the boot animation is black: that is missing data, not
+broken drawing (#64).** It is LVGL's placeholder for an image it could not decode, and every
+one of those images lies in the watch's factory resources (tens of MB of NAND from
+`0x026DA430` upwards), which no file in the app contains -- the emulated NAND has only the
+401 KB resource image. The live window counts them ("N images not in the NAND") and the boot
+report lists the ranges. See "Most of the watch's images are not in the resource image" in
+`watch-emulator-internals.md`; getting the resources is #65.
+
 ## The BLE controller
 
 **The radio powers up.** For a long time the story here was "the firmware never touches
@@ -279,7 +287,7 @@ has already gone wrong once here.
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 25 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 26 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`

@@ -22,6 +22,10 @@ from . import paths
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # A failing test's output can hold characters the Windows console cannot encode.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     passthrough = []
     if "--" in argv:
         at = argv.index("--")
