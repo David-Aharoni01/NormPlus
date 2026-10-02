@@ -1,4 +1,0 @@
-# Python deps for the emulator BLE bridge (tools/emulator/norm_emu_bridge.py).
-# Install into Python 3.11:  py -3.11 -m pip install -r tools/emulator/requirements.txt
-# (3.11 is used because libusb1/grpcio wheels are reliable there; 3.14 may lack wheels.)
-bumble==0.0.229

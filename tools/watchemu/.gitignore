@@ -1,5 +1,0 @@
-native/*.dll
-native/*.so
-native/*.obj
-native/*.lib
-native/*.exp

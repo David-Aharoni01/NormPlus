@@ -61,7 +61,7 @@ gen-external-apklibs
 *.ear
 *.zip
 # ...except the watch emulator's test fixtures (saved flash states, see test_golden.py)
-!tools/watchemu/tests/fixtures/*.zip
+!tools/tests/fixtures/*.zip
 *.tar.gz
 *.rar
 
@@ -291,3 +291,10 @@ gradle-app.setting
 
 # Kanban (local, per-machine)
 .codex/kanban.json
+
+# The watch emulator's native block hook, built on demand from watchemu_hook.c
+tools/normplus/watch/native/*.dll
+tools/normplus/watch/native/*.so
+tools/normplus/watch/native/*.obj
+tools/normplus/watch/native/*.lib
+tools/normplus/watch/native/*.exp

@@ -1,0 +1,30 @@
+[project]
+name = "normplus"
+version = "0.1.0"
+description = "Norm 2 watch tools: the watch emulator, the Android emulator and its Bluetooth bridge, firmware image tools"
+readme = "README.md"
+requires-python = ">=3.11"
+# The versions the test suite has passed with (tools/tests).
+dependencies = [
+    "bumble==0.0.229",
+    "unicorn>=2.1.4,<2.2",
+    "capstone>=5.0.9",
+    "cryptography>=49.0.0",
+    "grpcio>=1.81.1",
+    "bleak>=3.0.2",
+]
+
+[project.scripts]
+normwatch = "normplus.watch.__main__:main"
+normcmd = "normplus.watch.__main__:cmd_main"
+normphone = "normplus.phone.cli:main"
+normfw = "normplus.firmware.cli:main"
+normtest = "normplus.testing:main"
+
+[build-system]
+requires = ["uv_build>=0.11.13,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "tools"
+module-name = "normplus"
