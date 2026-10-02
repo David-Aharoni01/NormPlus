@@ -6,14 +6,12 @@ import kotlinx.coroutines.flow.SharedFlow
 /**
  * Platform-agnostic BLE transport interface.
  *
- * Implemented by:
- *  - BleManager (Android) — full GATT stack via Android bluetooth APIs
- *  - WinTransport (CLI)   — Win32 BluetoothGATT* APIs via JNA
+ * Implemented by BleManager (Android); the use cases depend on this rather than
+ * on BleManager so they can be driven without a GATT stack.
  *
- * Deliberately minimal: only the operations that SyncHealthDataUseCase and the
- * CLI test commands actually need. OTA-specific methods (writeToCharAwait,
- * drainOtaWriteChannel, waitForDfuService) stay on BleManager — they are
- * Android-only and the CLI does not perform OTA.
+ * Deliberately minimal: only the operations the use cases (SyncHealthDataUseCase,
+ * BindWatchUseCase) actually need. OTA-specific methods (writeToCharAwait,
+ * drainOtaWriteChannel, waitForDfuService) stay on BleManager.
  */
 interface WatchTransport {
 

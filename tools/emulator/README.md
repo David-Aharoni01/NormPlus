@@ -103,7 +103,8 @@ The emulator (≥ 33.1.4.0) exposes a virtual HCI controller via `-packet-stream
 the bridge connects that to a **dedicated USB Bluetooth dongle**. The dongle in use is a
 **CSR8510 (`0A12:0001`, addr `00:1A:7D:DA:71:13`)**. On **Windows the dongle's driver must be
 swapped to WinUSB via [Zadig](https://zadig.akeo.ie/)** — the built-in MediaTek adapter can't
-be a raw HCI controller (and it's bonded to the watch for normlink-cli; don't disturb it).
+be a raw HCI controller (and it's what `normwatch cmd --mac` uses to reach the watch; don't
+disturb it).
 
 One-time setup:
 ```powershell
@@ -168,6 +169,6 @@ Notes / gotchas:
 - The bridge logs an occasional `AssertionError` from a secondary netsim stream; it does not
   affect the primary BT connection.
 - The dongle and the built-in adapter are independent — the watch can be bonded to both. Avoid
-  running normlink-cli / the official app at the same time as the emulator (they contend for the
-  watch's single active connection).
+  running `normwatch cmd --mac` / the official app at the same time as the emulator (they contend
+  for the watch's single active connection).
 - If the guest BT won't turn on, cold-boot once: `tools\emulator\launch-emulator.ps1 -ColdBoot`.

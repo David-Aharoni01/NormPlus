@@ -7,7 +7,9 @@ package com.norm2hacked.ble
  * platform, so they live here in `:protocol`. The actual bonding APIs are
  * platform-specific and cannot be shared:
  *  - Android (`:app`) → [android.bluetooth.BluetoothDevice.createBond]
- *  - Windows (`:cli`) → WinRT custom pairing, performed inside the Python bridge
+ *
+ * (Off-Android the same policy is followed by `normwatch cmd --mac` in
+ * tools/watchemu, which bonds Windows with WinRT custom pairing.)
  *
  * Implementations honor [BondingPolicy].
  */

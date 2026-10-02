@@ -42,16 +42,14 @@ bin/
 NORM/               ← unpacked APK output (apktool d NORM.apk -o NORM)
   smali_classes2/   ← app code: cn.appscomm.*  ← READ THIS FIRST
 
-protocol/           ← pure JVM module: packet framing + command definitions
-                       shared by both :app and :cli
+protocol/           ← pure JVM module: packet framing + command definitions (used by :app)
 app/                ← Android companion app (Kotlin + Compose)
-cli/                ← normlink-cli: Windows JVM tool for autonomous BLE testing
-  src/main/python/norm2_probe/  ← Python bleak BLE backend (bridge for the CLI)
 tools/
   emulator/         ← Pixel 8 ANDROID emulator + Bumble HCI bridge, for running :app
                        (the primary way to run/test :app — see "Testing on the Android emulator")
   watchemu/         ← the WATCH emulator: runs the watch's own Apollo3 firmware under
                        Unicorn, no hardware. See "Watch Firmware Emulator" below.
+                       `normwatch cmd --mac` also asks the PHYSICAL watch from the PC.
   firmware/         ← image_tool.py: verifies and re-seals Ambiq firmware images
 ```
 
@@ -77,12 +75,9 @@ The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
 tools\emulator\launch-emulator.ps1
 tools\emulator\launch-emulator.ps1 -NoBridge
 
-# Build the Windows CLI tool (fat JAR distribution)
-./gradlew :cli:installDist
-
-# Run the CLI (Windows)
-cli\build\install\normlink-cli\bin\normlink-cli.bat --help
-cli\build\install\normlink-cli\bin\normlink-cli.bat battery --mac 4C:59:80:12:44:F1
+# Ask the PHYSICAL watch one 0x6F question from the PC (bleak, this PC's own adapter).
+# See "Asking the physical watch from the PC". Exit 0 a reply / 1 none / 2 setup failed.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
 
 # Run protocol unit tests (no BLE/Android needed)
 ./gradlew :protocol:test
@@ -125,7 +120,8 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
 # prints every reply decoded. ~4s from a bound state file, ~22s binding a fresh watch.
-# Hex or :protocol names; --char 8003 writes where normlink-cli does; --no-bind skips the bind.
+# Hex or :protocol names; --char 8003 writes to the other write characteristic (a SET there
+# is never acknowledged); --no-bind skips the bind. --mac MAC asks the physical watch instead.
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --flash-state bound.zip
 
@@ -144,14 +140,12 @@ py -3.11 tools/watchemu/native/build.py
 ```
 
 Build config: `app/build.gradle.kts` — compileSdk 35, minSdk 30, JVM 17 target.
-CLI config: `cli/build.gradle.kts` — pure JVM, installs to `cli/build/install/normlink-cli/`.
 
 **Module graph:**
 ```
 :protocol  (pure JVM — no Android deps, no BLE APIs)
-    ↑           ↑
-  :app        :cli
-(Android)   (Windows JVM)
+    ↑
+  :app     (Android)
 ```
 
 ---
@@ -175,9 +169,10 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
 - **Bonding gotcha:** the watch's SMP is racy (same as on a real phone — see "cold-connect
   penalty"). If a connect attempt fails to bond, toggle guest BT and retry:
   `adb -e shell svc bluetooth disable; adb -e shell svc bluetooth enable`.
-- **The dongle is independent of the host's built-in adapter**, which stays bonded to the watch
-  for `normlink-cli`. Don't run the emulator BLE bridge, `normlink-cli`, and the official app at
-  the same time — they contend for the watch's single active connection.
+- **The dongle is independent of the host's built-in adapter**, which is what `normwatch cmd
+  --mac` uses (it bonds the watch with Windows on first use). Don't run the emulator BLE bridge,
+  `normwatch cmd --mac` and the official app at the same time — they contend for the watch's
+  single active connection.
 - **Rebuild from scratch:** `tools\emulator\setup.ps1` (SDK packages + AEHD + AVD + Bumble);
   the Zadig WinUSB swap is the one manual step.
 - **The emulated watch instead of the real one:** `launch-emulator.ps1 -Watch` skips the dongle
@@ -197,10 +192,10 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   Hash park below, not the emulator. See "A real stack behind the seam", "Binding" and "The
   watch keeps what it writes" in `tools/watchemu/README.md`.
 
-`normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol
-against the *physical* watch; `normwatch cmd` does the same against the emulated one in ~4s,
-over 8001 as the app writes. The AVD is for exercising the full `:app` stack (`BleManager`,
-sync, UI) against either.
+`normwatch cmd --mac` (below) is the fastest headless way to ask the *physical* watch a
+0x6F question; without `--mac` the same command asks the emulated one, in ~4s from a bound
+state file. Both write to 8001 as the app does and decode with the same code. The AVD is
+for exercising the full `:app` stack (`BleManager`, sync, UI) against either.
 
 ---
 
@@ -394,8 +389,8 @@ now claims.
 
 **Three firmware facts the bind exposed** (all cited in the README's "Binding"): a SET
 written to 8003 is never acknowledged while the same SET on 8001 gets `6F 01 81 02 00
-<cmd> <status>` — two dispatchers in front of one command table, and `normlink-cli` writes
-to 8003; bindStart opens a 300-frame window in `ui_notify_pairing_dlg.c` that only bindEnd
+<cmd> <status>` — two dispatchers in front of one command table, and `normlink-cli`
+(since removed) wrote to 8003; bindStart opens a 300-frame window in `ui_notify_pairing_dlg.c` that only bindEnd
 closes; and a Read By Type for the Database Hash (0x2B2A) is parked for ever, because
 `AttsAddGroup` sets Cordio's hash-update flag and `AttsCalculateDbHash()` is never called.
 Android reads the hash by type before discovery on every connection after the bonding one,
@@ -519,14 +514,15 @@ watch, re-record with `test_golden.py --update` and read the diff it prints.
 
 ## `:protocol` Module (Shared JVM Library)
 
-Pure Kotlin/JVM, zero Android or platform dependencies. Shared between `:app` and `:cli`.
+Pure Kotlin/JVM, zero Android or platform dependencies, so it unit-tests on the plain JVM.
+Used by `:app` (the Windows `normlink-cli` was its second user until it was removed).
 
 ```
 protocol/src/main/kotlin/com/norm2hacked/
   ble/BleConstants.kt          UUIDs, MTU values, timeouts, frame markers
   protocol/
-    Logger.kt                  Logging abstraction (Android wires Log.*, CLI uses stderr)
-    WatchTransport.kt          Interface implemented by BleManager (Android) and PythonBridgeTransport (CLI)
+    Logger.kt                  Logging abstraction (Android wires Log.*, plain JVM gets stdout/stderr)
+    WatchTransport.kt          Interface BleManager implements; the use cases depend on it
     ble/WatchBonder.kt         Shared bonding contract (BondResult, BondingPolicy)
     CommandCode.kt             60+ command codes + Action enum (CHECK/SET/responses)
     Packet.kt                  Packet data class + PacketBuilder + PacketDeframer
@@ -539,7 +535,7 @@ protocol/src/test/kotlin/...
   PacketTest.kt                Unit tests for PacketBuilder + PacketDeframer
 ```
 
-`WatchTransport` interface — what `:cli`'s `PythonBridgeTransport` and `:app`'s `BleManager` both implement:
+`WatchTransport` interface — what `:app`'s `BleManager` implements and the use cases depend on:
 ```kotlin
 interface WatchTransport {
     val isConnected: Boolean
@@ -553,75 +549,61 @@ interface WatchTransport {
 
 ---
 
-## normlink-cli — Windows Autonomous Test Tool
+## Asking the physical watch from the PC (`normwatch cmd --mac`)
 
-**Purpose:** Claude can run this tool directly on Windows to test BLE protocol communication with the watch, without needing to deploy an Android APK. This is the **primary tool for autonomous testing**.
+**The fastest headless way to ask the physical watch a 0x6F question** — no APK, no AVD,
+and Claude can run it directly. It is `normwatch cmd` (see the watch emulator's build
+commands) with `--mac`: the same flow and the same decoder as against the emulated watch,
+over this PC's own Bluetooth adapter with bleak (`tools/watchemu/normwatch/physical.py`).
+Where the two answers differ, the watches differ — this is how an emulator finding is
+checked on hardware.
 
-**Watch MAC:** `4C:59:80:12:44:F1`
-
-### Commands
-
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
 ```
-battery     --mac <MAC>                          Query battery % and charging state
-version     --mac <MAC> [--type 6]               Query firmware version string
-sync-count  --mac <MAC>                          Query sport/sleep/HR record counts
-brightness  --mac <MAC> [--set 0-100]            Query or set screen brightness
-dnd         --mac <MAC>                          Query do-not-disturb settings
-switch      --mac <MAC>                          Query switch-settings bitmask
-raw         --mac <MAC> --cmd-byte HH --action-byte HH [--payload "HH HH ..."]
-watch       --mac <MAC> [--duration 10]          Listen for notifications passively
-
-All commands support: --json (machine-readable output), --timeout <ms>
 ```
-
-### Architecture — Python (bleak) BLE bridge behind `WatchTransport`
-
-```
-cli/src/main/kotlin/com/norm2hacked/cli/
-  Main.kt                  Clikt CLI entry point + all subcommand classes
-  PythonBridgeTransport.kt WatchTransport impl: spawns + drives the Python BLE bridge
-cli/src/main/python/norm2_probe/
-  bridge.py                stdio byte-pipe mode (the BLE backend; uses bleak)
-  probe.py protocol.py …   the bleak connection/bonding/notification internals
+   2.2s  phone: connected, paired, encryption not reported
+   2.4s  watch: initialised (checkInit 1), not binding
+   2.4s  -> 8001  6f 08 70 01 00 00 8f    0x08 BATTERY_POWER CHECK [00]
+   3.1s  <- 8002  6f 08 80 01 00 5f 8f
+   3.1s           = 0x08 BATTERY_POWER CHECK_RESPONSE [5f]
 ```
 
-The Windows BLE stack is owned by a **child process** (`python -m norm2_probe bridge <MAC>`).
-`PythonBridgeTransport` spawns it and exchanges raw bytes over a tiny stdio line protocol;
-**all `0x6F` protocol logic (framing, deframing, command/response parsing) runs in Kotlin
-via `:protocol`** — exactly the code the Android app uses. The process boundary isolates the
-JVM from bleak/WinRT instability (a BLE hiccup can't crash the test harness).
+**Watch MAC:** `4C:59:80:12:44:F1`. Needs `py -3.11 -m pip install -r
+tools/watchemu/requirements.txt` (bleak).
 
-*(History: an earlier pure-Kotlin WinRT-COM-via-JNA transport (`WinTransport`) was abandoned —
-hand-rolled COM vtables/agile-delegate marshaling were a long-term source of native crashes
-unrelated to protocol logic. The two real bugs found there are recorded below for posterity.)*
+What it does, as `BindWatchUseCase` does: scan, connect, bond, subscribe to 8002/8004
+*before* the first write, checkInit (0x94 CHECK), the bind only if that reads 0
+(`--no-bind` skips both), then the frame to **8001** with response and `[03]` to 8002
+without, and every notification until a whole frame has come and 0.5s passed — decoded by
+`fw/phone.py` (`Deframer`, `describe`, names from `CommandCode.kt`). Exit status: 0 a reply
+came, 1 nothing came back, 2 the setup failed. The watch serves one connection at a time,
+so close the companion app or `:app` first. `tests/test_physical.py` pins the
+phone's behaviour against a fake `BleakClient`.
 
-### Bridge line protocol (`bridge.py` ⇄ `PythonBridgeTransport`)
+**Windows needs the watch BONDED.** Unbonded, characteristic discovery fails
+(`GattCommunicationStatus.Unreachable`): the watch drops the link during Windows' slow live
+discovery. Bonded, Windows caches the GATT table and discovery is instant. The default
+`PairAsync()` ceremony is rejected by the watch (recorded as status 19); the bond is made
+with *custom* pairing instead — a `PairingRequested` handler that accepts, and
+`DevicePairingKinds.ConfirmOnly` at `DevicePairingProtectionLevel.None` (Just Works: no PIN,
+no MITM; the watch's own Pairing Response asks for exactly that). `--mac` does it on first
+use (`physical.bond_windows`); the bond is the OS's and persists. Verified 2026-10-02:
+the bond went through, but the connect straight after it ran out its 30s and the next
+took 1.3s — so after a fresh bond the connect is tried twice.
 
-```
-stdin  (Kotlin → bridge):  W <hex>     write frame to write char, then trigger [0x03]→8002
-                           QUIT        disconnect + exit (stdin EOF also quits)
-stdout (bridge → Kotlin):  READY       connected + bonded + notifications subscribed
-                           N <hex>      raw notification bytes from 8002/8004 (Kotlin deframes)
-                           ERR <msg>    fatal error; bridge exits non-zero
-```
-stdout carries **only** protocol lines; all human/debug logging goes to **stderr** (surfaced
-by the Kotlin side prefixed `[bridge]`). The bridge auto-bonds via `Norm2Probe._ensure_paired()`.
-
-### Connection flow
-
-```
-1. PythonBridgeTransport.connect(mac)  spawns the bridge (PYTHONPATH → bundled app/python)
-2. bridge: BleakScanner.find → _ensure_paired (custom Just Works) → BleakClient.connect
-3. bridge: discover 5 services, pick write char (8003), subscribe notify 8002/8004 → READY
-4. Kotlin sendAndAwait: PacketBuilder.build → "W <hex>" → await parsedFlow match (timeoutMs)
-5. bridge: write to watch + [0x03] trigger; notification → "N <hex>"
-6. Kotlin: PacketDeframer.feed("N" bytes) → emit Packet → command parser (e.g. BatteryCommand)
-```
-
-**Packaging:** `cli/build.gradle.kts` copies `src/main/python` into the installDist image at
-`<APP_HOME>/app/python`; `PythonBridgeTransport` resolves it via `APP_HOME` (set by the start
-scripts), with a dev fallback to `cli/src/main/python`. Override with env `NORMLINK_PYTHON`
-(interpreter) / `NORMLINK_PYTHON_DIR` (package dir). Requires `pip install bleak` once.
+**History.** This replaced `normlink-cli` (`:cli`, removed 2026-10-02): `:protocol`'s
+Kotlin parsers over a Python/bleak child process. Its bridge chose 8003 whenever the watch
+had it, and the firmware's 8003 dispatcher (`0x00036460`) throws a handler's result away,
+so it only ever saw CHECK replies and every SET timed out. Before that bridge, a pure-Kotlin
+WinRT-via-JNA transport was abandoned; two of its bugs are worth remembering if anyone
+revisits raw WinRT: `BluetoothLEAdvertisementWatcher.Start()` is vtable **[17]** (not 21 =
+`add_Stopped`); and `IAsyncOperation<T>` and `IAsyncInfo` are **separate** interfaces —
+`get_Status` is on `IAsyncInfo` (QI `{00000036-…}`), `GetResults` is `IAsyncOperation[8]`,
+and reading status at `IAsyncOperation[7]` hits `get_Completed` and hangs every async op.
+The wall that killed it: `add_ValueChanged` → `CO_E_NOT_SUPPORTED` (it needs a
+Free-Threaded-Marshaler-aggregated agile delegate).
 
 ---
 
@@ -943,93 +925,6 @@ jarsigner -keystore my.keystore NORM/dist/NORM.apk alias_name
 
 ---
 
-## Python BLE Backend (`cli/src/main/python/norm2_probe/`)
-
-This bleak-based package is the **BLE transport backend for `normlink-cli`** (it is no longer a standalone tool). The Kotlin CLI spawns its `bridge` mode as a child process and runs all `:protocol` logic in Kotlin; the Python side only moves raw bytes over BLE (and performs the one-time bonding). It still runs directly for manual debugging.
-
-### Setup
-
-```bash
-pip install -r cli/src/main/python/requirements.txt   # installs bleak>=0.21.0
-```
-Run directly (debugging): `set PYTHONPATH=cli/src/main/python` then `python -m norm2_probe <cmd> <MAC>`.
-
-### Running
-
-```bash
-# Scan for nearby BLE devices
-python -m norm2_probe scan
-
-# Query battery level (connects, sends command, prints result, disconnects)
-python -m norm2_probe battery 4C:59:80:12:44:F1
-
-# Query device version
-python -m norm2_probe version 4C:59:80:12:44:F1
-
-# Query sport/sleep/heart-rate record counts
-python -m norm2_probe sync-count 4C:59:80:12:44:F1
-
-# Query/set brightness  (omit --set to query)
-python -m norm2_probe brightness 4C:59:80:12:44:F1
-python -m norm2_probe brightness 4C:59:80:12:44:F1 --set 70
-
-# Query DND settings
-python -m norm2_probe dnd 4C:59:80:12:44:F1
-
-# Query switch settings bitmask
-python -m norm2_probe switch 4C:59:80:12:44:F1
-
-# Send raw command — useful for ad-hoc tests
-python -m norm2_probe raw 4C:59:80:12:44:F1 08 70 --payload 00
-
-# Run 4-variant CHECK matrix test (payload=[00]/[] × trigger/no-trigger)
-python -m norm2_probe test-check 4C:59:80:12:44:F1
-
-# Dump all GATT services and characteristics
-python -m norm2_probe info 4C:59:80:12:44:F1
-
-# Passively listen for notifications without sending anything
-python -m norm2_probe watch 4C:59:80:12:44:F1 --duration 15
-```
-
-### Architecture
-
-```
-cli/src/main/python/norm2_probe/
-  protocol.py   UUIDs, constants, build_packet(), PacketDeframer, fmt_packet()
-  probe.py      Norm2Probe class — scan, connect, _ensure_paired/pair, _setup_notifications, send_and_await, watch
-  commands.py   High-level command functions (cmd_battery, cmd_test_check_matrix, etc.)
-  cli.py        argparse setup and command dispatch
-  bridge.py     stdin/stdout byte-pipe mode consumed by the Kotlin PythonBridgeTransport
-  __main__.py   Entry point (asyncio.run)
-```
-
-`Norm2Probe.connect()` auto-detects whether char 8003 is present (service 7006) and selects the correct write characteristic. Notifications are enabled on 8002, 8004, and 8005. `send_and_await()` drains stale notifications before writing, optionally sends the trigger byte `[0x03]` to 8002 after writing, then waits for the matching response.
-
-### Windows Connection — SOLVED (the watch must be BONDED)
-
-**The Windows blocker is solved. The fix is BLE bonding via a custom Just Works pairing ceremony.** The probe now connects end-to-end on Windows and exchanges `0x6F` protocol packets with the physical watch (verified: battery 34%, brightness 60, sync-count).
-
-**Root cause (now understood):** The Norm 2 expects BLE bonding — its Android app calls `BluetoothDevice.createBond()` (see `bluetooth_bond/BluetoothUtils.smali`). On Windows, an *unbonded* device fails characteristic discovery (`GattCommunicationStatus.Unreachable`) because the watch's connection watchdog drops the link during slow live ATT discovery. Once **bonded**, Windows caches the full GATT table, so service/characteristic discovery is instant and the watchdog never fires.
-
-**Why the old `pair` failed:** it called the default `pairing.pair_async()`, which negotiates a protection level the watch rejects (`ConnectionRejected`/status 19). The watch is a headless Just Works peripheral: **no PIN, no MITM**.
-
-**The fix (now automatic):** `Norm2Probe.pair()` uses *custom* pairing — registers a `PairingRequested` handler that auto-accepts and requests `DevicePairingKinds.ConfirmOnly` + `DevicePairingProtectionLevel.None`. `connect()` calls `_ensure_paired()` first on Windows and bonds automatically if needed. After bonding, plain `BleakClient.connect()` discovers all 5 services normally.
-
-```bash
-# One-time (or automatic via any connect): bond the watch
-python -m norm2_probe pair 4C:59:80:12:44:F1
-#   -> [OK] Pairing succeeded: Paired
-
-# Then any command just works — connect() auto-bonds if not already bonded
-python -m norm2_probe battery 4C:59:80:12:44:F1     # Battery: 34%
-python -m norm2_probe brightness 4C:59:80:12:44:F1  # Brightness: 60
-```
-
-The bond is an **OS-level** state, so it also unblocks the Kotlin `normlink-cli` (which resolves the now-bonded device directly by address — no scan needed).
-
----
-
 ## Current Status & Known Issues
 
 ### Feature status — verified on-device (works 100%)
@@ -1100,36 +995,20 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - Fully extracted from `:app`, compiles as pure JVM with zero Android deps
 - Unit tests: `PacketTest.kt` verifies PacketBuilder + PacketDeframer round-trips
 
-**normlink-cli (`:cli`) — WORKING end-to-end:**
-- `./gradlew :cli:installDist` bundles the Python bridge into the image (`app/python`).
-- Verified live against the watch: `battery` → 100%, `sync-count` → 29 sport / 0 sleep / 0 HR, `brightness` → 60.
-- Architecture: Kotlin `PythonBridgeTransport` spawns `python -m norm2_probe bridge`; all `:protocol` framing/parsing runs in Kotlin. Unreachable device → clean `error: …` message, exit 1 (no JVM crash).
-- One-time setup: `pip install bleak`. Bonding is automatic (the bridge runs the Just Works ceremony on first connect).
+**`normwatch cmd --mac` — the physical watch from the PC — WORKING.** Verified live
+2026-10-02: bonded Windows on first use, then `BATTERY_POWER CHECK` → `6F 08 80 01 00 5F
+8F` (95%) and checkInit 1, ~3s a run. It replaced `normlink-cli` (verified live in its day:
+battery, sync-count → 29 sport, brightness → 60). See "Asking the physical watch from the PC".
 
 **`:protocol` bonding contract:**
 - `WatchBonder` interface + `BondResult` + `BondingPolicy` in `protocol/.../ble/WatchBonder.kt`.
-- `:app` `AndroidBonder` (createBond) wired into `BleManager.connect`; `:cli` bonding is done inside the Python bridge. Both honor `BondingPolicy` (Just Works, ConfirmOnly + None).
+- `:app` `AndroidBonder` (createBond) wired into `BleManager.connect`. `normwatch cmd --mac` bonds Windows with the same policy (Just Works, ConfirmOnly + None).
 
-### normlink-cli — Status: DONE
+### CHECK commands — verified working (on the physical watch)
 
-Fully functional autonomous test tool. Run any command, e.g.:
-```
-cli\build\install\normlink-cli\bin\normlink-cli.bat battery --mac 4C:59:80:12:44:F1
-```
+Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ignores empty-payload commands. Wire packet: `[6F][cmd][0x70][01][00][00][8F]`. Confirmed on the physical watch through `normlink-cli` (since replaced by `normwatch cmd --mac`): `BATTERY_POWER`, `SCREEN_BRIGHTNESS` → 60, `TOTAL_SPORT_SLEEP_COUNT` → 29 sport. (Still pending verification in the Android `:app` on-device.)
 
-**Historical note (abandoned pure-Kotlin WinRT/JNA transport):** two real bugs were found and are
-worth remembering if anyone revisits raw WinRT-via-JNA: (1) `BluetoothLEAdvertisementWatcher.Start()`
-is vtable **[17]** (not 21 = `add_Stopped`); (2) `IAsyncOperation<T>` and `IAsyncInfo` are **separate**
-interfaces — `get_Status` is on `IAsyncInfo` (QI `{00000036-…}`), `GetResults` is `IAsyncOperation[8]`;
-reading status at `IAsyncOperation[7]` hits `get_Completed` and hangs every async op. The wall that
-killed the approach: `add_ValueChanged` → `CO_E_NOT_SUPPORTED` (needs a Free-Threaded-Marshaler-aggregated
-agile delegate). The bridge sidesteps all of this.
-
-### CHECK commands — verified working (via the Kotlin CLI + bridge)
-
-Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ignores empty-payload commands. Wire packet: `[6F][cmd][0x70][01][00][00][8F]`. Confirmed on the physical watch through the Kotlin CLI: `BATTERY_POWER`, `SCREEN_BRIGHTNESS` → 60, `TOTAL_SPORT_SLEEP_COUNT` → 29 sport. (Still pending verification in the Android `:app` on-device.)
-
-**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue). Over 8001 (which `:app` uses) the emulated watch answers it with the generic `6F 01 81 02 00 03 01`, i.e. status 1, refused — bound or not; over 8003 (the CLI) nothing comes back for any SET-style refusal, which is the "timeout". `normwatch cmd 03 70 --payload 06` shows both.
+**Note:** `DEVICE_VERSION` (cmd `0x03`, payload `[06]`) times out — a command-specific payload quirk to investigate (not a connection issue). Over 8001 (which `:app` uses) the emulated watch answers it with the generic `6F 01 81 02 00 03 01`, i.e. status 1, refused — bound or not; over 8003 (where `normlink-cli` wrote) nothing comes back for any SET-style refusal, which is the "timeout". `normwatch cmd 03 70 --payload 06` shows both. **Confirmed on the physical watch** (2026-10-02, `--mac`): over 8001 it answers the same `6F 01 81 02 00 03 01 8F`, byte for byte — the request is refused, not lost.
 
 ### CHECK commands — fixed (pending on-device verification)
 
@@ -1144,7 +1023,7 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 24 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 25 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
@@ -1189,6 +1068,6 @@ filter, phone calls incl. answer/reject, watch-hands calibration.)*
 5. **Weather sync** — find command code in `BluetoothCommandConstant.smali`
 
 ### Known gaps
-- No unit tests for the BLE layer or `PythonBridgeTransport` — protocol parsing is covered in `:protocol:test`
+- No unit tests for the BLE layer — protocol parsing is covered in `:protocol:test`
 - `writeToChar` (fire-and-forget) has no error surface
 - `BleService` keep-alive uses an RSSI read as a generic link probe; whether the watch's idle-drop watchdog actually resets on it is unverified (so far relying on connection supervision) — confirm on-device, switch to a periodic battery CHECK if needed

@@ -5,7 +5,7 @@ package com.norm2hacked.protocol
  * warnings without importing android.util.Log.
  *
  * The Android app installs an adapter in Norm2Application.
- * The CLI uses the default implementation (stderr).
+ * Plain JVM code (the :protocol unit tests) gets the default, stdout/stderr.
  */
 interface Logger {
     fun v(tag: String, msg: String) {}

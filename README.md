@@ -1,13 +1,14 @@
 # Norm2Hacked
 
 Reverse-engineering workspace for the **Norm 2 smartwatch** — a custom Android companion
-app plus a Windows command-line tool, both built on a shared BLE protocol library.
+app built on a BLE protocol library, and an emulator that runs the watch's own firmware on
+the PC.
 
-| Module      | What it is                                                                              |
-|-------------|-----------------------------------------------------------------------------------------|
-| `:protocol` | Pure-JVM library: packet framing, command codes, response parsing (shared by app + CLI) |
-| `:app`      | Android companion app (Kotlin + Jetpack Compose)                                        |
-| `:cli`      | `normlink-cli` — Windows tool for testing BLE protocol comms with the watch             |
+| Module            | What it is                                                                     |
+|-------------------|--------------------------------------------------------------------------------|
+| `:protocol`       | Pure-JVM library: packet framing, command codes, response parsing              |
+| `:app`            | Android companion app (Kotlin + Jetpack Compose)                               |
+| `tools/watchemu`  | The watch emulator (Python): the real firmware under Unicorn, a radio, a phone |
 
 **Watch MAC (example used throughout):** `4C:59:80:12:44:F1`
 
@@ -16,77 +17,41 @@ app plus a Windows command-line tool, both built on a shared BLE protocol librar
 ## Prerequisites
 
 - **JDK 17** (the Gradle toolchain targets JVM 17).
-- **For the CLI only:** Python 3 with **bleak** — the CLI drives the watch's BLE through a
-  bundled Python backend:
-  ```powershell
-  pip install bleak
-  ```
-- **For the app only:** an Android device (minSdk 30) with USB debugging, or Android Studio.
+- **For the app:** an Android device (minSdk 30) with USB debugging, or the Pixel 8 AVD
+  in `tools/emulator/`.
+- **For `normwatch`:** Python 3.11 and `py -3.11 -m pip install -r tools/watchemu/requirements.txt`.
 
 > Commands below use PowerShell syntax (`.\gradlew`). On macOS/Linux use `./gradlew`.
 
 ---
 
-## normlink-cli (the test tool)
+## Asking a watch a question from the PC (`normwatch cmd`)
 
-Talks to the physical watch over BLE from Windows. All protocol logic runs in Kotlin
-(`:protocol`); a child Python (bleak) process handles the raw BLE link and the one-time
-Bluetooth bonding.
-
-### Build
-
-```powershell
-.\gradlew :cli:installDist
-```
-
-This produces a runnable distribution (with the Python backend bundled) at:
-
-```
-cli\build\install\normlink-cli\bin\normlink-cli.bat
-```
-
-### Run
+One 0x6F command, sent the way the companion app sends it (to 8001, then `[03]` to 8002),
+with every reply decoded. By default it asks the **emulated** watch — the firmware boots on
+the PC, a virtual phone pairs with it; with `--mac` it asks the **physical** one over this
+PC's own Bluetooth adapter. Same flow, same decoder, so where the answers differ it is the
+watches that differ.
 
 ```powershell
-$cli = ".\cli\build\install\normlink-cli\bin\normlink-cli.bat"
-
-& $cli battery     --mac 4C:59:80:12:44:F1
-& $cli version     --mac 4C:59:80:12:44:F1
-& $cli sync-count  --mac 4C:59:80:12:44:F1
-& $cli brightness  --mac 4C:59:80:12:44:F1            # query
-& $cli brightness  --mac 4C:59:80:12:44:F1 --set 70   # set 0-100
-& $cli dnd         --mac 4C:59:80:12:44:F1
-& $cli switch      --mac 4C:59:80:12:44:F1
-& $cli watch       --mac 4C:59:80:12:44:F1 --duration 10   # listen passively
-
-# Send an arbitrary command (hex bytes):
-& $cli raw --mac 4C:59:80:12:44:F1 --cmd-byte 08 --action-byte 70 --payload 00
+$env:PYTHONPATH = "tools/watchemu"
+py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   # the real watch
+py -3.11 -m normwatch cmd BATTERY_POWER CHECK --payload 00 --flash-state bound.zip   # the emulated one
+py -3.11 -m normwatch cmd 07 71 --payload 3c --mac 4C:59:80:12:44:F1                 # a SET, in hex
 ```
 
-### Commands
+- Commands and actions by `:protocol` name (`DEVICE_VERSION`, `CHECK`) or in hex. A CHECK
+  needs its one payload byte (`--payload 00`); the watch ignores one without it.
+- It pairs, reads checkInit, and binds only a watch that says it is still in first-run
+  setup — as `BindWatchUseCase` does. `--no-bind` skips both.
+- **The physical watch:** the first run bonds it with Windows (Just Works, no PIN; keep it
+  awake and on its face). It must not be connected to a phone — the watch keeps one
+  connection, so close the companion app or `:app` first.
+- Exit status: 0 a reply came, 1 nothing came back, 2 the setup failed.
 
-| Command      | Description                                        | Key options                                          |
-|--------------|----------------------------------------------------|------------------------------------------------------|
-| `battery`    | Battery % and charging state                       |                                                      |
-| `version`    | Firmware version string                            | `--type <n>` (default 6)                             |
-| `sync-count` | Sport / sleep / heart-rate record counts           |                                                      |
-| `brightness` | Query or set screen brightness                     | `--set 0-100`                                        |
-| `dnd`        | Do-not-disturb settings                            |                                                      |
-| `switch`     | Switch-settings bitmask (raise-wake, auto-sync, …) |                                                      |
-| `raw`        | Send a raw command and print the response          | `--cmd-byte HH --action-byte HH [--payload "HH HH"]` |
-| `watch`      | Passively listen for notifications                 | `--duration <sec>` (default 10)                      |
-
-**Every command supports:**
-`--mac <MAC>` (required) · `--json` (machine-readable output) · `--timeout <ms>` (default 10000).
-
-### Notes
-
-- **First run bonds the watch automatically** (a one-time "Just Works" pairing). Keep the
-  watch awake and nearby for the first connect.
-- The bundled Python prints its logs to stderr, prefixed `[bridge]`. Errors are reported as
-  a single `error: …` line with a non-zero exit code (the BLE process is isolated from the JVM).
-- **Overrides** (optional env vars): `NORMLINK_PYTHON` (interpreter, default `python`),
-  `NORMLINK_PYTHON_DIR` (path to the `norm2_probe` package, for dev runs outside the dist).
+`tools/watchemu/README.md` has the rest, including `--flash-state`, which keeps an emulated
+watch bound between runs. (This replaced `normlink-cli`, the `:cli` module, which wrote to
+8003 — where the firmware never acknowledges a SET.)
 
 ---
 
@@ -142,11 +107,10 @@ java -jar bin\apktool_3.0.2.jar b NORM
 ## Quick reference
 
 ```powershell
-.\gradlew :cli:installDist        # build the CLI tool
 .\gradlew installDebug            # build + install the Android app
 .\gradlew :protocol:test          # run protocol tests
 .\gradlew lint                    # lint the app
 
-# run the CLI
-cli\build\install\normlink-cli\bin\normlink-cli.bat battery --mac 4C:59:80:12:44:F1
+# ask the physical watch its battery level
+$env:PYTHONPATH = "tools/watchemu"; py -3.11 -m normwatch cmd 08 70 --payload 00 --mac 4C:59:80:12:44:F1
 ```

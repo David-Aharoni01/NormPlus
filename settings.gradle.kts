@@ -17,4 +17,3 @@ dependencyResolutionManagement {
 rootProject.name = "Norm2Hacked"
 include(":app")
 include(":protocol")
-include(":cli")
