@@ -119,6 +119,10 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
 # file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
 
+# Skip the boot: save the machine once past the boot animation, start there next time
+# (0.47s instead of 11s). Same switches on both; not with --radio/--netsim.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --seconds 9 --no-ble --save-state ui.snap
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
 # prints every reply decoded. ~4s from a bound state file, ~22s binding a fresh watch.
 # Hex or :protocol names; --char 8003 writes where normlink-cli does; --no-bind skips the bind.
@@ -1116,7 +1120,7 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 22 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 23 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
@@ -1125,12 +1129,11 @@ app's post-QR handshake) and reads its battery, while the watch goes from "Selec
 Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
 all. With `--flash-state` (#41, done) it stays that way across restarts: the watch boots to
 its face and the phone reconnects with its stored keys, and `normwatch cmd` (#49, done) asks
-it any 0x6F question in ~4s. Open cards, in the order to do them (the README's "What to
-build next" says why):
+it any 0x6F question in ~4s. `--save-state` / `--load-state` (#46, done) skip the boot for
+everything that is not about the radio: 0.47s to the UI instead of 11s, and a restored run
+lands on the golden fingerprints exactly. Open cards, in the order to do them (the
+README's "What to build next" says why):
 
-- **#46 snapshot/restore** — a boot to the UI is 18.9s and a bond-and-bind round trip
-  51.9s (measured 2026-10-02); this makes both sub-second, and composes with
-  `--flash-state`.
 - **#54 `--idle-skip` one tick short with the radio up** — found by the golden test
   (#47, done); one lost STIMER between 225M and 250M.
 - **#50 OTA type 8 against the emulated watch** — first find out whether the application
