@@ -59,7 +59,7 @@ uv tool install --editable .
 | `normwatch` | Runs the watch's own firmware on the PC | `normwatch boot --live` (a window with the watch's screen) |
 | `normcmd` | Asks a watch one command and decodes the reply | `normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1` |
 | `normphone` | The Android emulator that runs the app | `normphone start`, `normphone start --watch`, `normphone install` |
-| `normfw` | Checks and re-seals firmware images | `normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` |
+| `normfw` | Checks, re-seals and patches firmware images | `normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` |
 | `normtest` | Runs the Python tests | `normtest`, or `normtest ota` |
 | `normboard` | The task board: GitHub issues on the NormPlus project | `normboard`, `normboard show 13` |
 | `normhelp` | What every command is for, and the common recipes | `normhelp`, `normhelp phone start` |

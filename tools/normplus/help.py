@@ -34,6 +34,7 @@ TOOLS = [
      "Firmware image tools.",
      ["normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin   check an image's checksums",
       "normfw seal patched.bin --in-place          re-seal an image after patching it",
+      "normfw patch-nand IMAGE -o patched.bin      the NAND read-out patch (#68)",
       "normfw query-ota                            what the vendor's update server offers"]),
     ("normtest", "normplus.testing:main",
      "Runs the Python tests (about 5 minutes for all of them).",

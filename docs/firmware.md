@@ -478,6 +478,8 @@ Concrete wins that are blocked today *by firmware*, not by our protocol work:
 - **A watch-side notification delete/replace command.** The whole "there is NO watch-side
   delete" section of `CLAUDE.md` is a firmware limitation. `MessageNewBT` carries no id
   because the firmware's handler has no field for one — adding one is a firmware change.
+- **A NAND read-out command** -- built and rehearsed, one instruction changed; see
+  section 11 (#68).
 - Music control screen (currently we just suppress media notifications).
 - Title/content limits beyond 0x5A / 0x80.
 - Custom notification icon types beyond the hardcoded `PackageTypeData` table.
@@ -578,6 +580,76 @@ Cheap and safe, in order:
    `cn/appscomm/server/UrlService.smali` — the real Apollo firmware channel. Much less
    urgent now that §7 is solved without needing a diff target; still the only route to a
    second official Apollo build.
+
+---
+
+## 11. The NAND read-out patch (#68)
+
+The watch's factory resources are tens of megabytes of images in the SPI NAND, the emulator
+shows them as "No data" (#64, #65), and #66 established there is no free way to read them:
+no vendor server has the files, and command 0xEE -- the firmware's one arbitrary-memory read
+(handler 0x0003779C) -- reaches only the CPU address space, because the NAND is not
+memory-mapped. So the firmware has to be asked to use its own NAND driver. That is
+`normfw patch-nand` (`tools/normplus/firmware/nand_patch.py`), rehearsed in
+`tools/tests/test_nand_patch.py`; it has **not** been flashed to the watch (that is #70).
+
+**It changes one instruction.** The 0xEE handler ends with `bl 0x00020EC4` (`memcpy`) at
+`0x000377CE`; that call becomes a `bl` to 40 bytes appended after the image's last byte,
+which for a tagged address calls the firmware's own NAND read and otherwise tail-calls the
+same `memcpy`. Every other byte of the image is unchanged, so the length at +0x0C and the
+CRC at +0x10 are the only other fields that move (§7, `normfw seal` does it).
+
+**Asking for a NAND read.** The address field's top nibble selects the address space:
+`0xFnnnnnnn` is NAND byte offset `0xnnnnnnn` (the whole 256 MB, both dies), anything else is
+a CPU address and behaves exactly as the shipped firmware does. 0xF0000000 is unmapped on
+the Apollo3, so nothing that means something today changes meaning. The tag costs no payload
+byte, which matters: the handler never sees the payload length (the dispatcher passes it in
+r2 at 0x00039F38 and the handler overwrites r2 before the hook), so a sixth payload byte
+could not be told from a stale one.
+
+```bash
+normfw patch-nand NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin
+normcmd EE 70 --payload 'fc 78 00 00 80' --image patched.bin --flash-state bound.zip
+```
+
+**What it calls** is the read at `+0x0C` of the storage device object the firmware keeps at
+`[0x10006BCC]` (0x1005D644 in a running watch, so the slot is `0x1005D650` -- the RAM pointer
+#66 saw) -- `read(instance, byte_address, destination, length)` at `0x0003E2F8`, in
+`..\..\Device\Nand\ew_dev_spinand.c` (its asserts `instance < ( 1 )` at line 1474, the
+non-NULL destination at 1475). It is the same call the OTA task makes at `0x0005A54A` to read
+a staged image header back. The driver takes its own lock and selects the die from
+`address >> 20`, so the patch needs no locking of its own and does nothing if the device is
+not up.
+
+**What a dump client has to know** (all measured on the emulated watch, #68):
+
+- **128 bytes per request.** The shipped handler's buffer is 0x80 bytes on its stack
+  (`sub sp, #0x8C`, `memset` of 0x80 at `0x000377B4`), and the 0x6F reply builder at
+  `0x000393B8` refuses any frame of 255 bytes or more (`cmp #0xFF` on both paths). Raising it
+  means editing the handler's frame too -- a separate decision (#69).
+- **A read may span pages.** The driver clamps each transfer to the end of the page it is in
+  (`0x0003E39C`-`0x0003E3BC`) and comes back for the rest, so nothing needs aligning.
+- **A read can lose the NAND to the UI, and must be retried.** The watch reads the NAND
+  continuously to draw itself and the driver's lock is taken with a short timeout
+  (`0x00031B40` from `0x0003E348`). About one read in five is lost while the face is up. It
+  is never partial: the handler zero-fills its buffer first, so a lost read arrives as 128
+  zero bytes and nothing else does. One retry was enough every time (24 of 30 first try, 6
+  on the second).
+- **An untagged NAND address takes the watch out.** That is the shipped behaviour, not a
+  regression -- 0xEE's `memcpy` has always faulted on an address the CPU does not map (#66,
+  on the emulated *and* the physical watch) -- but it is worse than the "no reply" it looks
+  like: in the emulator the CPU stops on the unmapped read inside `memcpy` and every later
+  GATT write times out. A client must send tagged addresses only.
+
+**What the rehearsal shows.** The patched image verifies and re-seals; the patched watch
+boots past its boot animation, pairs, binds and draws; a tagged address returns the emulated
+NAND byte for byte (including across a page boundary) and 0xFF where the NAND holds nothing
+-- which the stock firmware could not read at all; a CPU address answers exactly the bytes
+#66 recorded from both watches; and both OTA rehearsals pass against the patched image, so a
+resource (type 4) update and type-1 staging still work (`normtest nand_patch -- --full`,
+which runs `test_ota.py` and `test_ota_mcu.py` with `--image`).
+
+The patched image is vendor-derived and is never committed; it is built on demand.
 
 ---
 

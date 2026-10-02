@@ -43,9 +43,25 @@ from normplus.watch.fw.phone import (BOOT_ANIMATION_FRAMES, OTA_BT_PARAM, OTA_TY
                                      ota_init, ota_pieces, ota_set_header, ota_write_size)
 
 REPO = HERE.parents[1]
-IMAGE = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
+
+
+def _argument(name: str, default):
+    """``--image PATH`` / ``--bound PATH``: run this rehearsal against another image.
+
+    The patched image of #68 is checked with exactly these assertions, from
+    ``test_nand_patch.py --full``. A flash state belongs to the image it was saved
+    against (``flashstate`` refuses a mismatch), so a different image needs its
+    own bound state.
+    """
+    if name in sys.argv:
+        return Path(sys.argv[sys.argv.index(name) + 1])
+    return default
+
+
+STOCK = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
+IMAGE = _argument("--image", STOCK)
 RESOURCES = REPO / "NORM/assets/Picture_P03B_NORM2_0.4.bin"
-BOUND = HERE / "fixtures/bound-watch.zip"
+BOUND = _argument("--bound", HERE / "fixtures/bound-watch.zip")
 RAW = IMAGE.read_bytes()
 ADDRESS, CONTENT = RAW[:4], RAW[4:]
 PAGE = 2048
@@ -74,18 +90,28 @@ def test_the_image_targets_the_staging_area():
 
 
 def test_the_set_header_is_the_one_for_this_image():
-    # Address 0x0FC00000, 747,200 bytes, transport CRC 0x1979 (docs/firmware.md §2).
-    assert ota_set_header(OTA_TYPE_MCU, ADDRESS, CONTENT) == bytes.fromhex(
+    header = ota_set_header(OTA_TYPE_MCU, ADDRESS, CONTENT)
+    assert header[:2] == bytes([0x02, OTA_TYPE_MCU])
+    assert header[2:6] == ADDRESS                               # 0x0FC00000
+    assert header[6:10] == len(CONTENT).to_bytes(4, "little")
+    assert header[10:14] == apollo_crc(CONTENT)
+    assert header[14] == 0x0A
+    assert ota_init(CONTENT) == bytes([0x01]) + len(CONTENT).to_bytes(4, "little")
+    if IMAGE != STOCK:
+        return
+    # The vendor image, byte for byte: 747,200 bytes, transport CRC 0x1979
+    # (docs/firmware.md §2) -- this is the frame the firmware answered [02 01].
+    assert header == bytes.fromhex(
         "02 01 00 00 c0 0f c0 66 0b 00 79 19 00 00 0a".replace(" ", ""))
     assert apollo_crc(CONTENT) == bytes.fromhex("79190000")
-    assert ota_init(CONTENT) == bytes.fromhex("01c0660b00")
 
 
 def test_the_pieces_and_writes_are_the_apps():
     pieces = ota_pieces(CONTENT)
     assert b"".join(pieces) == CONTENT
-    assert len(pieces) == 4013, len(pieces)
     assert ota_write_size(OTA_TYPE_MCU) == 0x14
+    if IMAGE == STOCK:
+        assert len(pieces) == 4013, len(pieces)
 
 
 # -- against the firmware --------------------------------------------------------

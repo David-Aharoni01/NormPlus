@@ -18,6 +18,7 @@ the Apollo DFU update -- and how to read it out of the original app's smali. Mov
 **Key command codes** (from `BluetoothCommandConstant.smali`):
 - `0x02` WATCH_ID, `0x03` DEVICE_VERSION, `0x04` DATETIME, `0x08` BATTERY_POWER
 - `0x0E` UPGRADE_MODE ← OTA mode, inside the application (no bootloader, no reset)
+- `0xEE` is not in the app's table at all: see below
 
 ### CHECK commands — verified working (on the physical watch)
 
@@ -32,6 +33,24 @@ Every CHECK command requires a `[0x00]` payload (1 byte); the watch silently ign
 Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 
 **Status: Fixed in code, not yet verified on Android device.**
+
+### 0xEE: an arbitrary memory read the app never sends (#66)
+
+The firmware's 0x6F command table (`0x000CCD60`, 87 `[code][handler]` pairs, walked linearly
+at `0x00039F24`) maps `0xEE` to a handler at `0x0003779C` that the companion app never uses --
+it is in no smali. It reads the CPU address space: payload `[addr: 4 big-endian][len: 1]`,
+`memcpy` into a 0x80-byte stack buffer, answered `6F EE 80 <len> <bytes> 8F`. Action must be
+`0x70`; 128 bytes is the most it will return.
+
+```bash
+normcmd EE 70 --payload '00 02 00 00 10' --mac 4C:59:80:12:44:F1   # the vector table
+```
+
+Verified on the emulated **and** the physical watch (#66): internal flash from `0x00020000`
+and SRAM read fine, the low ~32-48 KB of flash is read-protected, and **every address the CPU
+does not map faults** -- the handler never answers and the watch is left wedged. The SPI NAND
+is not memory-mapped, so no NAND offset can be read this way; that is what the patch in
+`docs/firmware.md` section 11 changes (#68).
 
 ## Apollo DFU (Firmware Update)
 

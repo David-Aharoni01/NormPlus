@@ -86,7 +86,8 @@ tools/              the Python tools: one uv project (pyproject.toml, uv.lock at
     watch/          the WATCH emulator (normwatch, normcmd): the watch's own Apollo3 firmware
                     under Unicorn; normcmd --mac also asks the PHYSICAL watch from the PC
     phone/          the Pixel 8 ANDROID emulator (normphone) + the Bumble HCI bridge, for :app
-    firmware/       image_tool.py (verify / re-seal), query_ota.py (the vendor OTA server): normfw
+    firmware/       image_tool.py (verify / re-seal), nand_patch.py (the NAND read-out
+                    patch), query_ota.py (the vendor OTA server): normfw
     testing.py      normtest
   tests/            the Python test suite: standalone scripts, run by normtest
 docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.md,
@@ -106,6 +107,9 @@ submodule at `NORM/` (`NormPlus-reference`) -- whose history was rewritten out o
 - **Never commit vendor files here**: no smali, no decompiled code, no firmware images, no
   APKs, no resources lifted from the app. New vendor material goes into the `NORM/` repo
   (commit and push it there, then commit the updated submodule pointer here).
+- **Nor anything derived from them**: a patched firmware image is the vendor's image with
+  our bytes in it. `normfw patch-nand` builds one on demand; tests build theirs into a
+  temporary directory. Never into a tracked path.
 - Citing the smali by path and quoting a few lines in a comment or a doc is fine; copying
   whole methods or files is not.
 - Builds and tests read vendor files from `NORM/` at run time (the app's bundled resource
@@ -125,7 +129,7 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 |---|---|
 | `docs/app.md` | `:app` and `:protocol` architecture: BLE layer, the cold-connect penalty, always-on uptime, notifications, calls, data, UI; what is verified on the watch |
 | `docs/protocol.md` | The 0x6F channel, CHECK/SET rules, the Apollo DFU update as the firmware answers it, the version string, key smali files, apktool |
-| `docs/firmware.md` | The watch firmware itself: image format, the two CRCs, hardware, the vendor OTA server, what can be patched |
+| `docs/firmware.md` | The watch firmware itself: image format, the two CRCs, hardware, the vendor OTA server, what can be patched, the NAND read-out patch |
 | `docs/watch-emulator.md` | The watch emulator in summary: boot, radio, NZ8801, architecture, performance switches |
 | `docs/watch-emulator-internals.md` | The watch emulator in full -- read it before changing anything in `fw/` |
 | `docs/android-emulator.md` | The Android emulator and its Bluetooth bridge |
@@ -146,7 +150,7 @@ Everything in Python is one uv project: `pyproject.toml` at the root, the code i
 | `normwatch` | the watch emulator: `boot`, `info`, `modules` (`tools/normplus/watch/`) |
 | `normcmd` | one 0x6F question to a watch -- the emulated one, or the physical one with `--mac` |
 | `normphone` | the Android emulator: `setup`, `start [--watch / --no-bridge]`, `install`, `clear-bond`, `bridge` |
-| `normfw` | firmware images: `verify`, `seal`, `query-ota` |
+| `normfw` | firmware images: `verify`, `seal`, `patch-nand`, `query-ota` |
 | `normtest` | the Python test suite, one file at a time (`normtest ota cmd`, `normtest ota -- --full`) |
 | `normboard` | the task board: GitHub issues on the NormPlus project (see "Task tracking") |
 | `normhelp` | what every command is for, the common recipes; `normhelp <tool> [subcommand]` for its help |

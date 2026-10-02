@@ -38,9 +38,24 @@ from normplus.watch.fw.phone import (BOOT_ANIMATION_FRAMES, OTA_BT_PARAM, OTA_TY
                                 ota_init, ota_pieces, ota_set_header)
 
 REPO = HERE.parents[1]
-IMAGE = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
+
+
+def _argument(name: str, default):
+    """``--image PATH`` / ``--bound PATH``: run this rehearsal against another image.
+
+    The patched image of #68 is checked with exactly these assertions, from
+    ``test_nand_patch.py --full``. A flash state belongs to the image it was saved
+    against (``flashstate`` refuses a mismatch), so a different image needs its
+    own bound state.
+    """
+    if name in sys.argv:
+        return Path(sys.argv[sys.argv.index(name) + 1])
+    return default
+
+
+IMAGE = _argument("--image", REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin")
 RESOURCES = REPO / "NORM/assets/Picture_P03B_NORM2_0.4.bin"
-BOUND = HERE / "fixtures/bound-watch.zip"
+BOUND = _argument("--bound", HERE / "fixtures/bound-watch.zip")
 BLOB = RESOURCES.read_bytes()
 ADDRESS, CONTENT = BLOB[:4], BLOB[4:]
 #: The resource partition, from the blob's own header: 0x0C780000.
