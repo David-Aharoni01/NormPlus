@@ -291,3 +291,17 @@ gradle-app.setting
 
 # Kanban (local, per-machine)
 .codex/kanban.json
+
+# NORM/ is the official app unpacked with apktool. Its own code stays tracked --
+# cn/appscomm, com/appscomm and cn/bluetoothscan in whichever smali folder holds
+# them -- and so do res/, assets/ and the manifest. The ~23,000 smali files of
+# bundled third-party libraries (androidx, Google, Facebook, RxJava, Kotlin, ...)
+# stay on disk and out of git; `apktool d bin/NORM.apk -o NORM` regenerates them.
+NORM/smali*/*
+!NORM/smali*/cn/
+NORM/smali*/cn/*
+!NORM/smali*/cn/appscomm/
+!NORM/smali*/cn/bluetoothscan/
+!NORM/smali*/com/
+NORM/smali*/com/*
+!NORM/smali*/com/appscomm/
