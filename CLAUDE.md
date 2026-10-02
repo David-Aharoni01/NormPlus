@@ -115,6 +115,9 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --radio --seconds 18
 # Pixel 8 AVD (launch-emulator.ps1 -Watch) pairs with the EMULATED watch.
 # Implies --realtime. --hci-trace logs every packet across the seam.
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live
+# Keep the watch's flash between runs: bind it once, and every later run with the same
+# file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch boot --netsim --live --flash-state watch.zip
 
 # Parse the image header / list source modules recovered from assert() strings
 PYTHONPATH=tools/watchemu py -3.11 -m normwatch info
@@ -171,13 +174,18 @@ tooling lives in `tools/emulator/` (see its `README.md` for the full story).
   and points the AVD at the watch emulator, which serves the same netsim endpoint itself
   (`normwatch boot --netsim --live`, start it first). `:app` bonds with it, binds it (the
   pairing screen's first-run handshake) and lands on the dashboard while the watch goes to
-  its face; nothing physical involved. Verified on this AVD. Two things to expect: a stale
-  bond with the physical watch (same address) has to be removed first (`adb root`, delete
-  the `[4c:59:80:12:44:f1]` section of `/data/misc/bluedroid/bt_config.conf`, toggle BT —
-  the emulated watch keeps no bond across runs, so this is every run); and the first two
-  connection attempts after bonding stall in discovery and the third goes through — that is
-  the Database Hash park below, not the emulator. See "A real stack behind the seam" and
-  "Binding" in `tools/watchemu/README.md` for the bumble gaps that made this look impossible.
+  its face; nothing physical involved. Verified on this AVD. Run the watch with
+  `--flash-state FILE` and it keeps the bind and the bond: restart it with the same file and
+  `:app` reconnects with its stored keys (the firmware answers the LTK request from flash),
+  no wipe, no re-bind — verified on this AVD. Three things to expect: restarting the watch
+  means restarting the AVD too (`adb emu kill`, then `-Watch` again — the emulator's packet
+  streamer never reconnects to a new endpoint; bond and app data survive it); the AVD's bond
+  has to be removed when the watch on the other end does not hold it — a new state file, or
+  after the physical watch (`adb root`, delete the `[4c:59:80:12:44:f1]` section of
+  `/data/misc/bluedroid/bt_config.conf`, toggle BT); and the first one or two connection
+  attempts on a bonded reconnect stall in discovery before one goes through — the Database
+  Hash park below, not the emulator. See "A real stack behind the seam", "Binding" and "The
+  watch keeps what it writes" in `tools/watchemu/README.md`.
 
 `normlink-cli` (below) remains the fastest headless way to sanity-check the wire protocol;
 the emulator is for exercising the full `:app` stack (`BleManager`, sync, UI) against the watch.
@@ -221,7 +229,7 @@ Two facts that cost a lot to rediscover, in this order:
    The companion app's `BindDevice.start6F` sends bindStart (0x93) / setDateTime (0x04) /
    bindEnd (0x94), the watch shows "Pairing Success" and goes to its face, and
    `tests/test_ble_end_to_end.py` and `:app`'s pairing screen both do exactly that now.
-   The watch forgets it on restart until #41 (flash persistence).
+   `--flash-state FILE` keeps it: a watch bound once boots straight to its face.
 
 ### The BLE controller
 
@@ -336,7 +344,8 @@ watch is on the air with it: it advertises as `Norm2#00000` at the physical watc
 (`--address`), a phone connects, pairs (LE *legacy* Just Works — the firmware's Pairing
 Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discovers the GATT
 table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
-firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host in ~50s;
+firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host, then
+restarts the watch from its saved flash and reconnects with the stored keys, in ~100s;
 `--netsim` does it with the Pixel 8 AVD (`launch-emulator.ps1 -Watch`).
 
 The seam answers three kinds of thing itself and forwards the rest: the download phase
@@ -352,7 +361,7 @@ reads INTSTAT & INTEN, clears it and wakes the HCI task. INTSTAT bit 7 (BLECIRQ)
 interrupt form of BSTATUS bit 7, latched on its rising edge, and `Bleif.pending_irqs`
 raises it.
 
-**Bumble's controller has eight gaps a phone walks into, each of which looked like a hang**
+**Bumble's controller has nine gaps a phone walks into, each of which looked like a hang**
 — the P-256 stub above; silence for unknown opcodes; LE data stamped with the sender's
 *random* address (the watch uses its public one, so its ATT responses were dropped); a
 filter accept list that is never consulted (Android connects through it); no
@@ -361,9 +370,13 @@ filter accept list that is never consulted (Android connects through it); no
 "random" (after a bond the watch re-advertises as `00:00:00:00:00:00` and no reconnect
 matches); and data delivered *now* rather than at the next connection event, which lands
 the phone's next write inside the firmware's reply-then-clear window on 8001 and gets it
-answered `00 02`. `VirtualController` and `Air` in `blelink.py` close them,
+answered `00 02`; and encryption reported on both ends without the peripheral's host ever
+being asked for its key, so the firmware never looked up a bond or refused one (a restart
+test passed with the restored flash thrown away). `VirtualController` and `Air` in
+`blelink.py` close them,
 `tests/test_ble_link.py` and `tests/test_ble_end_to_end.py` pin them, and the README's "A
-real stack behind the seam" and "Binding" tell each story. Android additionally aborts
+real stack behind the seam", "Binding" and "The watch keeps what it writes" tell each
+story. Android additionally aborts
 unless the controller claims Secure Simple Pairing, a BR/EDR bit the phone's controller
 now claims.
 
@@ -656,10 +669,15 @@ BleConstants          All UUIDs, MTU values, timeouts, frame markers.
 Type for its GATT Database Hash (0x2B2A) — Cordio's hash-update flag is set when the services
 are added and `AttsCalculateDbHash()` is never called, so the read is parked for ever — and
 Android reads exactly that before `discoverServices()` on every connection after the bonding
-one. Against the emulated watch this reproduces the symptom precisely: attempts 1 and 2 stall
-in discovery, attempt 3 goes through once the stack gives up on the hash. See "Binding" in
-`tools/watchemu/README.md`. Not yet confirmed on the physical watch; if it holds, the SMP
-theory above is describing the same stall from the wrong side.
+one. Against the emulated watch this reproduces the symptom precisely: the first one or two
+attempts stall in discovery and a later one goes through once the stack gives up on the hash.
+See "Binding" in `tools/watchemu/README.md`. Not yet confirmed on the physical watch; if it
+holds, the SMP theory above is describing the same stall from the wrong side. One more piece
+of evidence against that theory: once the emulated watch was really asked for its key (see
+"The watch keeps what it writes"), Android logged the same `SMP state machine busy so
+skipping encryption enable:1` on reconnects whose HCI shows the firmware answering the LTK
+request with the right key and both ends reporting Encryption Change, status 0. The line is
+not evidence that encryption failed.
 
 **Warm-connection via `BleService` (the "snappy reconnect" fix) — IMPLEMENTED (pending on-device verification):**
 The cold-start penalty only applies when the BLE link has gone fully idle. The app now **holds the GATT connection alive** in the foreground `BleService`, so a brief drop reconnects on a *warm* SMP state. What was built:
@@ -1085,21 +1103,22 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 19 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 20 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
 bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the companion
 app's post-QR handshake) and reads its battery, while the watch goes from "Select a
 Language" to its face — `watchemu` and `tools/emulator/` meet there, with no hardware at
-all. Open cards, in the order to do them (the README's "What to build next" says why):
+all. With `--flash-state` (#41, done) it stays that way across restarts: the watch boots to
+its face and the phone reconnects with its stored keys. Open cards, in the order to do them
+(the README's "What to build next" says why):
 
-- **#41 flash persistence** (`--flash-state PATH`) — keep the watch provisioned across
-  runs so it starts past setup and keeps its bond. Everything below gets cheaper.
 - **#49 `normwatch cmd`** — one 0x6F question in one command, instead of a copy of the
   e2e test.
 - **#46 snapshot/restore** — a boot to the UI is 18.9s and a bond-and-bind round trip
-  51.9s (measured 2026-10-02); this makes both sub-second, and composes with #41.
+  51.9s (measured 2026-10-02); this makes both sub-second, and composes with
+  `--flash-state`.
 - **#47 golden-fingerprint test** — the equivalence checks that gate every optimisation
   still live in throwaway scripts.
 - **#50 OTA type 8 against the emulated watch** — first find out whether the application

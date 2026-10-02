@@ -140,18 +140,26 @@ face) and reads its battery on the dashboard, with nothing physical involved.
 so both can use it; the vendor-caps short-circuit is not needed there because the virtual
 controller answers every opcode.
 
-Two things to know:
+Things to know:
 
-- The emulated watch uses the physical watch's address by default and keeps no bond
-  across runs, so a guest bonded to it (or to the real watch) has the wrong keys next
-  time. Forget the device in the guest before each run (Settings > Bluetooth, or with
-  `adb root`: delete the `[4c:59:80:12:44:f1]` section of
-  `/data/misc/bluedroid/bt_config.conf` and toggle BT), or give the emulated watch another
-  address with `--address`.
-- After the bond, the first two connection attempts stall in service discovery and the
-  third goes through. That is the firmware: it never answers Android's Read By Type for
-  the GATT Database Hash, and Android reads that first whenever it has the watch's table
-  cached. `BleManager`'s watchdog handles it; see "Binding" in `tools/watchemu/README.md`.
+- Run the watch with `--flash-state FILE` and it keeps its bind and its bond across
+  restarts, so the guest's bond stays good and `:app` reconnects without pairing or
+  binding again (the firmware answers the key request from its saved flash; see "The
+  watch keeps what it writes" in `tools/watchemu/README.md`). Keep one file per bond.
+- The guest's bond has to go when the watch on the other end does not hold it: a new
+  state file, a run without one, or after the physical watch (same address). Forget the
+  device in the guest (Settings > Bluetooth, or with `adb root`: delete the
+  `[4c:59:80:12:44:f1]` section of `/data/misc/bluedroid/bt_config.conf` and toggle BT),
+  or give the emulated watch another address with `--address`.
+- Restarting the watch means restarting the AVD: the emulator's packet streamer does not
+  reconnect to a new endpoint (the guest's HCI times out on `RESET`, and toggling
+  Bluetooth does not help). `adb emu kill`, then `-Watch` again; the bond and `:app`'s
+  data survive.
+- On a bonded reconnect the first one or two connection attempts stall in service
+  discovery before one goes through. That is the firmware: it never answers Android's
+  Read By Type for the GATT Database Hash, and Android reads that first whenever it has
+  the watch's table cached. `BleManager`'s watchdog handles it; see "Binding" in
+  `tools/watchemu/README.md`.
 
 Notes / gotchas:
 - The CSR8510 is BT 4.0 — fine as a BLE central for the watch, but old. A newer BT5 dongle on a
