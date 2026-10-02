@@ -837,31 +837,55 @@ Navigation graph: `ui/navigation/AppNavGraph.kt`.
 
 **Key command codes** (from `BluetoothCommandConstant.smali`):
 - `0x02` WATCH_ID, `0x03` DEVICE_VERSION, `0x04` DATETIME, `0x08` BATTERY_POWER
-- `0x0E` UPGRADE_MODE ← triggers OTA bootloader
+- `0x0E` UPGRADE_MODE ← OTA mode, inside the application (no bootloader, no reset)
 
 ### Apollo DFU (Firmware Update)
 
-The Norm 2 uses an **Apollo chipset** with a custom 5-step OTA protocol over a **separate** GATT connection.
+**Verified against the watch's own firmware in the emulator (2026-10-02, `tests/test_ota.py`,
+README "Rehearsing an OTA"); not yet run on the physical watch.** A full resource update
+of the unmodified `Picture_P03B_NORM2_0.4.bin` goes through: CRC `04 01`, REBOOT `05 01`
+(the app's 0x64), the partition byte-identical, and the watch boots identically after it.
 
-**DFU Service:** `00001530-0000-1000-8000-00805f9b34fb`
-- Write char (0x1531): command/data, WRITE_WITH_RESPONSE
-- Notify char (0x1532): watch ACKs; byte[1] = next expected step
+**`ApolloOtaProtocol.kt` does NOT match this and will fail at SET** -- see the list below
+and card #56. Do not run it against the watch until it is fixed and has passed against
+the emulated watch.
 
-**Firmware binary format:** first 4 bytes = target flash address, remaining bytes = raw firmware.
+**It is all inside the application, over the same connection.** `UPGRADE_MODE` (`0x0E`
+SET `[00]`, 8001) is acknowledged and nothing resets; the DFU service is in the running
+application's GATT table (`ew_mod_ota_protocol.c`, handler at `0x0003B798`).
 
-**OTA sequence** (implemented in `ApolloOtaProtocol.kt`; source: `OtaApolloCommand.smali`):
-1. Send `UPGRADE_MODE` (`0x0E`) on main channel → watch reboots into bootloader
-2. Re-connect GATT to same MAC → discover `0x1530` service → enable notify on both 0x1531 and 0x1532
-3. Send BT param: `[0x10, 0x02]` → delay 500ms → await ACK byte[1]=0x01
-4. Send INIT: `[0x01] + total_content_length_LE4`
-5. Send SET header (15 bytes): `[0x02][updateType][addr[4]][len[4]][crc[4]][PACKAGE_COUNT=0x0A]`
-6. Stream content in 20-byte (or 128-byte for picture) chunks; every 10 chunks = checkpoint ACK byte[1]=0x03, byte[2]=0x04
-7. Send CRC verify: `[0x04]` → await byte[1]=0x04
-8. Send reboot: `[0x05]` → await byte[1]=0x05
+**DFU service `1530`** -- both characteristics are **write without response only**:
+- `0x1531` READ | WRITE_WITHOUT_RESPONSE | NOTIFY: control commands in, every reply out.
+- `0x1532` READ | WRITE_WITHOUT_RESPONSE, no CCCD: image data in.
 
-**OTA result codes:** `0x64` = success, `0x65` = in-progress, `0x66` = fail (throws `OtaException` immediately).
+A reply is `[command][status][...]`; status `01` is success, anything else is failure
+(`OtaApolloCommand.parse`).
 
-**CRC algorithm** (from `OtaUtil.smali`): CRC-16/CCITT, init `0xFFFF`. Returns 4 bytes: `[crc_lo, crc_hi, 0x00, 0x00]`.
+**The sequence** (cn.appscomm.ota.OtaApolloCommand; the firmware's answers):
+1. `UPGRADE_MODE` `[00]` on 8001 → generic ack, no reset.
+2. BT_PARAM `[10 02]` → 1531. No reply; the app waits 500 ms and carries on.
+3. INIT `[01] + content length LE32` (exactly 5 bytes) → `01 01`.
+4. SET (15 bytes) `[02][type][addr 4][length 4][crc 4][0A]` → `02 01`. **Type 4 is the
+   resource partition**; the handler accepts 1-4 only and answers anything else `02 00`
+   -- including the 8 that `cn.appscomm.ota`'s `getUpdateType` and our Kotlin send for
+   `Picture_*.bin` (`cn.appscomm.bluetooth.ota` has `UPDATE_TYPE_PICTURE_LANGUAGE = 4`).
+   **A type-4 SET erases the live resource partition at `0x0C780000` at once**; an update
+   cut short leaves the UI without resources (the OTA code is in internal flash and
+   survives, so it can be re-sent).
+5. Data → 1532 in **200-byte pieces** (each 2 KB page as ten 200s and a 48; the rest in
+   200s), each written in 128-byte (type 4) or 20-byte writes. **Every piece** is answered
+   `03 01 01|02 <bytes so far LE32>`; `02` marks a completed page, programmed in place.
+6. CRC `[04]` → `04 01`. CRC-16/CCITT init `0xFFFF` as `[lo, hi, 0, 0]` (`OtaUtil`),
+   over the content -- accepted by the firmware.
+7. REBOOT `[05]` → `05 01`. For a resource update the watch does **not** reset; it shows
+   "Upgrade Success". It erases and programs NAND page 0 at the end (a record).
+
+**Do not start one during the first ~10 s after the watch boots.** An OTA screen opened over
+the boot animation sends the UI task into unbounded recursion in the notify / window
+manager code and it overflows its stack (README).
+
+**Firmware binary format:** first 4 bytes = target address, the rest = the content.
+**OTA result codes:** `0x64` success, `0x65` in progress, `0x66` fail.
 
 ### Device Version String
 
@@ -1120,7 +1144,7 @@ Wire packet: `[6F][cmd][0x70][01][00][00][8F]`
 Boots the real firmware to first-run setup; runs at **1.25x watch speed** at CLI defaults
 and 1.00x with `--idle-skip`, from 8.7x slower when the work started. Touch, buttons,
 accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are all
-modelled from the firmware's own driver sequences. 23 test files, all standalone scripts.
+modelled from the firmware's own driver sequences. 24 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
 BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
@@ -1136,8 +1160,8 @@ README's "What to build next" says why):
 
 - **#54 `--idle-skip` one tick short with the radio up** — found by the golden test
   (#47, done); one lost STIMER between 225M and 250M.
-- **#50 OTA type 8 against the emulated watch** — first find out whether the application
-  or the (absent) first-stage bootloader serves it.
+- **#56 fix `ApolloOtaProtocol.kt`** against the emulated watch — the OTA rehearsal (#50,
+  done) showed it would fail at SET (type 8) and diverges in five more places.
 - **#51 health records** — so `SyncHealthDataUseCase` runs something other than its
   empty paths; #52 script the AVD's bond removal; #53 the MMIO at `0x50023800`.
 - **#48 Database Hash on hardware** — not emulator work: the firmware parks Android's
