@@ -60,10 +60,11 @@ def main(argv=None) -> int:
         ok = run.returncode == 0
         print(f"  {'ok  ' if ok else 'FAIL'} {took:6.1f}s  {t.stem}")
         output = (run.stdout + run.stderr).strip()
+        if not ok:
+            failed.append(t.stem)
         if args.verbose and output:
             print("\n".join("        " + line for line in output.splitlines()))
         elif not ok:
-            failed.append(t.stem)
             lines = [l for l in output.splitlines() if not l.startswith("WARNING:")]
             shown = [l for l in lines if l.startswith("FAIL")] or lines[-15:]
             print("\n".join("        " + line for line in shown))
