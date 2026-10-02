@@ -318,7 +318,7 @@ Reverse-engineered from `NORM/smali_classes2/cn/appscomm/iting/utils/NetworkMana
 ```
 POST https://api.normdenmarkupdate.com/api/firmware_version
 Content-Type: application/json
-{"device_type": "s21"}          <- "s21" is the Norm 2's internal model code, hardcoded
+{"device_type": "s21"}          <- hardcoded; NOT the Norm 2 (that is "P03B_LEMOVT")
 
 -> {"version": "...", "file_name": "<https URL>"}
 ```
@@ -398,12 +398,24 @@ send it.
 
 - **The Norm 2's Apollo3 firmware is not served here, and we cannot get a second Apollo image
   from this route.** The §7 CRC stays unsolved by this path.
-- The Apollo firmware comes from a different channel: Retrofit `POST device/queryProductVersion`
-  and `getFirmwareVersionNew` in `NORM/smali_classes2/cn/appscomm/server/UrlService.smali`,
-  against the Appscomm backend. Not yet traced; likely needs an authenticated session. **This is
-  the lead to follow** if a second Apollo image is wanted. `NetOTA.smali` branches on both `"S21"`
-  and `"S22"`, so the app does distinguish the two products — it is only this one endpoint that
-  does not.
+- **The app never asks this endpoint about a Norm 2 in the first place.** The Norm 2 is
+  `"P03B_LEMOVT"` (`WatchDeviceFactory$CurrentDeviceType.isP03B`), not `"s21"`; S21 and S22 are
+  other models. `SettingsFragment`'s update item calls `handleApolloLocalUpdate()` when
+  `isP03B()` -- the two files bundled in the APK, `Apollo3_P03B_NORM2_F0.2B01.bin` and
+  `Picture_P03B_NORM2_0.4.bin`, nothing from the network -- and `queryFirmware()` only for the
+  other models.
+- **The Appscomm-style channel is dead too** (traced for #65, 2026-10). Retrofit
+  `POST device/queryFirmwareVersion` (`getFirmwareVersionNew`) and `device/queryProductVersion`
+  in `cn/appscomm/server/UrlService.smali`, base URL `ServerVal.host` = `https://normdenmark.com/`
+  (`ITINGApplication`). No authentication or signing: `ServerManager.setupBaseRequest` merges
+  `seq` (ms timestamp), `versionNo` (1.1.18), `language` (`"201"` for English,
+  `ServerUtil.returnLanguage`), `clientType` `"android"`, `customerCode` `"LeMovt"` and `appId`
+  `"91"` into the JSON body, and the version body is `{productCode: "P03B_LEMOVT", versionInfo:
+  {A, H, K, N, R, T, TE}}`. Both endpoints answer **404** with the storefront's HTML error page:
+  `normdenmark.com` is now a shop, not that API. So no route in this app version delivers
+  anything for the Norm 2 beyond what the APK carries -- and the factory resources (#64) could
+  not come this way regardless: a type-4 update erases and rewrites only 512 KB at
+  `0x0C780000`, against tens of MB from `0x026DA430`.
 - **Never push this file at a Norm 2.** For what it's worth, `getUpdateType()` matches on the
   *filename*, and `s22_v1.3_b01_24032800.bin` contains neither "Telink" nor "Apollo", so it
   falls through to the default `0x8` (Picture/Language/WatchFace) rather than type 1. Its first

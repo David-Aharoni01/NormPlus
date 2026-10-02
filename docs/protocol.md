@@ -98,8 +98,10 @@ manager code and it overflows its stack (README).
 Nothing here is cryptographic — no signature, no encryption. **A patched image can be
 re-sealed and will validate**: `normfw seal patched.bin --in-place`.
 
-**Where updates come from.** The app's Apollo channel is the Retrofit
-`POST device/queryProductVersion` in `cn/appscomm/server/UrlService.smali`. The public
+**Where updates come from.** For a Norm 2 (`P03B_LEMOVT`), only the two files in the APK:
+the settings screen calls `handleApolloLocalUpdate()` and asks no server. The app's
+Apollo server route (Retrofit `device/queryFirmwareVersion` at `https://normdenmark.com/`)
+answers 404 now. The public
 endpoint `api.normdenmarkupdate.com` is the *Telink* channel and serves Norm 1 firmware for a
 Telink SoC (`KNLT` magic) -- never send it to this watch (`docs/firmware.md` section 8;
 `OtaImage.parse` refuses it).

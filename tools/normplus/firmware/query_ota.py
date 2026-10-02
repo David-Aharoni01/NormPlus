@@ -10,12 +10,16 @@ Reverse-engineered from the original app:
     lambda$queryFirmware$1  -- app keeps version[0:3] and file_name
     lambda$downloadFile$2   -- plain GET on file_name, saved under the app cache dir
 
-"s21" is the Norm 2's internal model code and is hardcoded in the app.
+"s21" is hardcoded in the app, and it is NOT the Norm 2: the Norm 2 is "P03B_LEMOVT"
+(WatchDeviceFactory$CurrentDeviceType.isP03B), and for it the app never sends this query --
+SettingsFragment's update item calls handleApolloLocalUpdate() when isP03B(), and
+queryFirmware() only for the other models.
 
 !! IMPORTANT -- this is the TELINK channel, not the Apollo one. SettingsFragment
    assigns the result to OTAPathVersion.tePath/teVersion ("te" = Telink); the
    apolloPath/apolloVersion fields are filled by a different route entirely
-   (Retrofit POST device/queryProductVersion in cn/appscomm/server/UrlService).
+   (Retrofit POST device/queryFirmwareVersion at https://normdenmark.com/, which
+   answered 404 in 2026-10 -- docs/firmware.md section 8).
    As of 2026-08 it serves ONE record regardless of device_type, and that record
    is Norm 1 firmware for a Telink TC32 SoC -- 'KNLT' magic at +0x08, string
    "Norm 1#23574". It must NEVER be pushed at a Norm 2. See docs/firmware.md section 8.
@@ -51,9 +55,10 @@ API_URL = "https://api.normdenmarkupdate.com/api/firmware_version"
 # firmware ever published rather than just the current one -- see --list-blobs.
 BLOB_CONTAINER = "https://normdenmarkupdate.blob.core.windows.net/storage"
 
-# The app only ever sends "s21" (the Norm 2). The rest are model codes that appear
-# elsewhere in the APK and are plausible values for the same parameter.
-DEVICE_TYPES = ["s21", "l42p", "l42", "t51", "w007ga", "lemovt", "leader"]
+# The app only ever sends "s21" (not the Norm 2, which never asks). The rest are model
+# codes that appear elsewhere in the APK and are plausible values for the same parameter;
+# "p03b_lemovt" is the Norm 2's own.
+DEVICE_TYPES = ["s21", "p03b_lemovt", "l42p", "l42", "t51", "w007ga", "lemovt", "leader"]
 
 DEFAULT_TIMEOUT = 15.0
 USER_AGENT = "okhttp/3.12.0"  # the app's HTTP stack; harmless, keeps us unremarkable
@@ -180,7 +185,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--device-type", "-d", nargs="+", default=["s21"],
-                    help="model code(s) to query (default: s21 = Norm 2)")
+                    help="model code(s) to query (default: s21, what the app sends)")
     ap.add_argument("--enumerate", "-e", action="store_true",
                     help=f"query the full candidate list: {' '.join(DEVICE_TYPES)}")
     ap.add_argument("--list-blobs", action="store_true",
