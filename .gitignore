@@ -60,6 +60,8 @@ gen-external-apklibs
 *.nar
 *.ear
 *.zip
+# ...except the watch emulator's test fixtures (saved flash states, see test_golden.py)
+!tools/watchemu/tests/fixtures/*.zip
 *.tar.gz
 *.rar
 

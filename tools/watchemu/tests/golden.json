@@ -1,0 +1,140 @@
+{
+  "inputs": {
+    "image_sha256": "939d1fc318e87c9ef94b053de595352552544b0c3087ec66120a26e244a7c09b",
+    "resources_sha256": "a12ab40036da704a08a7bac18e050c7582a414393885d80c92adeaef16018056",
+    "bound_watch_sha256": "2804f7900cc6a5b65377a968453886c203e2530c861e6aa22da4f29450fd1e09"
+  },
+  "workloads": {
+    "boot": {
+      "instructions": 445000369,
+      "exceptions": {
+        "SVCall": 1,
+        "PendSV": 4624,
+        "GPIO": 72,
+        "MSPI": 3093,
+        "STIMER_CMPR0": 9244
+      },
+      "frames": 136,
+      "pixel_bytes": 35251200,
+      "lit_pixels": 1867,
+      "screen": "ac710f72c39baab2",
+      "nand_pages_read": 509,
+      "animation": [
+        134,
+        134
+      ],
+      "lvgl_screen": "0x10053DC0",
+      "gesture_flags": "0x00",
+      "touch_reports": 0,
+      "flash_pages_written": [
+        "0x18000",
+        "0x1C000",
+        "0xDE000",
+        "0xFA000"
+      ],
+      "faults": 0
+    },
+    "radio": {
+      "instructions": 445000373,
+      "exceptions": {
+        "SVCall": 1,
+        "PendSV": 4638,
+        "BLE": 15,
+        "GPIO": 72,
+        "MSPI": 3095,
+        "STIMER_CMPR0": 9242
+      },
+      "frames": 136,
+      "pixel_bytes": 35251200,
+      "lit_pixels": 1867,
+      "screen": "ac710f72c39baab2",
+      "nand_pages_read": 509,
+      "animation": [
+        134,
+        134
+      ],
+      "lvgl_screen": "0x10053DC0",
+      "gesture_flags": "0x00",
+      "touch_reports": 0,
+      "flash_pages_written": [
+        "0x18000",
+        "0x1C000",
+        "0xDE000",
+        "0xFA000"
+      ],
+      "faults": 0
+    },
+    "language": {
+      "instructions": 460000002,
+      "exceptions": {
+        "SVCall": 1,
+        "PendSV": 4604,
+        "GPIO": 80,
+        "MSPI": 3531,
+        "STIMER_CMPR0": 9561
+      },
+      "frames": 139,
+      "pixel_bytes": 35818560,
+      "lit_pixels": 43816,
+      "screen": "1e063a41c7da8bbc",
+      "nand_pages_read": 594,
+      "animation": [
+        134,
+        134
+      ],
+      "lvgl_screen": "0x10053DC0",
+      "gesture_flags": "0x00",
+      "touch_reports": 2,
+      "flash_pages_written": [
+        "0x18000",
+        "0x1C000",
+        "0xDE000",
+        "0xFA000"
+      ],
+      "faults": 0
+    },
+    "face_swipe": {
+      "instructions": 500000001,
+      "exceptions": {
+        "SVCall": 1,
+        "PendSV": 5213,
+        "GPIO": 132,
+        "MSPI": 3827,
+        "STIMER_CMPR0": 10416
+      },
+      "frames": 137,
+      "pixel_bytes": 35510400,
+      "lit_pixels": 13185,
+      "screen": "459901af4fe4ac32",
+      "nand_pages_read": 653,
+      "animation": [
+        134,
+        134
+      ],
+      "lvgl_screen": "0x100535A0",
+      "gesture_flags": "0x00",
+      "touch_reports": 26,
+      "flash_pages_written": [
+        "0x18000",
+        "0x1C000",
+        "0xDE000",
+        "0xE0000",
+        "0xE2000",
+        "0xE4000",
+        "0xE6000",
+        "0xE8000",
+        "0xEA000",
+        "0xEC000",
+        "0xEE000",
+        "0xF0000",
+        "0xF2000",
+        "0xF4000",
+        "0xF6000",
+        "0xF8000",
+        "0xFA000",
+        "0xFE000"
+      ],
+      "faults": 0
+    }
+  }
+}

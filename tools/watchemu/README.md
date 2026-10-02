@@ -1329,6 +1329,44 @@ accumulates whatever the boot ROM's delay helper reports burning, and the two
 runs enter that helper a different number of times — 0.012% over 100M, in a
 counter nothing in the emulator reads.
 
+**With the radio up it is one tick short.** All of the above was measured radio-off.
+With the NZ8801 model answering, a full 445M boot with `--idle-skip` delivers exactly one
+fewer STIMER interrupt than without it, and nothing else differs — not PendSV, not a
+frame, not a pixel. Bisected: identical through 225M, one short from 250M on, and still
+exactly one short at 450M, so it is one lost tick between ~4.7 and ~5.2s of watch time,
+not drift. Card #54; `tests/test_golden.py` pins it as it stands.
+
+### Golden fingerprints
+
+`tests/test_golden.py` records what the watch does over four fixed, deterministic runs
+in `tests/golden.json` and fails field by field when that changes: exception counts by
+name, frames, pixel bytes, lit pixels, a hash of the final screen, NAND pages read, the
+boot animation's frame, LVGL's active screen (`0x10001710`), the gesture flags
+(`0x10001BFA`), touch reports and the flash pages written.
+
+| workload | what it covers |
+|---|---|
+| `boot` | radio off, 445M, to "Select a Language" |
+| `radio` | the same with the NZ8801 model answering: BLEIF, the download, HCI init |
+| `language` | a tap on the first language row: touch into setup's navigation |
+| `face_swipe` | from `tests/fixtures/bound-watch.zip`, so it boots to the face; a swipe with `--force-gestures` opens the activity page |
+
+It also holds `--idle-skip` to the `boot` fingerprint exactly, and to `radio` minus the
+one tick above. Two runs of each workload on one tree agree to the instruction, and
+moving the MSPI command-queue pump from 256 to 255 cycles fails `boot`. The swipe used to
+be done during the boot animation, where it reaches no further than the GPIO count; on
+the face it reaches the gesture recogniser and changes the page.
+
+It is in the ordinary test loop (about a minute), so nothing has to remember to run it.
+After a change that is *meant* to move the watch, re-record and read the diff it prints:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 tools/watchemu/tests/test_golden.py --update
+```
+
+The fixture is a watch bound over BLE by `normwatch cmd ... --save`; rebuilding it gives
+a different bond and bind time, so it is kept rather than rebuilt per run.
+
 It stays opt-in regardless. It reasons about when the core has nothing to do
 instead of executing it, and that judgement is worth asking for on purpose.
 
@@ -1814,10 +1852,11 @@ In the order to do them. All are on the kanban board (`/kanban`).
 2. ~~**#49 — `normwatch cmd`**~~ -- done: one 0x6F question in ~4s from a bound state
    file, see "Running it". Its first answers: `DEVICE_VERSION CHECK [06]` is refused
    (status 1) on a bound watch as on an unbound one, and gets silence over 8003.
-3. **#46 — snapshot and restore** a booted machine, so the 19s / 52s above become
-   sub-second. The biggest iteration win left; composes with #41.
-4. **#47 — golden-fingerprint test.** The equivalence checks that gate every
-   optimisation still live in throwaway scripts. Do it before #46 touches the run loop.
+3. ~~**#47 — golden-fingerprint test**~~ -- done, and done first, because #46 changes
+   the run loop: `tests/test_golden.py`, see "Golden fingerprints". It found #54.
+4. **#46 — snapshot and restore** a booted machine, so the 19s / 52s above become
+   sub-second. The biggest iteration win left; composes with #41. The golden test is
+   its acceptance check: a restored run has to land on the same fingerprint.
 5. **#50 — rehearse OTA type 8 against the emulated watch.** First establish whether a
    resource update is served by the application (the DFU service is in its GATT table)
    or by the first-stage bootloader, which is not in the image; only the first can be
@@ -1828,6 +1867,8 @@ In the order to do them. All are on the kanban board (`/kanban`).
    firmware's own pedometer records steps.
 7. **#52 — script the AVD's stale-bond removal** for `launch-emulator.ps1 -Watch`.
 8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
+9. **#54 — `--idle-skip` loses one STIMER tick with the radio up**, once, between 225M
+   and 250M.
 
 Not emulator work, but produced by it: **#48** — check the Database Hash park on the
 physical watch; if it holds, `BleManager`'s cold-connect story is describing that stall
