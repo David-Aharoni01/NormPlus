@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.norm2hacked.domain.model.AppPage
 import com.norm2hacked.protocol.commands.SwitchSettingCommand
 import com.norm2hacked.ui.theme.Background
@@ -60,6 +61,7 @@ fun WatchSettingsScreen(
     onNotificationRulesClick: () -> Unit,
     onFirmwareClick: () -> Unit,
     onCalibrateHandsClick: () -> Unit,
+    healthViewModel: ConnectionHealthViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -90,6 +92,10 @@ fun WatchSettingsScreen(
                 }
                 Spacer(Modifier.height(20.dp))
             }
+
+            // ── Connection health ────────────────────────────────────────────
+            // First: if the watch is silently disconnected, nothing else on this screen works.
+            item { ConnectionHealthSection(healthViewModel) }
 
             // ── Display ─────────────────────────────────────────────────────
             item {
@@ -157,7 +163,7 @@ fun WatchSettingsScreen(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Teal),
                     ) {
                         Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("  Per-App Notification Rules", style = MaterialTheme.typography.bodyMedium)
+                        Text("  Choose Notification Apps", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -298,13 +304,13 @@ fun WatchSettingsScreen(
 }
 
 @Composable
-private fun SectionHeader(text: String) {
+internal fun SectionHeader(text: String) {
     Text(text, style = MaterialTheme.typography.labelLarge, color = OnSurfaceMuted)
     Spacer(Modifier.height(8.dp))
 }
 
 @Composable
-private fun SettingCard(content: @Composable () -> Unit) {
+internal fun SettingCard(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()

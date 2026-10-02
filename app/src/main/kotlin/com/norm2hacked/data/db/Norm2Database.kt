@@ -26,7 +26,7 @@ import com.norm2hacked.data.db.entities.WorkoutEntity
         WorkoutEntity::class,
         NotificationRuleEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class Norm2Database : RoomDatabase() {

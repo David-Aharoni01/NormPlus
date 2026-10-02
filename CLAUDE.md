@@ -7,9 +7,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Reverse-engineering workspace for the **Norm 2 smartwatch**. The goals are:
 1. Understand the BLE communication protocol between the watch and its companion app (smali in `NORM/`)
 2. Build a custom Android app that replicates/extends the companion app's functionality (`app/`)
-3. Patch or replace the watch firmware via OTA
+3. Patch or replace the watch firmware via OTA — the firmware is understood in depth;
+   see [`docs/firmware.md`](docs/firmware.md) and "Watch Firmware" below
 4. Run the watch's own firmware on the PC, so the watch's behaviour can be observed and
    changed without the hardware (`tools/watchemu/`)
+
+## Task Tracking — all work goes in the kanban
+
+**From now on, every task is tracked in the kanban board. No exceptions.**
+
+The board is local SQLite at `~/.claude/kanban-dbs/Norm+.db` (no server, no auth). It is the
+single source of truth for what is planned, in progress and done — *not* prose lists in this
+file, and not TODO comments in code.
+
+| Action | Command |
+|---|---|
+| See the board | `/kanban` (markdown) or `/kanban-view` (live web board, auto-refreshes) |
+| Add a task | `/kanban add <title>` |
+| Move a task | `/kanban move <ID> <status>` — follow the Move Protocol matrix |
+| Run the agent pipeline | `/kanban-run <ID>` |
+| Sharpen a vague task | `/kanban-refine` |
+| Session handoff | `/kanban context` / `/kanban context save` |
+
+Rules:
+- **Before starting any non-trivial work, there must be a card for it.** If a request arrives
+  without one, create the card first, then work it.
+- **Discovering follow-up work means filing a card**, not appending to a list here. This file
+  documents *how the system works*; the board tracks *what remains to be done*.
+- **Dependencies are declared in the description** as `Depends on: #ID` on the first non-blank
+  line. The runner parses this and injects upstream context.
+- **Levels:** L1 quick (`todo→impl→done`), L2 standard (adds plan + impl review), L3 full
+  (adds plan review + test). Anything crossing firmware ↔ protocol ↔ app is L3.
+- **Split a card** if it exceeds ~1h, spans two or more layers, is hard to roll back, or has
+  any uncertain requirement.
+- The pending-features and known-gaps lists at the bottom of this file were migrated to the
+  board and are kept only as narrative context. **The board wins on status.**
 
 ## Code Quality Standards
 
@@ -50,13 +82,18 @@ tools/
   watchemu/         ← the WATCH emulator: runs the watch's own Apollo3 firmware under
                        Unicorn, no hardware. See "Watch Firmware Emulator" below.
                        `normwatch cmd --mac` also asks the PHYSICAL watch from the PC.
-  firmware/         ← image_tool.py: verifies and re-seals Ambiq firmware images
+  firmware/         ← query_ota.py (OTA-server queries), image_tool.py (verify/re-seal images)
+docs/
+  firmware.md       ← full analysis of the watch's own firmware — READ BEFORE ANY OTA WORK
 ```
 
 Note the two "emulators": `tools/emulator/` runs the **phone**, `tools/watchemu/` runs the
 **watch**. They are unrelated codebases that meet only at card #25 (BLEIF -> HCI).
 
 The smali code that matters is entirely in `NORM/smali_classes2/cn/appscomm/`.
+
+The two factory firmware images ship inside the APK, at `NORM/assets/`:
+`Apollo3_P03B_NORM2_F0.2B01.bin` (the watch OS) and `Picture_P03B_NORM2_0.4.bin` (resources).
 
 ---
 
@@ -690,6 +727,33 @@ The cold-start penalty only applies when the BLE link has gone fully idle. The a
 
 **TODO — verify on-device:** after a first (cold ~8s) connect, force a disconnect and confirm the warm reconnect is sub-second; compare against the cold path. Then tune `KEEPALIVE_INTERVAL_MS` / `REKICK_DELAY_MS` (or disable keep-alive if the link never drops idle).
 
+### Always-on uptime — every way the link dies silently (IMPLEMENTED, pending on-device verification)
+
+The warm-connection work above keeps a *running* service connected. These are the layers that keep
+the service itself running, so the user is never silently disconnected:
+
+| Failure mode | Handled by |
+|---|---|
+| Phone rebooted | `ble/BootReceiver.kt` — `BOOT_COMPLETED` (+ `LOCKED_BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`), `RECEIVE_BOOT_COMPLETED` |
+| App updated (kills the service) | same receiver, `MY_PACKAGE_REPLACED` |
+| Bluetooth toggled off/on | `ble/BluetoothStateReceiver.kt`, registered **dynamically** by `BleService` (`ACTION_STATE_CHANGED` is not an implicit-broadcast exemption). OFF → clean stand-down (no retry thrash); ON → reconnect |
+| Process killed (memory / OEM optimiser) | `START_STICKY` + `onStartCommand` now resumes from DataStore on a **null intent** |
+| Process killed *and* not restarted | `ble/ConnectionWatchdog.kt` — 15-min `AlarmManager` (`setAndAllowWhileIdle`) tick that restarts the service / re-kicks the connect |
+| Doze / battery optimisation | in-app prompt (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, shown only when `isIgnoringBatteryOptimizations` is false; dismissal remembered in DataStore) |
+| Permission revoked, app background-restricted | surfaced in the FGS notification *and* the Settings → **Connection health** card, with one-tap fixes |
+
+Design rules to preserve:
+- **All connect requests funnel through `BleService.requestConnect` → `BleManager.connect`** (mutex +
+  rate-limited). Boot, adapter-ON, re-kick and the watchdog therefore cannot open concurrent cycles.
+- **Service start intents are typed:** `ACTION_START` = explicit user intent (re-arms auto-start),
+  `ACTION_RESUME` / null = unattended (honours the stored `autostart_enabled` flag), `ACTION_STOP` =
+  user stop (persists `autostart_enabled=false`, cancels the watchdog).
+- `BleService.resume()` **never throws**: a background FGS start is rejected on Android 12+ unless the
+  app is battery-optimisation exempt — that's why the exemption prompt exists (it lifts this too).
+- `AlarmManager`, not WorkManager: WorkManager isn't an `:app` dependency and buys nothing over an
+  inexact 15-min alarm here. Alarms don't survive a reboot — `BootReceiver` → service → reschedule.
+- New DataStore keys: `autostart_enabled`, `battery_opt_prompt_dismissed`, `last_connected_epoch`.
+
 ### Protocol Layer (`protocol/`)
 
 ```
@@ -714,7 +778,7 @@ ota/
 
 ### Data Layer (`data/`)
 
-Room database v3 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
+Room database v4 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
 
 ```
 sport_sessions         timestampEpoch (UNIQUE)
@@ -740,11 +804,88 @@ Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `Gp
 
 `NotificationForwarder` (extends `NotificationListenerService`) — intercepts system notifications,
 runs the **junk filter** (`NotificationFilter.decide`, drops charging/media/foreground-service/
-progress/group-summary/local-only/empty and the dialer's call notifications), checks per-app rules
-from the DB, deduplicates within a 30-second window via `RecentNotificationCache` (uses
-`ConcurrentHashMap.compute` for atomic check-and-set), then forwards to the watch via
+progress/local-only/empty and the dialer's call notifications), checks the **app whitelist**
+(`NotificationWhitelist`, see below), **coalesces over a 300 ms window** (`NotificationMergePolicy`),
+suppresses exact repeats (`RecentNotificationCache`), then forwards to the watch via
 `MessageNewCommand`. RTL title/content is reordered to visual order via `BidiUtil.formatRtlString`
 before framing (see "Feature status — verified on-device").
+
+Note the filter no longer drops group summaries — that call moved into `NotificationMergePolicy`,
+which needs to see a notification's siblings to make it. See below.
+
+#### Notification lifecycle — there is NO watch-side delete or update (IMPORTANT)
+
+**The `New` push generation cannot retract, replace, or merge a notification once it is sent.**
+`MessageNewBT` (cmd `0x76`) carries no id, no slot, no crud byte — `[type][countOrVersion][titleLen]
+[contentLen][title][content][date][shockType][needReply]` and nothing else. The original app detects
+phone-side dismissal and routes it all the way to `MessagePushRepositoryHelper.deleteMessage`
+(`messagepush/repository/helper/MessagePushRepositoryHelper.smali:16-40`), which is a **literal
+`return-void` unless `isPerfect()`** — no `isNew()` branch, no `isW04d()` branch. For our watch, a
+dismissal on the phone produces **zero BLE traffic**. `MessagePushBLEService` has no
+`deleteMessageNew`/`clearSocial`/`clearAll` at all (its only `clear*` is `clearCalendarView`).
+So `onNotificationRemoved` is deliberately a no-op *toward the watch*; it only evicts from the
+suppression cache.
+
+**`countOrVersion` is a vestigial *count* byte, always `0x01`.** Grep over the whole APK finds it
+only at `MessageNewBT.smali:10/:28/:56` (order entry, declaration, `= 1`) — nothing ever assigns it.
+The count that *is* computed (`getActiveNotificationCount`) is explicitly discarded on the `New`
+path (`MessagePushRepositoryHelper.smali:152-165`). **Do not use it as an id, slot, or badge.**
+
+**Therefore all grouping is phone-side**, and we copy the original's pipeline (`notification/`):
+- **300 ms debounce** — `MessagePushHandler.sendMessageDelayed(…, 0x12c)`. Anchored to the first
+  post of a burst (not sliding), so a steady drip can't starve the flush.
+- **Last-write-wins per merge key** `pkg + sbn.id + tag` (`NotificationParser.parseId`) —
+  `NotificationTaskMerger.removeMessageTask`. Five in-place updates of one chat → one push.
+- **Group summary vs children** — `isSupportGroupNotification()` is a hardcoded `false`
+  (`BlueToothDevice.smali:155-161`), so the original takes the branch where **the summary wins and
+  the children are evicted**. Our `NotificationFilter` used to do the exact opposite. One deliberate
+  UX deviation: when a summary and *exactly one* child are in the window we forward the child (its
+  real text beats "1 new message"); 2+ children still collapse to the summary. Tunable via
+  `NotificationMergePolicy.PREFER_LONE_CHILD`.
+- **Suppression cache** — `OldProtocolFilter` (installed for every non-`Perfect` device, i.e. ours):
+  FIFO cap 100, key `(mergeKey, title, content)`, suppress exact repeats *indefinitely*, evict on
+  removal. This replaced the old fixed 30 s dedup window.
+
+Pure + unit-tested: `NotificationMergePolicy.merge`, `NotificationMergeBuffer`,
+`RecentNotificationCache` (`app/src/test/kotlin/com/norm2hacked/notification/`).
+
+**Dead ends — do NOT try** (all ruled out from smali):
+- Re-pushing `0x76` with empty title/content to "blank out" the old one — no identity field, so it
+  adds an *extra blank* notification.
+- `0x79` / `MessagePerfectBT` with `crud=2` — only reachable behind `isPerfect()`; already recorded
+  as acked-but-ignored on this firmware.
+- `SET_OPERATION_DELETE (0x2)` / `DELETE_ALL (0x3)` and `COMMAND_CODE_6E_PHONE_DELETE_*_REMIND` —
+  these are *reminder/alarm* ops on a different protocol generation, not social pushes.
+- `MSG_COUNT_PUSH (0x72)` as a badge/merge signal — `W04d`-only.
+- Enabling `SWITCH_BIT_SOCIAL (0x80)` on the `0x90` mask to "unlock" a delete — `SwitchSettingBT` is
+  never called on the `New` path, and there is no delete command to unlock.
+- `clearCalendarView()` as a generic clear — it is the calendar page (`id=0x99`, `pageType=7`).
+
+#### App whitelist (`NotificationWhitelist`) + the app picker
+
+Forwarding is **opt-in per app**. `NotificationWhitelistPolicy.decide(rule)` is pure (no row →
+`NotWhitelisted`; `enabled=false` → `NotWhitelisted`; else `Allowed(suppressDuplicates)`)
+and unit-tested in `app/src/test/.../NotificationWhitelistTest.kt`. `NotificationWhitelist` is the
+injectable DB wrapper and **fails closed** — a Room error logs and drops rather than throwing.
+The whitelist is *necessary, not sufficient*: `NotificationFilter` + the 30s dedup still apply.
+
+- **DB v4.** `notification_rules.enabled` now defaults to **false** (Kotlin default only — the SQL
+  column is unchanged). `MIGRATION_3_4` runs `UPDATE notification_rules SET enabled = 0`: up to v3
+  the forwarder auto-inserted `enabled=1` for every app it ever saw, so those rows can't be
+  distinguished from a real user choice; carrying them over would whitelist everything. Rows are
+  kept (labels + vibrate/mute preferences survive), so re-enabling an app restores its settings.
+- **Picker** (`ui/screens/settings/NotificationRulesScreen.kt` + `NotificationRulesViewModel.kt`,
+  backed by `data/apps/InstalledAppsRepository.kt`). Settings-style installed-app list: icon +
+  label + package + switch, search, "show system apps" toggle, enabled apps pinned to the top.
+  Labels load first on `Dispatchers.IO`, then icons stream in in batches of 32 pre-rasterised to
+  the row size — all into a `StateFlow`, never in composition, so 200+ rows scroll smoothly.
+- **Package visibility:** `AndroidManifest.xml` declares `<queries><intent>` for `ACTION_MAIN` +
+  `CATEGORY_LAUNCHER` — **not** `QUERY_ALL_PACKAGES` (Play-policy-restricted and unnecessary).
+  Non-launchable apps aren't offered; an app that already has a rule is always re-added by package
+  name so an old rule can never become unreachable.
+- **Listener permission flow** (the old TODO): an inline card on this screen when
+  `NotificationManagerCompat.getEnabledListenerPackages` doesn't contain us, with a button opening
+  `Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS`; re-checked on `ON_RESUME`.
 
 #### Notification forwarding — WORKING (commonprotocol MessageNewBT)
 
@@ -781,8 +922,7 @@ package (no self-feedback). Byte-exact test in `protocol/.../NotificationPushTes
 MTU-chunking via `BleWriteQueue`; the `[0x03]` "process now" trigger to `0x8002` after the write;
 and `runCatching` around the fire-and-forget write so a link flap can't crash the forwarder's scope.
 
-**Still TODO:** in-app notification-listener permission flow (no UI yet — granted via adb for now).
-If a future firmware reports the `Perfect` generation, implement `MessagePerfectBT` (id `0x79`,
+**Still TODO:** if a future firmware reports the `Perfect` generation, implement `MessagePerfectBT` (id `0x79`,
 `@IndexBody` — a *different* encoding using index bytes, not the `@Body` rule above).
 
 ### UI Layer (`ui/`)
@@ -822,6 +962,50 @@ Navigation graph: `ui/navigation/AppNavGraph.kt`.
 **Key command codes** (from `BluetoothCommandConstant.smali`):
 - `0x02` WATCH_ID, `0x03` DEVICE_VERSION, `0x04` DATETIME, `0x08` BATTERY_POWER
 - `0x0E` UPGRADE_MODE ← OTA mode, inside the application (no bootloader, no reset)
+
+### Watch Firmware — what actually runs on the device
+
+**Full analysis: [`docs/firmware.md`](docs/firmware.md). Read it before touching OTA.** Summary:
+
+The Norm 2 runs an ODM firmware (Shenzhen Appscomm; the Allview Allwatch H looks like the same
+platform rebranded) on an **Ambiq Apollo3 Blue** — Cortex-M4F, 1 MB flash @0x00000000, 384 KB
+SRAM @0x10000000, integrated BLE 5. Board string `EW_WBT21-A`. The stack is **FreeRTOS 9** +
+the **AmbiqSuite** `ambiq_ble` Cordio host + **LVGL 5.x** for the UI, with a vendor `ew_` HAL.
+Hardware from the driver names: RM67162 AMOLED, WCN1F3549 touch, PixArt PAH8011 HR, CW6303
+PMU, IPUS PSRAM, SPI NAND, P9027LP wireless charging, stepper-driven physical hands.
+
+The image is **unencrypted, unpacked and unobfuscated**, and its 130 `assert()` `__FILE__`
+strings leak the whole source tree — so it is very tractable to analyse and patch.
+
+```
+internal flash  0x00000000–0x0001FFFF   bootloader + config (128 KB reserved)
+                0x00020000–0x000D6693   application
+external NAND   0x0C780000              resources / pictures      (update type 4; 8 is refused)
+                0x0FC00000              OTA staging               (update type 1)
+```
+
+**Two corrections to what this file used to say:**
+
+1. **`UPGRADE_MODE` does not reboot into a separate bootloader.** The DFU characteristic
+   strings (`"Characteristic 1531"`/`"1532"`) and the `Upgrading… / Upgrade Failed` LVGL
+   screens are all *inside the application image*, as are `ew_mod_ota_protocol.c` and the
+   `OtaProtocol` FreeRTOS task. `0x0E` is a mode switch within the running firmware.
+   **Consequence: the component that accepts OTA is the component you would be replacing.**
+   A non-booting custom image leaves no BLE recovery path — that needs SWD, whose
+   availability is still unknown.
+2. **There are two CRCs, not one** (see below).
+
+**Image format** — `file[0..3]` is the destination address (the app strips it and puts it in
+the SET header); `file[4..]` is the CRC'd content, which begins with a 44-byte Ambiq
+`am_bootloader_image_t`-shaped header (link address, payload length, image CRC, SP, reset
+vector) before the Cortex-M vector table at file+0x30.
+
+**Tooling:** `tools/firmware/image_tool.py verify|seal` parses the header, checks both CRCs,
+and re-seals a patched image. `tools/firmware/query_ota.py` queries the vendor OTA server.
+
+> ⚠️ The public OTA endpoint (`api.normdenmarkupdate.com`) is the **Telink** channel — it
+> serves Norm 1 firmware for a Telink TC32 SoC (`KNLT` magic), *not* Norm 2. Never push it at
+> this watch. The Apollo channel is `device/queryProductVersion` in `UrlService.smali`.
 
 ### Apollo DFU (Firmware Update)
 
@@ -870,6 +1054,20 @@ manager code and it overflows its stack (README).
 
 **Firmware binary format:** first 4 bytes = target address, the rest = the content.
 **OTA result codes:** `0x64` success, `0x65` in progress, `0x66` fail.
+
+**CRC algorithms — there are two, and a patched image needs both to be right:**
+
+1. **Transport CRC-16** (from `OtaUtil.smali`), computed by the phone and sent in the SET
+   header: CRC-16/CCITT, init `0xFFFF`, over `file[4:]`. Returned as 4 bytes
+   `[crc_lo, crc_hi, 0x00, 0x00]`. `ApolloOtaProtocol` computes this at flash time.
+2. **Image CRC** stored at `file+0x10`, checked by the first-stage bootloader: **CRC-32,
+   polynomial `0x1EDC6F41`, MSB-first (NOT reflected), init `0`, no final xor, over
+   `file[48:]`** — exactly the byte count declared at `file+0x0C`. Recovered by parameter
+   search and verified against the factory image (`0xD392D741`). Castagnoli's polynomial but
+   non-reflected with a zero seed, which is why the standard CRC-32C variants all miss it.
+
+Nothing here is cryptographic — no signature, no encryption. **A patched image can be
+re-sealed and will validate**: `python tools/firmware/image_tool.py seal patched.bin --in-place`.
 
 ### Device Version String
 
@@ -944,9 +1142,9 @@ drops, e.g. `dropped: CALL_HANDLED_ELSEWHERE`):
     and the legacy `NotificationPushCommand` (0x79).
   - **Junk filtering** (`notification/NotificationFilter.kt`) — drops types that are useless on the
     wrist (charging/system status, media/now-playing, foreground-service "Waiting for messages…",
-    progress, group summaries, local-only, empty content). Pure `decide(NotificationFacts)` rule
-    chain + `StatusBarNotification.toFacts()` extractor; unit-tested. Per-app enable/vibrate/mute
-    rules and 30s dedup (`RecentNotificationCache`) still apply on top.
+    progress, local-only, empty content). Pure `decide(NotificationFacts)` rule chain +
+    `StatusBarNotification.toFacts()` extractor; unit-tested. Per-app rules, the 300 ms coalescing
+    window and exact-repeat suppression apply on top — see "Notification lifecycle" above.
 - **Phone calls** (`call/`). Forwards incoming / missed / call-ended to the watch with the caller's
   **name** (resolved from contacts), and handles the watch's **answer / reject** buttons.
   - Detection: `PhoneStateReceiver` (PHONE_STATE broadcast) → pure `CallStateMachine`
@@ -986,8 +1184,10 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - SET commands work — brightness, DND, vibration, language, and other settings apply on the watch
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
-- Room database v3 with unique constraints and 2 migrations
-- Notification forwarding with per-app rules, junk-type filtering, RTL (Hebrew/Arabic), and dedup
+- Room database v4 with unique constraints and 3 migrations
+- Notification forwarding with an explicit per-app whitelist (installed-app picker + listener-permission
+  flow), junk-type filtering, RTL (Hebrew/Arabic), 300 ms coalescing/group-merge, and exact-repeat
+  suppression
 - Phone calls: forward incoming/missed/ended with caller name + answer/reject from the watch (`call/`)
 - Watch-hands calibration: guided re-align of the physical hands (`ui/screens/calibration/`)
 - Apollo DFU OTA (all 5 steps, channelFlow-based, fail-fast on 0x66)
@@ -1051,11 +1251,16 @@ README's "What to build next" says why):
 
 ### Pending features (priority order)
 
+> **Migrated to the kanban board — see "Task Tracking" above. The board is authoritative for
+> status; this list is narrative context only and is not maintained.** Board cards: #1 CHECK
+> commands in `:app`, #2 `DEVICE_VERSION` quirk, #3 warm reconnect, #4 uptime layers,
+> #5 reject-with-SMS, #6 music, #7 GPS, #8 blood pressure, #9 weather.
+> Firmware work: #12–#15 (versions, OTA rehearsal, SWD, Ghidra) and #16–#20 (the
+> notification-delete patch chain).
+
 *(Done ✅ — see "Feature status — verified on-device" above: notifications→watch incl. RTL + junk
 filter, phone calls incl. answer/reject, watch-hands calibration.)*
 
-1. **Notification-listener permission flow** — the forwarder works but the listener permission is
-   still granted via adb; add the in-app enable-permission UI.
 1. **Reject-call-with-SMS** — the watch's incoming-call screen has a "send message" (canned-SMS)
    button; not yet implemented (needs `SEND_SMS` + RE of the watch's send command — it's not the
    `0xDC` accept/reject command).
@@ -1070,6 +1275,9 @@ filter, phone calls incl. answer/reject, watch-hands calibration.)*
 5. **Weather sync** — find command code in `BluetoothCommandConstant.smali`
 
 ### Known gaps
+
+> Also on the board: #10 (BLE-layer tests), #11 (`writeToChar` error surface), #3 (keep-alive probe).
+
 - No unit tests for the BLE layer — protocol parsing is covered in `:protocol:test`
 - `writeToChar` (fire-and-forget) has no error surface
 - `BleService` keep-alive uses an RSSI read as a generic link probe; whether the watch's idle-drop watchdog actually resets on it is unverified (so far relying on connection supervision) — confirm on-device, switch to a periodic battery CHECK if needed

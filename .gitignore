@@ -288,3 +288,6 @@ gradle-app.setting
 .claude
 
 # End of https://www.toptal.com/developers/gitignore/api/python,kotlin,gradle,android,visualstudiocode
+
+# Kanban (local, per-machine)
+.codex/kanban.json

@@ -86,8 +86,11 @@ class NotificationFilterTest {
     }
 
     @Test
-    fun `group summaries are dropped`() {
-        assertDropped(message().copy(isGroupSummary = true), DropReason.GROUP_SUMMARY)
+    fun `group summaries are NOT dropped here — NotificationMergePolicy decides`() {
+        // The original app keeps the summary and evicts the children for our device class
+        // (isSupportGroupNotification() is a hardcoded false), the opposite of what this filter
+        // used to do. The call needs sibling state, so it lives in the merge policy instead.
+        assertForwarded(message().copy(isGroupSummary = true))
     }
 
     @Test

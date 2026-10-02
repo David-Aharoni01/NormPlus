@@ -3,6 +3,7 @@ package com.norm2hacked.data.preferences
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -24,6 +25,17 @@ class WatchPreferences @Inject constructor(
     private val KEY_LAST_SYNC = longPreferencesKey("last_sync_epoch")
     private val KEY_UNITS = stringPreferencesKey("units")  // "METRIC" | "IMPERIAL"
     private val KEY_DEVICE_VERSION = stringPreferencesKey("device_version")
+
+    // ── Always-on / uptime prefs ──────────────────────────────────────────────
+    // Whether the connection service may (re)start itself unattended — on boot, after an app
+    // update, on a START_STICKY restart, or from the periodic watchdog. Cleared by the
+    // notification's "Disconnect" action so a deliberate stop actually stays stopped, and set
+    // again the next time the user opens the app.
+    private val KEY_AUTOSTART = booleanPreferencesKey("autostart_enabled")
+    // The user dismissed the battery-optimization exemption prompt — never nag again.
+    private val KEY_BATTERY_PROMPT_DISMISSED = booleanPreferencesKey("battery_opt_prompt_dismissed")
+    // Wall-clock time of the last time the link actually reached Ready. Shown in Connection health.
+    private val KEY_LAST_CONNECTED = longPreferencesKey("last_connected_epoch")
 
     suspend fun getDeviceMac(): String? =
         context.dataStore.data.firstOrNull()?.get(KEY_MAC)
@@ -52,5 +64,30 @@ class WatchPreferences @Inject constructor(
 
     suspend fun saveDeviceVersion(version: String) {
         context.dataStore.edit { it[KEY_DEVICE_VERSION] = version }
+    }
+
+    // ── Always-on / uptime prefs ──────────────────────────────────────────────
+
+    /** Default true: the whole point of the service is to be always-on unless the user says no. */
+    val autoStartEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_AUTOSTART] ?: true }
+
+    suspend fun isAutoStartEnabled(): Boolean =
+        context.dataStore.data.firstOrNull()?.get(KEY_AUTOSTART) ?: true
+
+    suspend fun setAutoStartEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_AUTOSTART] = enabled }
+    }
+
+    val batteryPromptDismissed: Flow<Boolean> =
+        context.dataStore.data.map { it[KEY_BATTERY_PROMPT_DISMISSED] ?: false }
+
+    suspend fun setBatteryPromptDismissed(dismissed: Boolean) {
+        context.dataStore.edit { it[KEY_BATTERY_PROMPT_DISMISSED] = dismissed }
+    }
+
+    val lastConnectedEpoch: Flow<Long> = context.dataStore.data.map { it[KEY_LAST_CONNECTED] ?: 0L }
+
+    suspend fun saveLastConnectedEpoch(epoch: Long) {
+        context.dataStore.edit { it[KEY_LAST_CONNECTED] = epoch }
     }
 }

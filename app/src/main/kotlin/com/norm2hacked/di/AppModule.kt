@@ -20,7 +20,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): Norm2Database =
         Room.databaseBuilder(ctx, Norm2Database::class.java, "norm2.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .build()
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -52,6 +52,27 @@ object AppModule {
             db.execSQL("DROP INDEX IF EXISTS index_sleep_stages_timestampEpoch")
             db.execSQL("DELETE FROM sleep_stages WHERE id NOT IN (SELECT MIN(id) FROM sleep_stages GROUP BY sessionId, timestampEpoch)")
             db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_sleep_stages_sessionId_timestampEpoch ON sleep_stages(sessionId, timestampEpoch)")
+        }
+    }
+
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Notification forwarding became an explicit WHITELIST: only apps the user picked in
+            // the new notification-apps screen forward to the watch.
+            //
+            // Up to v3 `notification_rules` was an opt-*out* list — NotificationForwarder inserted
+            // a row with enabled=1 for every app that ever posted a notification — so an enabled
+            // row is indistinguishable from a deliberate user choice. Carrying those over would
+            // whitelist every app that ever notified, i.e. exactly the flood the whitelist exists
+            // to stop. So every rule is reset to disabled and the user re-picks from the picker.
+            //
+            // Rows are kept rather than deleted: appLabel / vibrateOnFirst / muteGroupChats are
+            // preserved, so re-enabling an app restores its previous delivery preferences. Apps
+            // the user had explicitly turned off stay off either way.
+            //
+            // (No schema change — NotificationRuleEntity.enabled only changed its *Kotlin* default,
+            // which never reached SQL; the column is still `enabled INTEGER NOT NULL`.)
+            db.execSQL("UPDATE notification_rules SET enabled = 0")
         }
     }
 
