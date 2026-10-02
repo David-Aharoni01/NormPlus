@@ -133,8 +133,14 @@ def cmd_status(status: str):
 
 
 def cmd_done(args) -> int:
-    extra = ["--comment", args.message] if args.message else []
-    gh("issue", "close", str(args.number), "--repo", REPO, "--reason", "completed", *extra)
+    state = gh_json("issue", "view", str(args.number), "--repo", REPO, "--json", "state")["state"]
+    if state == "CLOSED":
+        # Already closed -- by a "Fixes #N" commit, say; gh would drop the comment.
+        if args.message:
+            gh("issue", "comment", str(args.number), "--repo", REPO, "--body", args.message)
+    else:
+        extra = ["--comment", args.message] if args.message else []
+        gh("issue", "close", str(args.number), "--repo", REPO, "--reason", "completed", *extra)
     Board().set_status(args.number, "Done")
     print(f"#{args.number}: closed, Done")
     return 0
