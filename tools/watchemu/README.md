@@ -198,9 +198,9 @@ PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 08 70 --payload 00 --no-bind
 ```
 
 Commands and actions take hex or `:protocol`'s names (`DEVICE_VERSION CHECK`); command
-names are read from `CommandCode.kt`. `--char 8003` writes where `normlink-cli` does,
-`--no-trigger` leaves out the `[03]`, `--no-bind` asks the watch as first-run setup leaves
-it. With the bind it takes ~22s, the boot animation being most of it; without, ~4s. So
+names are read from `CommandCode.kt`. `--char 8003` writes to the other write
+characteristic (a SET there is never acknowledged), `--no-trigger` leaves out the `[03]`,
+`--no-bind` asks the watch as first-run setup leaves it. With the bind it takes ~22s, the boot animation being most of it; without, ~4s. So
 bind once into a state file and ask everything after it from there:
 
 ```bash
@@ -214,6 +214,23 @@ the firmware writes its init flag when the "Pairing Success" dialog closes, two 
 later, and a state saved before then is an unbound watch. Exit status: 0 a reply came, 1
 nothing did, 2 the setup failed. The watch and the phone are `fw/phone.py`'s
 `EmulatedWatch` and `Phone`, which `tests/test_ble_end_to_end.py` uses too.
+
+**`--mac MAC` asks the physical watch instead**, over this PC's own Bluetooth adapter:
+
+```bash
+PYTHONPATH=tools/watchemu py -3.11 -m normwatch cmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
+```
+
+Same flow, same frames, same decoder -- `physical.PhysicalPhone` is `Phone` over bleak,
+and both get exchange, checkInit and the bind from one `Conversation` class in
+`fw/phone.py` -- so where the two answers differ, the watches differ. That is how a
+finding here gets checked on hardware. On Windows the first run bonds the watch with the
+PC, with the custom Just Works ceremony the default one is refused without (ConfirmOnly,
+protection level None; the module docstring has why). The watch keeps one connection,
+so it must not be connected to a phone; and `--flash-state` / `--save` are refused, the
+physical watch keeping its own flash. `tests/test_physical.py` checks it against a fake
+`BleakClient`. It replaced `normlink-cli`, the Kotlin `:cli` module, which wrote to 8003
+(below, "Binding").
 
 `--save-state PATH` / `--load-state PATH` skip the boot for anything that is not about the
 radio: save once past the boot animation, and every later run starts there in half a
@@ -1019,8 +1036,9 @@ the firmware, none guessed:
   become `<cmd> 00` / `<cmd> 01`, 3 means the handler already answered (CHECKs do that
   themselves), 4 defers. The one behind 8003 (`0x00036460`) throws the result away. The
   companion app writes to 8001 (`AppsCommDevice.smali`), so does `:app`, and
-  `normlink-cli` writes to 8003 -- which is why the CLI only ever saw CHECK replies, and
-  why the bind cannot be driven from it. It also means the original app's queue, which
+  `normlink-cli` wrote to 8003 -- which is why the CLI only ever saw CHECK replies, and
+  why the bind could not be driven from it. (It has since been replaced by `normwatch cmd
+  --mac`, which writes to 8001.) It also means the original app's queue, which
   waits for each reply before sending the next command, gets bindEnd out inside the
   window only because 8001 acknowledges bindStart at once.
 - **The firmware never answers a Read By Type for its Database Hash.** Its GATT service
@@ -1983,7 +2001,11 @@ In the order to do them. All are on the kanban board (`/kanban`).
 
 Not emulator work, but produced by it: **#48** — check the Database Hash park on the
 physical watch; if it holds, `BleManager`'s cold-connect story is describing that stall
-from the wrong side.
+from the wrong side. And **#58**: `normwatch cmd --mac` asks the physical watch the way
+`cmd` asks this one, so each of the four answers above can be checked on hardware with the
+same command line; it replaced `normlink-cli`. The first one is done: on 2026-10-02 the
+physical watch answered `DEVICE_VERSION CHECK [06]` over 8001 with `6f 01 81 02 00 03 01
+8f`, byte for byte what this one answers.
 
 Done, for the record: resources load from the NAND (#28, the stall this list used to
 lead with), and BLEIF → HCI through first-run setup (#25 and the bind).

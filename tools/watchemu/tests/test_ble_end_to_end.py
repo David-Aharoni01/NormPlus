@@ -38,8 +38,8 @@ Two more, from the bind:
   the one behind 8003 (0x00036460) throws the result away. CHECKs answer
   either way because their handlers build the reply themselves. The
   companion app writes to 8001 (``AppsCommDevice.smali``), and so does
-  ``:app``; ``normlink-cli`` writes to 8003, which is why it only ever saw
-  CHECK replies.
+  ``:app``; ``normlink-cli`` (since removed) wrote to 8003, which is why it
+  only ever saw CHECK replies.
 * **bindStart opens a 300-frame window.** The 0x93 handler posts UI message
   0x0C, which opens ``ui_notify_pairing_dlg.c`` in its animating state; the
   dialog counts 300 frames (0x0007514C) and then reports failure ("Pairing
@@ -195,7 +195,7 @@ async def first_run(phone, watch, outcome: dict) -> None:
     outcome["keystore"] = phone.keystore
     outcome["services"] = await phone.discover()
     await phone.listen()
-    # What normlink-cli does: the frame to 8003, then [03] to 8002 to make
+    # What normlink-cli did: the frame to 8003, then [03] to 8002 to make
     # the watch process it, then the answer arrives as a notification.
     reply = await phone.exchange(BATTERY_CHECK, char="8003")
     outcome["replies"] = [reply] if reply else []

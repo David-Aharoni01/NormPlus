@@ -9,6 +9,10 @@ share one implementation rather than two copies drifting apart:
 * :class:`Phone` -- a bumble host on the same air. It scans, connects, pairs
   the way ``BondingPolicy`` asks (Just Works, bonding), discovers the GATT
   table and talks the 0x6F protocol over 6006 / 8001-8004.
+* :class:`Conversation` -- that protocol on its own: exchange, checkInit, the
+  bind. ``physical.PhysicalPhone`` says the same things to the *physical*
+  watch over bleak, so ``normwatch cmd --mac`` asks it exactly what
+  ``normwatch cmd`` asks the emulated one.
 
 A phone can sit on the air two ways. :meth:`Phone.on_air` puts it on the
 radio's own loop with a controller of its own -- no socket, so it runs beside
@@ -378,17 +382,103 @@ class EmulatedWatch:
 
 # -- the phone ------------------------------------------------------------------
 
-class Phone:
-    """One bumble host, one connection to the watch, and its notifications.
+class Conversation:
+    """The 0x6F conversation with a watch, over whatever carries it.
+
+    What a phone says once it is connected and listening -- shared by
+    :class:`Phone` (a bumble host on the emulated watch's air) and
+    ``physical.PhysicalPhone`` (bleak, on this PC's own adapter, to the
+    physical watch), so the two cannot drift apart. A subclass provides
+    :meth:`send` and hands every notification to :meth:`_heard`.
 
     Every notification from 8002 and 8004 lands on one queue, subscribed
     before anything is written -- the same ordering ``BleWriteQueue`` keeps so
     that a reply cannot arrive before anyone is listening for it.
     """
 
+    def __init__(self) -> None:
+        #: Every notification, in order, as (characteristic, bytes).
+        self.notifications: list = []
+        self._queue: asyncio.Queue = asyncio.Queue()
+
+    def _heard(self, char: str, value: bytes) -> None:
+        item = (char, bytes(value))
+        self.notifications.append(item)
+        self._queue.put_nowait(item)
+
+    async def send(self, data: bytes, *, char: str = "8001", trigger: bool = True) -> None:
+        """Write a frame to *char*, then ``[03]`` to 8002 unless *trigger* is off."""
+        raise NotImplementedError
+
+    def clear(self) -> None:
+        """Forget notifications nobody has read, so the next reply is the next one."""
+        while not self._queue.empty():
+            self._queue.get_nowait()
+
+    async def exchange(self, data: bytes, *, char: str = "8001", trigger: bool = True,
+                       timeout: float = 10.0) -> Optional[bytes]:
+        """Send a frame; the next notification is its reply, or None.
+
+        Sent the moment it is called, on purpose: the firmware clears its 8001
+        buffer some milliseconds *after* handing over a reply, and a frame that
+        lands in between is wiped and answered ``00 02``. ``Air`` keeps that
+        from happening the way a radio does (one connection event per
+        interval), so back-to-back exchanges are a test of it.
+        """
+        self.clear()
+        await self.send(data, char=char, trigger=trigger)
+        try:
+            _, value = await asyncio.wait_for(self._queue.get(), timeout)
+            return value
+        except asyncio.TimeoutError:
+            return None
+
+    async def replies(self, *, timeout: float, settle: float = 0.5) -> list:
+        """Notifications from now on: until a whole frame has come and *settle*
+        seconds pass without another, or until *timeout*."""
+        got, deframer, whole = [], Deframer(), False
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                item = await asyncio.wait_for(self._queue.get(), min(left, settle) if whole else left)
+            except asyncio.TimeoutError:
+                break
+            got.append(item)
+            whole = whole or bool(deframer.feed(item[1]))
+        return got
+
+    async def check_init(self, *, timeout: float = 10.0) -> Optional[int]:
+        """MBluetooth.checkInit: 0x94 CHECK; the reply's byte is the init flag."""
+        reply = await self.exchange(frame(BIND_END, CHECK, b"\x00"), timeout=timeout)
+        if reply and reply[:5] == bytes([FLAG_START, BIND_END, CHECK_RESPONSE, 1, 0]):
+            return reply[5]
+        return None
+
+    async def bind(self, *, clock: Optional[bytes] = None, timeout: float = 10.0) -> dict:
+        """BindDevice.start6F for the Norm 2: bindStart (QR mode), setDateTime, bindEnd.
+
+        Back to back, as the app's queue sends them: bindStart opens a 300-frame
+        window on the watch that only bindEnd closes. Returns each reply.
+        """
+        clock = clock if clock is not None else datetime_payload()
+        return {
+            "start": await self.exchange(frame(BIND_START, SET, bytes([BIND_MODE_QR_CODE])),
+                                         timeout=timeout),
+            "datetime": await self.exchange(frame(DATETIME, SET, clock), timeout=timeout),
+            "end": await self.exchange(frame(BIND_END, SET, b"\x01"), timeout=timeout),
+        }
+
+
+class Phone(Conversation):
+    """One bumble host, one connection to the emulated watch, and its notifications."""
+
     def __init__(self, device) -> None:
         from bumble.pairing import PairingConfig, PairingDelegate
 
+        super().__init__()
         self.device = device
         # BondingPolicy: Just Works, bonding, no MITM.
         device.pairing_config_factory = lambda _connection: PairingConfig(
@@ -400,9 +490,6 @@ class Phone:
         self.services: dict = {}
         self.chars: dict = {}
         self.paired = False
-        #: Every notification, in order, as (characteristic, bytes).
-        self.notifications: list = []
-        self._queue: asyncio.Queue = asyncio.Queue()
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -489,78 +576,14 @@ class Phone:
     async def listen(self) -> None:
         """Subscribe to 8002 and 8004, before the first write."""
         for name in ("8002", "8004"):
-            def on_value(value, name=name):
-                item = (name, bytes(value))
-                self.notifications.append(item)
-                self._queue.put_nowait(item)
-            await self.peer.subscribe(self.chars[name], on_value)
+            await self.peer.subscribe(self.chars[name],
+                                      lambda value, name=name: self._heard(name, value))
 
     async def send(self, data: bytes, *, char: str = "8001", trigger: bool = True) -> None:
         """Write a frame, then ``[03]`` to 8002: "process it now", as the app does."""
         await self.peer.write_value(self.chars[char], data, with_response=True)
         if trigger:
             await self.peer.write_value(self.chars["8002"], b"\x03", with_response=False)
-
-    def clear(self) -> None:
-        """Forget notifications nobody has read, so the next reply is the next one."""
-        while not self._queue.empty():
-            self._queue.get_nowait()
-
-    async def exchange(self, data: bytes, *, char: str = "8001", trigger: bool = True,
-                       timeout: float = 10.0) -> Optional[bytes]:
-        """Send a frame; the next notification is its reply, or None.
-
-        Sent the moment it is called, on purpose: the firmware clears its 8001
-        buffer some milliseconds *after* handing over a reply, and a frame that
-        lands in between is wiped and answered ``00 02``. ``Air`` keeps that
-        from happening the way a radio does (one connection event per
-        interval), so back-to-back exchanges are a test of it.
-        """
-        self.clear()
-        await self.send(data, char=char, trigger=trigger)
-        try:
-            _, value = await asyncio.wait_for(self._queue.get(), timeout)
-            return value
-        except asyncio.TimeoutError:
-            return None
-
-    async def replies(self, *, timeout: float, settle: float = 0.5) -> list:
-        """Notifications from now on: until a whole frame has come and *settle*
-        seconds pass without another, or until *timeout*."""
-        got, deframer, whole = [], Deframer(), False
-        deadline = time.monotonic() + timeout
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                break
-            try:
-                item = await asyncio.wait_for(self._queue.get(), min(left, settle) if whole else left)
-            except asyncio.TimeoutError:
-                break
-            got.append(item)
-            whole = whole or bool(deframer.feed(item[1]))
-        return got
-
-    async def check_init(self, *, timeout: float = 10.0) -> Optional[int]:
-        """MBluetooth.checkInit: 0x94 CHECK; the reply's byte is the init flag."""
-        reply = await self.exchange(frame(BIND_END, CHECK, b"\x00"), timeout=timeout)
-        if reply and reply[:5] == bytes([FLAG_START, BIND_END, CHECK_RESPONSE, 1, 0]):
-            return reply[5]
-        return None
-
-    async def bind(self, *, clock: Optional[bytes] = None, timeout: float = 10.0) -> dict:
-        """BindDevice.start6F for the Norm 2: bindStart (QR mode), setDateTime, bindEnd.
-
-        Back to back, as the app's queue sends them: bindStart opens a 300-frame
-        window on the watch that only bindEnd closes. Returns each reply.
-        """
-        clock = clock if clock is not None else datetime_payload()
-        return {
-            "start": await self.exchange(frame(BIND_START, SET, bytes([BIND_MODE_QR_CODE])),
-                                         timeout=timeout),
-            "datetime": await self.exchange(frame(DATETIME, SET, clock), timeout=timeout),
-            "end": await self.exchange(frame(BIND_END, SET, b"\x01"), timeout=timeout),
-        }
 
     # -- OTA -------------------------------------------------------------------
 

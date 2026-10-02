@@ -7,7 +7,7 @@ half runs the command itself, end to end, for the cases it exists to answer:
 * a CHECK over 8001 comes back with the watch's own answer;
 * DEVICE_VERSION with the payload the app sends ([06], WatchCommands.kt) is
   *refused* -- the generic ack with status 1 -- which is not what a timeout
-  looks like, and is the thing normlink-cli could never see;
+  looks like, and is the thing normlink-cli (writing to 8003) could never see;
 * a SET written to 8003 gets no reply at all (the 8003 dispatcher throws the
   handler's result away; README "Binding");
 * the bind is only "done" once checkInit reads 1, which is about two seconds

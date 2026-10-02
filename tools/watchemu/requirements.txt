@@ -7,6 +7,9 @@
 #           Pinned to the same version tools/emulator/requirements.txt uses.
 # unicorn — Cortex-M4 CPU emulation for the firmware backend.
 # capstone — Thumb-2 disassembly for the boot-triage report.
+# bleak   — the PC's own Bluetooth adapter, for `normwatch cmd --mac` (the physical
+#           watch). Only that command imports it.
 bumble==0.0.229
 unicorn>=2.1.0
 capstone>=5.0.0
+bleak>=1.0

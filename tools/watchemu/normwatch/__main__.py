@@ -4,6 +4,7 @@
     py -3.11 -m normwatch boot  NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
     py -3.11 -m normwatch modules NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
     py -3.11 -m normwatch cmd   08 70 --payload 00
+    py -3.11 -m normwatch cmd   08 70 --payload 00 --mac 4C:59:80:12:44:F1
 """
 
 from __future__ import annotations
@@ -63,13 +64,17 @@ def cmd_modules(args) -> int:
 
 
 def cmd_command(args) -> int:
-    """Boot the watch, connect a phone the way the app does, send one frame.
+    """Ask a watch one 0x6F question, the way the app asks it.
 
-    The phone is a bumble host on the radio's own loop (``phone.Phone.on_air``),
-    so no port is opened and this runs beside a live AVD. It pairs, and --
+    By default the watch is the emulated one: the firmware boots, and the phone
+    is a bumble host on the radio's own loop (``phone.Phone.on_air``), so no
+    port is opened and this runs beside a live AVD. With --mac it is the
+    physical watch, over this PC's own Bluetooth adapter
+    (``physical.PhysicalPhone``, bleak). Either way the phone pairs, and --
     unless told not to -- does what BindWatchUseCase does: checkInit, and the
     bind only if the watch says it is not initialised. Then the frame, the
-    [03] trigger, and every notification that comes back, decoded.
+    [03] trigger, and every notification that comes back, decoded by the same
+    code for both, so a difference between them is the watches'.
 
     Exit status: 0 a reply came, 1 nothing came back, 2 the setup failed.
     """
@@ -78,15 +83,22 @@ def cmd_command(args) -> int:
 
     from .fw.phone import (BIND_END, BIND_START, DATETIME, Deframer, EmulatedWatch,
                            ack, action_byte, command_byte, describe, frame)
+    from .physical import PhysicalPhone, mac_address
 
     try:
         code = command_byte(args.cmd_code)
         action = action_byte(args.action)
         payload = bytes.fromhex(args.payload) if args.payload else b""
+        mac = mac_address(args.mac) if args.mac else None
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     packet = frame(code, action, payload)
+    if mac is not None and (args.flash_state or args.save):
+        print("error: --flash-state and --save are the emulated watch's; the physical "
+              "one (--mac) keeps its own flash", file=sys.stderr)
+        return 2
+    target = mac or args.address
 
     state = Path(args.flash_state) if args.flash_state else None
     if args.save and state is None:
@@ -101,33 +113,41 @@ def cmd_command(args) -> int:
     def say(text: str) -> None:
         print(f"{time.monotonic() - t0:6.1f}s  {text}", flush=True)
 
-    try:
-        watch = EmulatedWatch(args.image, args.resources, address=args.address,
-                              flash_state=state if state is not None and state.exists() else None)
-    except flashstate.FlashStateMismatch as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    if state is not None and state.exists():
-        say(f"watch: started from {state}")
-    watch.start()
+    watch = None
+    if mac is not None:
+        say(f"watch: the physical one at {mac}, over this PC's Bluetooth adapter")
+    else:
+        try:
+            watch = EmulatedWatch(args.image, args.resources, address=args.address,
+                                  flash_state=state if state is not None and state.exists()
+                                  else None)
+        except flashstate.FlashStateMismatch as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if state is not None and state.exists():
+            say(f"watch: started from {state}")
+        watch.start()
     result = {"replies": [], "failed": None}
 
     async def flow(phone) -> None:
-        if not await phone.find(args.address):
-            result["failed"] = f"{args.address} was never heard advertising"
+        if not await phone.find(target):
+            result["failed"] = (f"{target} was never heard advertising"
+                                + (" -- is a phone connected to it?" if mac else ""))
             return
-        await phone.connect(args.address)
+        await phone.connect(target)
         await phone.pair()
         await phone.discover()
         await phone.listen()
-        say(f"phone: connected, paired, {'encrypted' if phone.encrypted else 'NOT encrypted'}")
+        link = {True: "encrypted", False: "NOT encrypted"}.get(phone.encrypted,
+                                                               "encryption not reported")
+        say(f"phone: connected, paired, {link}")
         if not args.no_bind:
             init = await phone.check_init()
             if init == 1:
                 say("watch: initialised (checkInit 1), not binding")
             elif init == 0:
                 say("watch: in first-run setup (checkInit 0); binding once the setup screen is up")
-                if not await watch.past_boot_animation(timeout=90):
+                if watch is not None and not await watch.past_boot_animation(timeout=90):
                     result["failed"] = "the setup screen never came up"
                     return
                 bound = await phone.bind()
@@ -158,14 +178,26 @@ def cmd_command(args) -> int:
         result["replies"] = await phone.replies(timeout=args.timeout)
         await phone.disconnect()
 
+    async def on_the_physical_watch() -> None:
+        async with PhysicalPhone.open(log=say) as phone:
+            await flow(phone)
+
+    keep = saved = False
     try:
-        watch.drive(flow, timeout=args.timeout + 150)
+        if watch is None:
+            asyncio.run(asyncio.wait_for(on_the_physical_watch(), args.timeout + 90))
+        else:
+            watch.drive(flow, timeout=args.timeout + 150)
+    except ImportError as exc:
+        result["failed"] = (f"{exc.name or exc} is not installed: py -3.11 -m pip install "
+                            "-r tools/watchemu/requirements.txt")
     except Exception as exc:  # noqa: BLE001 - reported, and the watch still stops
         result["failed"] = f"{type(exc).__name__}: {exc}"
     finally:
-        # Not after a failed setup: a half-done bind is not a state worth keeping.
-        keep = args.save and not result["failed"]
-        saved = watch.stop(save_to=state if keep else None)
+        if watch is not None:
+            # Not after a failed setup: a half-done bind is not a state worth keeping.
+            keep = args.save and not result["failed"]
+            saved = watch.stop(save_to=state if keep else None)
 
     status = 0
     if result["failed"]:
@@ -636,8 +668,8 @@ def main(argv=None) -> int:
     p_boot.set_defaults(func=cmd_boot)
 
     p_cmd = sub.add_parser(
-        "cmd", help="boot the watch, connect a phone the way the app does, send one "
-                    "0x6F command and print every reply")
+        "cmd", help="boot the watch (or, with --mac, reach the physical one), connect a "
+                    "phone the way the app does, send one 0x6F command and print every reply")
     p_cmd.add_argument("cmd_code", metavar="CMD",
                        help="command byte in hex (08) or a CommandCode name (BATTERY_POWER)")
     p_cmd.add_argument("action", metavar="ACTION",
@@ -647,8 +679,8 @@ def main(argv=None) -> int:
                             "byte: the watch ignores one without it")
     p_cmd.add_argument("--char", choices=["8001", "8003"], default="8001",
                        help="the characteristic to write: 8001 is what the companion app "
-                            "and :app use (SETs are acknowledged), 8003 is what "
-                            "normlink-cli uses (SETs never are). Default 8001")
+                            "and :app use (SETs are acknowledged); on 8003 a SET never "
+                            "is. Default 8001")
     p_cmd.add_argument("--no-trigger", action="store_true",
                        help="do not write [03] to 8002 after the frame")
     p_cmd.add_argument("--no-bind", action="store_true",
@@ -662,12 +694,18 @@ def main(argv=None) -> int:
     p_cmd.add_argument("--save", action="store_true",
                        help="write the flash back to --flash-state at exit, creating it -- "
                             "the bind, this phone's bond, and whatever the command changed")
+    p_cmd.add_argument("--mac", metavar="MAC", default=None,
+                       help="ask the PHYSICAL watch at MAC (4C:59:80:12:44:F1) over this "
+                            "PC's Bluetooth adapter instead of booting the emulated one. "
+                            "Needs bleak; on Windows it bonds the watch once (Just Works). "
+                            "The watch must not be connected to a phone")
     p_cmd.add_argument("--image", default=str(DEFAULT_IMAGE),
                        help=f"firmware .bin (default: {DEFAULT_IMAGE})")
     p_cmd.add_argument("--resources", default=str(DEFAULT_RESOURCES),
                        help="resource blob loaded into the emulated NAND")
     p_cmd.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
-                       help="the watch's BD address (default: the physical watch's)")
+                       help="the emulated watch's BD address (default: the physical "
+                            "watch's)")
     p_cmd.set_defaults(func=cmd_command)
 
     args = parser.parse_args(argv)
