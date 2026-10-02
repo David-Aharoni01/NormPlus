@@ -21,6 +21,7 @@ verified on the watch), `protocol.md` (the wire protocol and firmware updates),
 ## Getting the code
 
 ```powershell
+git config --global core.longpaths true      # once per Windows machine: NORM/ has 184-character paths
 git clone --recurse-submodules https://github.com/David-Aharoni01/NormPlus.git
 ```
 

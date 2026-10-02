@@ -88,9 +88,12 @@ submodule at `NORM/` (`NormPlus-reference`) -- whose history was rewritten out o
 - Builds and tests read vendor files from `NORM/` at run time (the app's bundled resource
   image, the watch emulator's firmware) and must not copy them into tracked paths.
 
-**Getting `NORM/` on another machine:** `git clone --recurse-submodules
+**Getting `NORM/` on another machine:** `git config --global core.longpaths true` first on
+Windows (the longest path in `NORM/` is 184 characters, past MAX_PATH from most clone
+locations), then `git clone --recurse-submodules
 https://github.com/David-Aharoni01/NormPlus.git` (signed in as the owner), or
-`git submodule update --init` in an existing clone. Without access to the private repo,
+`git submodule update --init` in an existing clone. The APK in `NORM/_apk/` comes through
+Git LFS. Without access to the private repo,
 regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM.apk -o NORM`.
 
 ## Where things are documented
