@@ -1340,6 +1340,57 @@ frame, not a pixel. Bisected: identical through 225M, one short from 250M on, an
 exactly one short at 450M, so it is one lost tick between ~4.7 and ~5.2s of watch time,
 not drift. Card #54; `tests/test_golden.py` pins it as it stands.
 
+### Rehearsing an OTA
+
+`ApolloOtaProtocol.kt` had never run against anything, and its first run on the watch was
+going to be an update of the resource partition. The emulator can run it first -- if the
+watch's application serves an update itself, rather than a bootloader that is not in the
+image. It does, and the rehearsal (`tests/test_ota.py --full`) goes all the way through:
+the unmodified `Picture_P03B_NORM2_0.4.bin` sent as the companion app sends it, CRC `04 01`,
+REBOOT `05 01`, all 197 pages of the partition identical to the file, "Upgrade Success" on
+the screen, and the watch boots from that flash exactly as before it. What it took to get
+there is mostly what `ApolloOtaProtocol.kt` gets wrong.
+
+**UPGRADE_MODE is a mode switch, not a reboot.** `0x0E [00]` on 8001 is acknowledged and
+nothing resets: the DFU service (`1530`, `1531`/`1532`) is the running application's, served
+by `ew_mod_ota_protocol.c` (handler at `0x0003B798`, a switch on the command byte).
+
+**Both DFU characteristics are write-without-response only.** 1531 takes control
+commands and notifies every reply; 1532 takes data and has no CCCD. Android picks the
+write type from the properties, which is why the app's default writes are no-response.
+A reply is `[command][status]`, status `01` meaning yes.
+
+**The firmware accepts update types 1-4.** The SET handler (`0x0003B8A8`) keeps an
+address/length/CRC slot for each and answers anything else `[02 00]`. The resource
+partition is **type 4** -- `UPDATE_TYPE_PICTURE_LANGUAGE` in `cn.appscomm.bluetooth.ota`.
+The 8 that `cn.appscomm.ota.getUpdateType` returns for `Picture_*.bin`, and that our Kotlin
+sends, is refused. A type-4 SET erases four 128 KB blocks at `0x0C780000` -- the live
+partition -- straight away, and each 2 KB page is programmed in place as it completes. No
+staging, no bootloader, no reset afterwards: the watch shows "Upgrade Success", and the
+last thing it writes is NAND page 0.
+
+**The data is stop-and-wait, in 200-byte pieces.** Each 2 KB page goes as ten 200-byte
+pieces and a 48 (`OtaApolloCommand.addMiddleCommand`), each piece in 128-byte writes, and
+the watch answers every piece with `03 01 <01, or 02 at a page boundary> <bytes so far,
+LE32>`. Our Kotlin sends MTU-sized chunks to 1531 and waits every tenth.
+
+**The NAND model had never been written to.** The driver sends a PROGRAM LOAD as two MSPI
+transfers -- opcode and column (`02 00 00`), then the 2048 bytes on their own (PIO,
+CTRL `0x08000401`) -- the same way it reads a feature (`0F C0`, then a separate one-byte
+receive), with the chip select (GPIO 7) never moving. The model took the data as a new
+command, its first byte `0x04` as WRITE DISABLE, and programmed every page as `0xFF`; the
+firmware read the page back, and the CRC step failed. `SpiNand` now takes the transfer
+after a data-less PROGRAM LOAD as its data.
+
+**And a firmware bug on the way.** The first attempt was sent during the boot animation,
+which is the power-off dialog (notify 4). Opening the OTA screen over it sends the UI task
+round `ui_notify_poweroff_dlg` -> window manager -> `ui_notify_screen` -> back, six frames
+and 120 bytes a lap, until it is ~50 laps deep, off the end of its 6.4 KB stack
+(`0x1000D570`); the next queue send's `memcpy` lands on its own frame and `pop {pc}` loads
+0. From the face it does not happen. Not an emulator effect -- real hardware stacks
+*larger* exception frames, not smaller -- but a narrow one: the phone would have to start
+an update within the first ~10 s after the watch boots.
+
 ### Snapshots: `--save-state` and `--load-state`
 
 A boot to the UI is ~400M instructions of boot animation, 11s of wall clock, paid by every
@@ -1918,11 +1969,10 @@ In the order to do them. All are on the kanban board (`/kanban`).
 4. ~~**#46 — snapshot and restore**~~ -- done: `--save-state` / `--load-state`, see
    "Snapshots". A boot to the UI goes from 11s to 0.47s, and a snapshot restored in
    another process lands on every golden fingerprint. Not with a bumble radio.
-5. **#50 — rehearse OTA type 8 against the emulated watch.** First establish whether a
-   resource update is served by the application (the DFU service is in its GATT table)
-   or by the first-stage bootloader, which is not in the image; only the first can be
-   rehearsed here. If it can, `request_reset()` has to re-enter the reset vector instead
-   of ending the run.
+5. ~~**#50 — rehearse an OTA against the emulated watch**~~ -- done: the application
+   serves it, the resource partition is type 4 (8 is refused), and a full update goes
+   through; see "Rehearsing an OTA". Next is **#56**, fixing `ApolloOtaProtocol.kt`
+   against it.
 6. **#51 — health records.** A fresh watch has no sport, sleep or HR records, so `:app`'s
    sync only runs its empty paths against it. Drive the modelled accelerometer so the
    firmware's own pedometer records steps.

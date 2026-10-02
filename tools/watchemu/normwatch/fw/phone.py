@@ -97,6 +97,78 @@ def datetime_payload(now: Optional[datetime] = None, *, re_home: bool = False) -
                   1 if offset >= 0 else 0, minutes // 60, minutes % 60])
 
 
+# -- the Apollo OTA protocol (DFU service 1530) ------------------------------------
+#
+# As the companion app speaks it (cn.appscomm.ota.OtaApolloCommand / OtaService)
+# and as this firmware's ew_mod_ota_protocol.c answers it (the handler at
+# 0x0003B798). Control commands go to 0x1531, image data to 0x1532, both write
+# without response -- the only write either characteristic has. Every reply is a
+# notification on 0x1531: [command][status 01 = ok][...].
+
+#: UPGRADE_MODE (0x0E) SET -- MBluetooth.enterUpdateMode. A mode switch inside
+#: the running application: acknowledged on 8001, no reset.
+UPGRADE_MODE = 0x0E
+OTA_BT_PARAM = bytes([0x10, 0x02])
+#: The update types the firmware's SET handler accepts (0x0003B8A8): it stores
+#: a slot for each of 1-4 and answers anything else [02 00]. 4 is the resource
+#: partition -- cn.appscomm.bluetooth.ota's UPDATE_TYPE_PICTURE_LANGUAGE. The
+#: 8 in cn.appscomm.ota's getUpdateType ("Picture...") is refused.
+OTA_TYPE_MCU, OTA_TYPE_TOUCH, OTA_TYPE_HEART_RATE, OTA_TYPE_RESOURCES = 1, 2, 3, 4
+#: The last byte of the SET header (PACKAGE_COUNT).
+OTA_PACKAGE_COUNT = 0x0A
+#: The app's write size for the resource type (OtaApolloCommand.create:
+#: 0x80 for type 8 there, 0x14 otherwise); needs an ATT MTU of at least 131.
+OTA_WRITE_SIZE = 0x80
+
+
+def apollo_crc(data: bytes) -> bytes:
+    """OtaUtil.getApolloCrcCheck: CRC-16/CCITT, init 0xFFFF, as [lo, hi, 0, 0].
+
+    The firmware's CRC step (04) accepts it: a full resource update answers
+    [04 01] (README, "Rehearsing an OTA").
+    """
+    crc = 0xFFFF
+    for byte in data:
+        crc = ((crc << 8) | (crc >> 8)) & 0xFFFF
+        crc ^= byte
+        crc ^= (crc & 0xFF) >> 4
+        crc ^= (crc << 12) & 0xFFFF
+        crc ^= ((crc & 0xFF) << 5) & 0xFFFF
+    return bytes([crc & 0xFF, crc >> 8, 0, 0])
+
+
+def ota_init(content: bytes) -> bytes:
+    """NOTE_01_INIT: [01][content length, LE32]. The firmware wants exactly 5 bytes."""
+    return bytes([0x01]) + len(content).to_bytes(4, "little")
+
+
+def ota_set_header(update_type: int, address: bytes, content: bytes) -> bytes:
+    """NOTE_02_SET, 15 bytes: [02][type][address 4][length 4][crc 4][package count]."""
+    return (bytes([0x02, update_type]) + bytes(address) + len(content).to_bytes(4, "little")
+            + apollo_crc(content) + bytes([OTA_PACKAGE_COUNT]))
+
+
+def ota_pieces(content: bytes) -> list:
+    """The data, cut the way addMiddleCommand cuts it: each 2048-byte page in ten
+    200-byte pieces and a 48-byte one, the remainder in 200s. The watch answers
+    each piece; a piece that completes a NAND page is answered [03 01 02 ...]."""
+    cuts = {0}
+    pages = len(content) // 0x800
+    at = 0
+    for _ in range(pages):
+        for i in range(11):
+            at += 48 if i == 10 else 200
+            cuts.add(at)
+    remainder, step = len(content) % 0x800, 200
+    while step < remainder:
+        cuts.add(pages * 0x800 + step)
+        step += 200
+    cuts.discard(len(content))
+    cuts = sorted(cuts)
+    return [content[a:(cuts[i + 1] if i + 1 < len(cuts) else len(content))]
+            for i, a in enumerate(cuts)]
+
+
 def ack(cmd: int, status: int = 0) -> bytes:
     """The 8001 dispatcher's generic reply to a SET: ``6F 01 81 02 00 <cmd> <status> 8F``."""
     return frame(RESPONSE, SET_RESPONSE, bytes([cmd, status]))
@@ -489,6 +561,39 @@ class Phone:
             "datetime": await self.exchange(frame(DATETIME, SET, clock), timeout=timeout),
             "end": await self.exchange(frame(BIND_END, SET, b"\x01"), timeout=timeout),
         }
+
+    # -- OTA -------------------------------------------------------------------
+
+    async def open_dfu(self, *, mtu: int = 247) -> None:
+        """Find the DFU service, raise the MTU for the data writes, and listen
+        to 0x1531 -- the only one of its characteristics that notifies."""
+        await self.peer.request_mtu(mtu)
+        service = next(s for s in self.peer.services if str(s.uuid)[-4:].upper() == "1530")
+        self.dfu = {str(c.uuid)[-4:]: c for c in service.characteristics}
+        self._dfu_queue: asyncio.Queue = asyncio.Queue()
+        await self.peer.subscribe(self.dfu["1531"],
+                                  lambda value: self._dfu_queue.put_nowait(bytes(value)))
+
+    async def _dfu_reply(self, timeout: float) -> Optional[bytes]:
+        try:
+            return await asyncio.wait_for(self._dfu_queue.get(), timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    async def dfu_command(self, data: bytes, *, timeout: float = 5.0) -> Optional[bytes]:
+        """A control command to 0x1531; the reply, or None. (BT_PARAM has none:
+        the app waits 500 ms after it and carries on.)"""
+        while not self._dfu_queue.empty():
+            self._dfu_queue.get_nowait()
+        await self.peer.write_value(self.dfu["1531"], data, with_response=False)
+        return await self._dfu_reply(timeout)
+
+    async def dfu_piece(self, piece: bytes, *, timeout: float = 5.0) -> Optional[bytes]:
+        """One data piece to 0x1532, in OTA_WRITE_SIZE writes; the watch's answer."""
+        for at in range(0, len(piece), OTA_WRITE_SIZE):
+            await self.peer.write_value(self.dfu["1532"], piece[at:at + OTA_WRITE_SIZE],
+                                        with_response=False)
+        return await self._dfu_reply(timeout)
 
     async def disconnect(self) -> None:
         if self.connection is not None:

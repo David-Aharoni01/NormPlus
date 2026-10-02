@@ -188,6 +188,9 @@ class SpiNand(SpiDevice):
         #: (GET FEATURE, READ ID) from a genuine quad data phase (0x6B).
         self._last_opcode: Optional[int] = None
         self.expanded_frames = 0
+        #: Column a PROGRAM LOAD's data goes to when it arrived without any:
+        #: the next transfer is that data. See the PROGRAM LOAD branch.
+        self._loading: Optional[int] = None
 
     # ── geometry helpers ─────────────────────────────────────────────────────
 
@@ -262,6 +265,11 @@ class SpiNand(SpiDevice):
     QUAD_DATA_COMMANDS = frozenset({CMD_READ_CACHE_X4, CMD_PROGRAM_LOAD_X4})
 
     def exchange(self, tx: bytes, rx_len: int) -> bytes:
+        if tx and self._loading is not None and self._opcode is None:
+            # The data phase of the PROGRAM LOAD just sent, not a new command.
+            self.cache[self._loading:self._loading + len(tx)] = tx
+            self._loading = None
+            tx = b""
         if tx:
             if is_expanded_frame(tx):
                 self.expanded = True
@@ -372,6 +380,15 @@ class SpiNand(SpiDevice):
             if opcode != CMD_PROGRAM_LOAD_RANDOM:
                 self.cache = bytearray(b"\xff" * (self.page_size + self.spare_size))
             self.cache[column : column + len(payload)] = payload
+            # The driver sends a PROGRAM LOAD as two MSPI transfers: the opcode
+            # and column (``02 00 00``), then the page data on its own (2048
+            # bytes, PIO, CTRL 0x08000401). It is the mirror of how it reads a
+            # feature -- ``0F C0`` and then a separate one-byte receive -- and
+            # the chip select (GPIO 7) does not move between them. Taken as a
+            # new command, the data's first byte (0x04) read as WRITE DISABLE
+            # and every page programmed came out 0xFF: found in an OTA of the
+            # resource partition, the first time this firmware ever wrote here.
+            self._loading = column if not payload else None
             return
 
         if opcode == CMD_PROGRAM_EXECUTE:
