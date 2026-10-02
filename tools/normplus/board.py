@@ -109,7 +109,24 @@ def cmd_list(args) -> int:
 
 
 def cmd_show(args) -> int:
-    print(gh("issue", "view", str(args.number), "--repo", REPO, "--comments"))
+    # Not `gh issue view --comments`: with its output captured (not a terminal), gh prints
+    # only the comments -- no title, state, labels or body -- so an issue without comments
+    # came out empty. Ask for the fields and lay them out here.
+    issue = gh_json("issue", "view", str(args.number), "--repo", REPO, "--json",
+                    "number,title,state,labels,body,comments,projectItems,url")
+    status = next((p["status"]["name"] for p in issue.get("projectItems") or []
+                   if (p.get("status") or {}).get("name")), "not on the board")
+    labels = ", ".join(label["name"] for label in issue["labels"]) or "no labels"
+    print(f"#{issue['number']}  {issue['title']}")
+    print(f"{issue['state']}, {status}  |  {labels}")
+    print(issue["url"])
+    print(f"\n{issue['body'].strip() or '(no body)'}")
+    for comment in issue["comments"]:
+        author = (comment.get("author") or {}).get("login", "?")
+        when = comment["createdAt"][:16].replace("T", " ")
+        print(f"\n--- {author}, {when}\n{comment['body'].strip()}")
+    if not issue["comments"]:
+        print("\n(no comments)")
     return 0
 
 
