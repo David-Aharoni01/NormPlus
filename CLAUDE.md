@@ -55,8 +55,7 @@ byte sequence, or modelling any register:
 ```
 NORM/               the official companion app v1.1.18, unpacked with apktool
   smali*/cn/appscomm/, smali_classes2/com/appscomm/   its own code  <- READ THIS FIRST
-                    (only the app's own code is tracked; the bundled third-party smali is
-                     on disk but ignored -- `apktool d bin/NORM.apk -o NORM` regenerates it)
+  smali*/...        the bundled libraries (androidx, Google, RxJava, ...), kept for reference
   assets/           Apollo3_P03B_NORM2_F0.2B01.bin (the watch firmware the emulator runs),
                     Picture_P03B_NORM2_0.4.bin (the resource image)
 bin/                NORM.apk + apktool_3.0.2.jar (gitignored)
