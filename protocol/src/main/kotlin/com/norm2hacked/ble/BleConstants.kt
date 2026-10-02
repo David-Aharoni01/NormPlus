@@ -32,12 +32,10 @@ object BleConstants {
     const val FLAG_END: Byte = 0x8F.toByte()
 
     const val MTU_DEFAULT = 20
-    const val MTU_WATCHFACE = 128
     const val SCAN_TIMEOUT_MS = 30_000L
     const val MIN_CONNECT_INTERVAL_MS = 200L
     const val WRITE_TIMEOUT_MS = 10_000L
     const val SYNC_TIMEOUT_MS = 15_000L
-    const val OTA_BT_PARAM_DELAY_MS = 500L
     const val DEDUP_WINDOW_MS = 30_000L
 
     // Echo packet to drop on 8002 (from BluetoothLeService.smali:array_0)

@@ -33,10 +33,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -154,6 +153,11 @@ class BleManager @Inject constructor(
 
     // OTA write completions — one per connection; drains before each OTA session start.
     private val otaWriteCompleteChannel = Channel<Int>(capacity = 1)
+    /** Results of [requestMtu], from [BleGattCallback.onMtuChanged]. */
+    private val mtuChannel = Channel<Int>(Channel.CONFLATED)
+    /** The ATT MTU of the current link: 23 until something negotiates more. */
+    @Volatile var attMtu: Int = 23
+        private set
 
     // Service/characteristic discovery: true if extended service 7006 found, else use base 6006
     @Volatile private var is8003Server7006 = false
@@ -311,7 +315,12 @@ class BleManager @Inject constructor(
             onDescriptorWriteComplete = { status -> localDescCh.trySend(status) },
             packetChannel = newPacketCh,
             otaNotifyChannel = newOtaCh,
+            onMtuChanged = { mtu, status ->
+                if (status == BluetoothGatt.GATT_SUCCESS) attMtu = mtu
+                mtuChannel.trySend(if (status == BluetoothGatt.GATT_SUCCESS) mtu else attMtu)
+            },
         )
+        attMtu = 23
 
         gatt?.close()
         val newGatt = device.connectGatt(context, false, cb, BluetoothDevice.TRANSPORT_LE)
@@ -456,9 +465,10 @@ class BleManager @Inject constructor(
             Log.d(TAG, "Extended service 7006 found — enabled notification on 8005")
         }
 
-        // After the watch reboots into DFU bootloader the Apollo service (0x1530) appears.
-        // Enable notifications on both OTA chars so ACKs from the watch reach ApolloOtaProtocol.
-        // On a normal (non-OTA) connection this service is absent and the block is skipped.
+        // The Apollo DFU service (0x1530) is part of the running application's GATT table --
+        // UPGRADE_MODE is a mode switch, not a reboot into a bootloader. Every OTA reply is a
+        // notification on 0x1531 (0x1532 has no CCCD; enableNotify skips it), so it is enabled
+        // here, before anything is written, for ApolloOtaSession via BleOtaTransport.
         g.getService(BleConstants.SERVICE_APOLLO_DFU)?.let { dfuSvc ->
             listOf(BleConstants.CHAR_APOLLO_1531, BleConstants.CHAR_APOLLO_1532).forEach { uuid ->
                 enableNotify(g, dfuSvc.getCharacteristic(uuid), localDescCh)
@@ -612,14 +622,17 @@ class BleManager @Inject constructor(
     }
 
     /**
-     * Suspend write for OTA: sends bytes in MTU-sized chunks, awaiting
-     * [onCharacteristicWrite] between each (WRITE_WITH_RESPONSE on 0x1531).
+     * Suspend write for OTA: sends bytes in [mtu]-sized chunks, awaiting
+     * [BleGattCallback.onCharacteristicWrite] between each. The DFU characteristics 0x1531 and
+     * 0x1532 have WRITE_WITHOUT_RESPONSE only, so OTA passes [writeType]
+     * WRITE_TYPE_NO_RESPONSE; Android still reports each write once the stack has taken it.
      */
     suspend fun writeToCharAwait(
         bytes: ByteArray,
         charUuid: java.util.UUID,
         mtu: Int = BleConstants.MTU_DEFAULT,
         timeoutPerChunkMs: Long = 5_000L,
+        writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
     ) {
         val g = gatt ?: throw IllegalStateException("GATT not connected")
         val char = g.services?.flatMap { it.characteristics }
@@ -632,6 +645,7 @@ class BleManager @Inject constructor(
         while (offset < bytes.size) {
             val chunk = bytes.copyOfRange(offset, minOf(offset + mtu, bytes.size))
             chunkNum++
+            char.writeType = writeType
             @Suppress("DEPRECATION")
             char.value = chunk
             @Suppress("DEPRECATION")
@@ -647,8 +661,24 @@ class BleManager @Inject constructor(
     }
 
     /**
+     * Ask for an ATT MTU of [mtu] and return what the link settles on (the current one if the
+     * request fails or nothing answers within [timeoutMs]). An OTA of the resource partition
+     * writes 128 bytes at a time, which needs at least 131; tools/watchemu's reference client
+     * asks for 247.
+     */
+    suspend fun requestMtu(mtu: Int, timeoutMs: Long = 5_000L): Int {
+        val g = gatt ?: throw IllegalStateException("GATT not connected")
+        while (mtuChannel.tryReceive().isSuccess) { /* drain */ }
+        if (!g.requestMtu(mtu)) {
+            Log.w(TAG, "requestMtu($mtu) was not accepted; staying at $attMtu")
+            return attMtu
+        }
+        return withTimeoutOrNull(timeoutMs) { mtuChannel.receive() } ?: attMtu
+    }
+
+    /**
      * Drain any stale OTA write completions from a previous cancelled session
-     * before starting a new OTA. Call once at the beginning of [ApolloOtaProtocol.flash].
+     * before starting a new OTA. [BleOtaTransport.openDfu] calls it.
      */
     fun drainOtaWriteChannel() {
         while (otaWriteCompleteChannel.tryReceive().isSuccess) { /* drain */ }
@@ -656,14 +686,4 @@ class BleManager @Inject constructor(
 
     private fun java.util.UUID.shortId() = toString().substring(4, 8).uppercase()
     private fun ByteArray.toHex() = joinToString("") { "%02X".format(it) }
-
-    /** Wait until the Apollo DFU service appears after the bootloader reboots. */
-    suspend fun waitForDfuService(timeoutMs: Long = 30_000L) {
-        withTimeout(timeoutMs) {
-            connectionState.filter {
-                it is BleConnectionState.Ready &&
-                        gatt?.getService(BleConstants.SERVICE_APOLLO_DFU) != null
-            }.first()
-        }
-    }
 }

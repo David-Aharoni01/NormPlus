@@ -120,9 +120,10 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
             Spacer(Modifier.height(20.dp))
 
             // Bundled firmware section
-            FirmwareSection(title = "Bundled Firmware") {
+            FirmwareSection(title = "Bundled Resources") {
                 Text(
-                    "Flash the original Norm 2 firmware included in this app (Apollo3 P03B ${viewModel.bundledVersion}).",
+                    "Re-send the watch's original resource image (screens and fonts, ${viewModel.bundledVersion}). " +
+                        "The main firmware is not touched. The watch's UI is unavailable until the update completes.",
                     style = MaterialTheme.typography.bodyMedium, color = OnSurfaceMuted,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -131,7 +132,7 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
                     enabled = !state.isFlashing,
-                ) { Text("Flash Original Firmware", style = MaterialTheme.typography.titleMedium) }
+                ) { Text("Re-flash Original Resources", style = MaterialTheme.typography.titleMedium) }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -182,14 +183,15 @@ private fun FirmwareSection(title: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun OtaProgressCard(progress: OtaProgress) {
-    val steps = listOf(OtaStep.BT_PARAM, OtaStep.INIT, OtaStep.SET_HEADER, OtaStep.DATA_STREAM, OtaStep.CRC_VERIFY, OtaStep.REBOOT)
+    val steps = listOf(OtaStep.UPGRADE_MODE, OtaStep.BT_PARAM, OtaStep.INIT, OtaStep.SET_HEADER, OtaStep.DATA_STREAM, OtaStep.CRC_VERIFY, OtaStep.REBOOT)
     val stepLabels = mapOf(
+        OtaStep.UPGRADE_MODE to "Upgrade Mode",
         OtaStep.BT_PARAM to "BT Params",
         OtaStep.INIT to "Initialize",
         OtaStep.SET_HEADER to "Set Header",
         OtaStep.DATA_STREAM to "Uploading",
         OtaStep.CRC_VERIFY to "Verify CRC",
-        OtaStep.REBOOT to "Rebooting",
+        OtaStep.REBOOT to "Finishing",
         OtaStep.DONE to "Done",
         OtaStep.FAILED to "Failed",
     )

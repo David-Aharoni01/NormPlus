@@ -257,7 +257,16 @@ object ControlDeviceCommand {
 // ── Upgrade mode ──────────────────────────────────────────────────────────────
 
 object UpgradeModeCommand {
-    fun buildSet(mode: Byte = 0x01) =
+    /**
+     * `[00]`: MBluetooth.enterUpdateMode builds `UpgradeMode(callback, 1, 0)`, whose third
+     * argument is the one content byte. The firmware acknowledges it on 8001 and stays in the
+     * running application -- no reset (README "Rehearsing an OTA").
+     */
+    const val MODE: Byte = 0x00
+
+    fun payload() = byteArrayOf(MODE)
+
+    fun buildSet(mode: Byte = MODE) =
         PacketBuilder.build(CommandCode.UPGRADE_MODE, Action.SET, byteArrayOf(mode))
 }
 

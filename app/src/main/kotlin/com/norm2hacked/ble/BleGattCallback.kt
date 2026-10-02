@@ -25,6 +25,8 @@ class BleGattCallback(
     private val packetChannel: SendChannel<Packet>,
     // OTA notifications (0x1531/0x1532) are sent here, NOT to packetChannel.
     private val otaNotifyChannel: SendChannel<ByteArray>,
+    // The negotiated ATT MTU, for BleManager.requestMtu.
+    private val onMtuChanged: (mtu: Int, status: Int) -> Unit = { _, _ -> },
 ) : BluetoothGattCallback() {
 
     private val deframer = PacketDeframer()
@@ -129,6 +131,7 @@ class BleGattCallback(
 
     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
         Log.i(TAG, "MTU changed to $mtu status=$status")
+        onMtuChanged(mtu, status)
     }
 
     // Result of BleManager.readRemoteRssi() (the BleService keep-alive). Logged only — the value

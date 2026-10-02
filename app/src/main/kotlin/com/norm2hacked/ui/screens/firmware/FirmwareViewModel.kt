@@ -4,23 +4,28 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.first
 import com.norm2hacked.ble.BleManager
+import com.norm2hacked.ble.BleOtaTransport
 import com.norm2hacked.data.preferences.WatchPreferences
 import com.norm2hacked.protocol.Action
 import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.commands.DeviceVersionCommand
-import com.norm2hacked.protocol.commands.UpgradeModeCommand
-import com.norm2hacked.protocol.ota.ApolloOtaProtocol
+import com.norm2hacked.protocol.ota.ApolloOta
+import com.norm2hacked.protocol.ota.ApolloOtaSession
+import com.norm2hacked.protocol.ota.OtaException
+import com.norm2hacked.protocol.ota.OtaImage
 import com.norm2hacked.protocol.ota.OtaProgress
 import com.norm2hacked.protocol.ota.OtaStep
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class FirmwareUiState(
@@ -37,14 +42,19 @@ data class FirmwareUiState(
 class FirmwareViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val bleManager: BleManager,
-    private val otaProtocol: ApolloOtaProtocol,
+    private val otaTransport: BleOtaTransport,
     private val watchPreferences: WatchPreferences,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(FirmwareUiState())
     val state: StateFlow<FirmwareUiState> = _state.asStateFlow()
 
-    val bundledVersion = "F0.2B01"
+    /**
+     * The bundled update is the watch's resource image, unmodified: update type 4, the
+     * resource partition, which the firmware receives itself and which leaves the main
+     * firmware untouched. A main-firmware (type 1) update is refused by ApolloOtaSession.
+     */
+    val bundledVersion = "R0.4"
 
     init {
         loadWatchVersion()
@@ -72,38 +82,42 @@ class FirmwareViewModel @Inject constructor(
     }
 
     fun flashBundled() {
-        // Read directly from assets — never create a file:// URI, which ContentResolver
-        // rejects on Android 7+ without FileProvider.
-        flash(assetName = "firmware/Apollo3_P03B_NORM2_F0.2B01.bin")
+        // Read from assets -- never a file:// URI, which ContentResolver rejects on Android 7+.
+        flash(BUNDLED_RESOURCES) {
+            context.assets.open("firmware/$BUNDLED_RESOURCES").use { it.readBytes() }
+        }
     }
 
     fun flashCustom() {
         val uri = _state.value.customFileUri ?: return
-        flash(uri = uri)
+        flash(_state.value.customFileName.orEmpty()) {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: throw OtaException("Cannot read the chosen file")
+        }
     }
 
-    private fun flash(uri: Uri? = null, assetName: String? = null) {
+    /** One update of the file called [name]; its type comes from the name, as the app decides it. */
+    private fun flash(name: String, read: () -> ByteArray) {
         if (_state.value.isFlashing) return
         viewModelScope.launch {
-            _state.update { it.copy(isFlashing = true, error = null, progress = OtaProgress(OtaStep.BT_PARAM)) }
+            _state.update { it.copy(isFlashing = true, error = null, progress = OtaProgress(OtaStep.UPGRADE_MODE)) }
             try {
-                bleManager.writeToChar(UpgradeModeCommand.buildSet(), bleManager.commandWriteChar)
-                bleManager.waitForDfuService()
-                val progressFlow = when {
-                    assetName != null -> otaProtocol.flashAsset(assetName)
-                    uri != null -> otaProtocol.flash(uri)
-                    else -> return@launch
-                }
-                progressFlow.collect { progress ->
+                if (!bleManager.connectionState.value.isConnected) throw OtaException("The watch is not connected")
+                val image = withContext(Dispatchers.IO) { OtaImage.parse(read()) }
+                ApolloOtaSession(otaTransport).flash(image, ApolloOta.updateTypeFor(name)).collect { progress ->
                     _state.update { it.copy(progress = progress) }
-                    if (progress.isDone || progress.isFailed) {
+                    if (progress.isDone) {
                         _state.update { it.copy(isFlashing = false) }
-                        if (progress.isDone) loadWatchVersion()
+                        loadWatchVersion()
                     }
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(isFlashing = false, error = e.message, progress = OtaProgress(OtaStep.FAILED, errorMessage = e.message)) }
             }
         }
+    }
+
+    private companion object {
+        const val BUNDLED_RESOURCES = "Picture_P03B_NORM2_0.4.bin"
     }
 }

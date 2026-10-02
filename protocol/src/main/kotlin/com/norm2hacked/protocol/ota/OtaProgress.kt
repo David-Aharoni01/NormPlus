@@ -1,6 +1,6 @@
 package com.norm2hacked.protocol.ota
 
-enum class OtaStep { BT_PARAM, INIT, SET_HEADER, DATA_STREAM, CRC_VERIFY, REBOOT, DONE, FAILED }
+enum class OtaStep { UPGRADE_MODE, BT_PARAM, INIT, SET_HEADER, DATA_STREAM, CRC_VERIFY, REBOOT, DONE, FAILED }
 
 data class OtaProgress(
     val step: OtaStep,
