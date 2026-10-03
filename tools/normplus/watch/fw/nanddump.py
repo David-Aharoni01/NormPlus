@@ -306,8 +306,17 @@ class Dump:
 class Dumper:
     """Reads NAND out through a 0x6F conversation, one 128-byte chunk at a time."""
 
-    #: Attempts for a read that gets no reply at all.
+    #: Attempts for a read that gets no reply at all. Silence means the link is
+    #: gone, so this stays small: every attempt costs :attr:`timeout` seconds and
+    #: the session has to end before it can be restarted.
     tries: int = 4
+    #: Attempts for a read the watch *answered* with one of the driver's own error
+    #: codes. A different failure and a different budget: it means the UI held the
+    #: driver's lock, an attempt costs one read rather than a timeout, and the losses
+    #: arrive in runs -- 13 in 1,938 reads on the watch, four of them consecutive,
+    #: which at four attempts is a session ended by one redraw (#70). The patch's own
+    #: "the stack is not up" is not one of these: see :meth:`read_chunk`.
+    refusals: int = 12
     #: Sample a page's ends and skip it if both are erased.
     skip_blank: bool = True
     #: Seconds to wait for one reply.
@@ -319,6 +328,10 @@ class Dumper:
     wake: Optional[Callable] = None
     #: Seconds to leave the watch alone after each page.
     page_pause: float = 0.0
+    #: Seconds before asking again for a read the watch said it could not do. The
+    #: losses are the UI holding the lock for a redraw and arrive in runs, so the
+    #: point is to land the retry in a different frame, not to be polite.
+    retry_pause: float = 0.05
     #: Seconds between nudges that keep the watch awake. It drops the link when it
     #: decides it is idle, and reading its NAND does not count as activity: every
     #: session ended with one unanswered read and then a dropped link, after
@@ -394,13 +407,22 @@ class Dumper:
             else:
                 self.stats.errors[code] = self.stats.errors.get(code, 0) + 1
             failed += 1
-            if failed >= self.tries:
+            # The stack being down is a state, not a run of bad luck: asking again
+            # does not fix it and the waker does, so that one keeps the small budget.
+            if failed >= (self.tries if code == DRIVER_DOWN else self.refusals):
                 if code == DRIVER_DOWN:
                     raise DriverDown(
                         f"0x{address:08X}: the watch says its storage stack is not up")
                 self.log(f"  [dump] 0x{address:08X}: read error 0x{code:02X}, "
                          f"{failed} times")
                 return None
+            # Wait a moment before asking again. These failures are the UI holding
+            # the driver's lock to draw, so they come in runs: 13 in 1,938 reads on
+            # the watch, but four of them in a row, which is a whole session ended
+            # by one redraw. Retrying inside the same draw asks the same question of
+            # the same answer; a frame later it is a different one (#70).
+            if self.retry_pause:
+                await asyncio.sleep(self.retry_pause)
 
     async def read_page(self, conv, address: int) -> tuple[bytes, bool, int]:
         """One NAND page: its bytes, whether it was skipped as erased, zero chunks.

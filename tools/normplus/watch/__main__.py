@@ -506,6 +506,7 @@ def cmd_dump(args) -> int:
     dump = Dump(args.output, log=say)
     dumper = Dumper(tries=args.tries, skip_blank=not args.no_skip,
                     trigger=not args.no_trigger, page_pause=args.page_pause,
+                    retry_pause=args.retry_pause, refusals=args.refusals,
                     keep_awake=0.0 if args.no_wake else args.keep_awake,
                     wait_for_driver=args.wait_for_driver, log=say)
 
@@ -1073,7 +1074,18 @@ def main(argv=None) -> int:
     p_dump.add_argument("--pages", type=int, default=None, metavar="N",
                         help="stop after N pages (a sample, or a measurement)")
     p_dump.add_argument("--tries", type=int, default=4, metavar="N",
-                        help="attempts for a read that gets no reply at all (default 4)")
+                        help="attempts for a read that gets no reply at all (default 4). "
+                             "Silence means the link has gone and each attempt costs a "
+                             "timeout, so it is better to end the session and reconnect")
+    p_dump.add_argument("--refusals", type=int, default=12, metavar="N",
+                        help="attempts for a read the watch answered to say it could not "
+                             "do it (default 12). That is the UI holding the driver's "
+                             "lock, it arrives in runs -- four in a row ended a session "
+                             "at 4 -- and an attempt costs one read, so it is cheap (#70)")
+    p_dump.add_argument("--retry-pause", type=float, default=0.05, metavar="S",
+                        help="seconds before asking again for a read the watch said it "
+                             "could not do (default 0.05), so the retry lands in a "
+                             "different frame than the redraw that lost it")
     p_dump.add_argument("--no-skip", action="store_true",
                         help="read every chunk instead of skipping a page whose first and "
                              "last chunk are both erased")

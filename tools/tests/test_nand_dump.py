@@ -286,6 +286,33 @@ def test_a_blank_page_is_sampled_without_reading_the_nand_twice():
     assert watch.reads == 2 and watch.page_reads == 1, (watch.reads, watch.page_reads)
 
 
+def test_a_run_of_losses_shorter_than_tries_still_gets_the_chunk():
+    """The losses come in runs, so the retry budget is what gets through one (#70).
+
+    On the watch the driver refused 13 reads in 1,938 -- but four of them in a row,
+    which at four tries is a session ended by one redraw. The budget is 12 now, and
+    there is a pause between attempts so the retry lands in a different frame.
+    """
+    start = 0x0C780000
+    content = bytes(random.Random(5).randbytes(CHUNK))
+    watch = FakeWatch({start: content})
+    refuse = {"left": 5}
+    inner = watch.send
+
+    async def send(data, *, char="8001", trigger=True):
+        await inner(data, char=char, trigger=trigger)
+        if refuse["left"]:
+            refuse["left"] -= 1
+            watch._replies = [("8002", frame(0xEE, 0x80, b"\xfa"))]
+
+    watch.send = send
+    dumper = Dumper(log=quiet, retry_pause=0.0)
+    got = run(dumper.read_chunk(watch, start))
+    assert got == content, (got or b"").hex(" ")
+    assert watch.reads == 6, watch.reads          # five refused, the sixth answered
+    assert dumper.stats.errors == {0xFA: 5}, dumper.stats.errors
+
+
 def test_the_client_and_the_patch_agree_on_every_number_between_them():
     """Two packages, one protocol: a drift here is a dump of wrong bytes.
 
