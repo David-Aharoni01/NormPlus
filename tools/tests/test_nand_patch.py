@@ -120,8 +120,26 @@ def test_the_hook_is_the_instruction_the_patch_claims():
         == nand_patch.HOOK_EXPECTED
 
 
-def test_only_the_three_hooks_changed_and_the_code_was_appended():
+def test_only_the_read_hook_changes_by_default():
+    # The two hooks that keep the storage stack up crashed the watch (#70), so the
+    # image built by default carries the read hook and nothing else.
     stock, image = STOCK.read_bytes(), patched()
+    assert len(image) - len(stock) == 64, len(image) - len(stock)
+    at = nand_patch.PAYLOAD_OFFSET + (nand_patch.HOOK_ADDRESS - nand_patch.LINK_ADDRESS)
+    header = set(range(image_tool.OFF_LEN, image_tool.OFF_LEN + 4)) | \
+        set(range(image_tool.OFF_CRC, image_tool.OFF_CRC + 4))
+    differ = [i for i in range(len(stock))
+              if stock[i] != image[i] and i not in header and not at <= i < at + 4]
+    assert not differ, [hex(i) for i in differ[:8]]
+    for address, expected in ((nand_patch.CREATE_ADDRESS, nand_patch.CREATE_EXPECTED),
+                              (nand_patch.TEARDOWN_ADDRESS, nand_patch.TEARDOWN_EXPECTED)):
+        o = nand_patch.PAYLOAD_OFFSET + (address - nand_patch.LINK_ADDRESS)
+        assert image[o:o + 4] == expected, f"0x{address:08X} was patched"
+
+
+def test_with_keep_storage_up_the_three_hooks_are_there_and_nothing_else():
+    stock = STOCK.read_bytes()
+    image, _ = nand_patch.apply(stock, keep_storage_up=True)
     assert len(image) - len(stock) == 92, len(image) - len(stock)
     sites = [nand_patch.HOOK_ADDRESS, nand_patch.CREATE_ADDRESS, nand_patch.TEARDOWN_ADDRESS]
     hooked = set()
@@ -151,7 +169,7 @@ def test_the_teardown_is_a_plain_return_and_the_guard_rejoins_the_original():
     image = patched()
     assert nand_patch.TEARDOWN_REPLACEMENT == bytes.fromhex("00204770")   # movs r0,#0; bx lr
     info = image_tool.parse(image)
-    routine_at = (nand_patch.LINK_ADDRESS + info["payload_len"] - 92 + 3) & ~3
+    routine_at = (nand_patch.LINK_ADDRESS + info["payload_len"] - 64 + 3) & ~3
     guard_at = routine_at + len(nand_patch.build_routine(routine_at)[0])
     guard, sources, offsets = nand_patch.build_create_guard(guard_at)
     nand_patch.check_guard(guard, guard_at, sources, offsets)
