@@ -29,6 +29,13 @@ class Peripheral:
     name = "PERIPHERAL"
     #: offset -> register name, for tracing.
     REGS: dict[int, str] = {}
+    #: offset -> the value this register always reads as, for registers whose
+    #: answer never depends on anything. The bus serves these without dispatching
+    #: here at all (:meth:`Bus.read`), which is worth doing because the firmware
+    #: reads some of them millions of times -- its delay helper takes the core
+    #: clock from CLKGEN.BLEBUCKSTATUS on every call (#72). :meth:`read` consults
+    #: the same table, so the two cannot answer differently.
+    CONSTANT_REGS: dict[int, int] = {}
 
     def __init__(self, base: int, size: int, machine=None) -> None:
         self.base = base
@@ -107,18 +114,25 @@ class Clkgen(Peripheral):
         0x200: "INTEN", 0x204: "INTSTAT", 0x208: "INTCLR", 0x20C: "INTSET",
     }
 
+    CONSTANT_REGS = {
+        # BLEBUCKSTATUS. Read twice by the BLE bring-up check at 0x0008A746,
+        # which requires bit 1 set and bit 2 non-zero or it flags the error the
+        # image spells "BLE Buck Err!" -- so the buck is reported up. It is also
+        # the most-read register in the machine by a wide margin: the firmware's
+        # delay helper at 0x0008B544 reads it on every call to find out how fast
+        # the core is running, which is two million times in a boot that draws
+        # the factory resources (#72).
+        0x034: 0x00000006,
+        # STATUS: XTal and LFRC running, no oscillator failure.
+        0x01C: 0x00000003,
+        # CLOCKENSTAT and its two companions: report everything enabled.
+        0x028: 0xFFFFFFFF, 0x02C: 0xFFFFFFFF, 0x030: 0xFFFFFFFF,
+    }
+
     def read(self, offset: int, size: int) -> int:
         self.reads[offset] += 1
-        if offset == 0x034:
-            # Read twice by the BLE bring-up check at 0x0008A746: it requires
-            # bit 1 to be set and bit 2 to be non-zero, otherwise it flags the
-            # error the image spells "BLE Buck Err!". Reporting the buck as up.
-            return 0x00000006
-        if offset == 0x01C:  # STATUS: XTal and LFRC running, no oscillator failure
-            return 0x00000003
-        if offset in (0x028, 0x02C, 0x030):  # CLOCKENSTAT: report everything enabled
-            return 0xFFFFFFFF
-        return self.storage.get(offset, 0)
+        value = self.CONSTANT_REGS.get(offset)
+        return self.storage.get(offset, 0) if value is None else value
 
 
 class Pwrctrl(Peripheral):
@@ -1287,7 +1301,10 @@ class Mspi(Peripheral):
         self.transfers += 1
 
     #: How often the controller is given a chance to walk its queue, in core
-    #: cycles. This is the historical poll rate — the fixed quantum every
+    #: cycles. Tried at 512 while looking for the cost of the factory resources
+    #: (#72) and rejected again: the goldens move, one MSPI interrupt and one
+    #: STIMER tick either way, which is the emulated timing changing rather than
+    #: a measurement wobbling. This is the historical poll rate — the fixed quantum every
     #: measurement was taken at — kept as a number here because polling *is* the
     #: model: :meth:`pending_irqs` pumps the queue, so its frequency decides how
     #: fast pixels reach the panel. At one poll every 16384 cycles a boot loses
@@ -1725,10 +1742,21 @@ class Bus:
         self.unknown_reads = collections.Counter()
         self.unknown_writes = collections.Counter()
         self.unknown_storage: dict[int, int] = {}
+        #: absolute address -> (value, the owner's read counter, offset), for
+        #: registers whose answer is fixed (:attr:`Peripheral.CONSTANT_REGS`).
+        #: Served here rather than dispatched, because at two million reads a
+        #: boot the dispatch is the cost, not the answer (#72).
+        self._constant: dict[int, tuple] = {}
 
     def add(self, peripheral: Peripheral) -> Peripheral:
         self.peripherals.append(peripheral)
         self.by_base[peripheral.base] = peripheral
+        for offset, value in peripheral.CONSTANT_REGS.items():
+            # setdefault for the same reason _by_page uses it: where two models
+            # cover one address the first added wins, and the fast path has to
+            # answer for the same one find() would have chosen.
+            self._constant.setdefault(peripheral.base + offset,
+                                      (value, peripheral.reads, offset))
         first = peripheral.base >> self._PAGE_SHIFT
         last = (peripheral.base + peripheral.size - 1) >> self._PAGE_SHIFT
         for page in range(first, last + 1):
@@ -1763,6 +1791,14 @@ class Bus:
         return f"{p.name}.{p.reg_name(addr - p.base)}"
 
     def read(self, addr: int, size: int) -> int:
+        # A register whose answer never changes is answered here, without the
+        # page lookup and the dispatch into the model. The counter is still kept,
+        # so nothing downstream can tell the difference -- see CONSTANT_REGS.
+        fixed = self._constant.get(addr)
+        if fixed is not None:
+            value, reads, offset = fixed
+            reads[offset] += 1
+            return value
         # The page lookup is inlined rather than calling find(): this runs on
         # every MMIO access, and at this frequency the Python call itself is a
         # measurable share of it. find() is still the fallback, so shared pages

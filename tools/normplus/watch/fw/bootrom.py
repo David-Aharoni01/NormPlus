@@ -89,6 +89,12 @@ class BootRomEntry:
     #: then discarded. ``bootrom_delay_cycles`` takes one and is over 99% of
     #: the calls.
     arg_registers: tuple = ()
+    #: How often this entry was called. Counted on the entry rather than in a
+    #: dict keyed by name: this is incremented two million times in a boot that
+    #: draws the factory resources, and hashing the name each time was a
+    #: measurable share of the dispatch (#72). :meth:`BootRom.calls` collects
+    #: them when something actually asks.
+    count: int = 0
 
 
 #: Names by table index, following the AmbiqSuite ``am_hal_bootrom_helper_t``
@@ -148,7 +154,10 @@ class BootRom:
         self.log = log
         self.entries: dict[int, BootRomEntry] = {}  # address -> entry
         self.table_address: Optional[int] = None
-        self.calls: dict[str, int] = {}
+        #: Calls to an address in the ROM window that is not a known entry.
+        #: The known ones are counted on the entries themselves; :attr:`calls`
+        #: puts the two together.
+        self._stray: dict[str, int] = {}
         self.unknown_calls: list[tuple[str, tuple[int, ...]]] = []
         #: The same fast register reader CortexM uses -- the same uc_reg_read,
         #: without the binding's per-call register-class lookup and ctypes
@@ -209,10 +218,11 @@ class BootRom:
         if entry is None:
             # Landed in the ROM window but not on a known entry: the `bx lr`
             # already there will return, so just record it.
-            self.calls["<unmapped rom address>"] = self.calls.get("<unmapped rom address>", 0) + 1
+            key = "<unmapped rom address>"
+            self._stray[key] = self._stray.get(key, 0) + 1
             return
 
-        self.calls[entry.name] = self.calls.get(entry.name, 0) + 1
+        entry.count += 1
         handler = entry.handler
         read = self._reg
         if handler is None:
@@ -278,6 +288,19 @@ class BootRom:
 
     def _rom_nv_valid_address(self, addr, *_args):
         return 1 if addr < 0x00100000 else 0
+
+    @property
+    def calls(self) -> dict[str, int]:
+        """What was called and how often, collected when asked rather than kept."""
+        counted: dict[str, int] = {}
+        for entry in self.entries.values():
+            # By name, as the dict this replaces was keyed: two addresses can
+            # carry the same helper, and they counted as one.
+            if entry.count:
+                counted[entry.name] = counted.get(entry.name, 0) + entry.count
+        for name, n in self._stray.items():
+            counted[name] = counted.get(name, 0) + n
+        return counted
 
     def summary(self) -> str:
         if not self.calls:
