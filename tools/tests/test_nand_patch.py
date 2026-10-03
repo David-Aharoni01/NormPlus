@@ -86,22 +86,24 @@ def reader(phone, attempts: list | None = None):
         return frames[0][5:-1] if frames else None
 
     async def retrying(payload: bytes, tries: int = 4):
-        """...and again if it comes back zero-filled, as a dump client must.
+        """...and again if the watch says the read failed, as a dump client must.
 
-        The watch's own UI reads the NAND continuously to draw itself, and the
+        The watch's own UI reads the NAND continuously to draw itself and the
         driver's lock is taken with a short timeout (0x00031B40 from 0x0003E348),
         so a read loses that race fairly often -- about one in five while the face
-        is up. It is never a partial answer: the handler zero-fills its buffer
-        first, so a lost race arrives as 128 zero bytes and nothing else does.
+        is up. The patch answers that with a **one-byte** reply carrying the reason
+        (#70), so a retry is never a guess about what the bytes mean, and an answer
+        of the length asked for is data even when every byte of it is zero.
         """
+        wanted = payload[4]
         for attempt in range(1, tries + 1):
             got = await read(payload)
-            if got is None or any(got):
+            if got is None or len(got) == wanted:
                 if attempts is not None:
                     attempts.append(attempt)
                 return got
         if attempts is not None:
-            attempts.append(0)       # 0: it was zero-filled every time
+            attempts.append(0)       # 0: it reported a failure every time
         return got
     return retrying
 
@@ -118,18 +120,44 @@ def test_the_hook_is_the_instruction_the_patch_claims():
         == nand_patch.HOOK_EXPECTED
 
 
-def test_only_the_hook_changed_and_the_routine_was_appended():
+def test_only_the_three_hooks_changed_and_the_code_was_appended():
     stock, image = STOCK.read_bytes(), patched()
-    assert len(image) - len(stock) == 56, len(image) - len(stock)
-    at = nand_patch.PAYLOAD_OFFSET + (nand_patch.HOOK_ADDRESS - nand_patch.LINK_ADDRESS)
-    # Byte for byte the stock image, but for the 4-byte call and the header's own
-    # length and CRC fields.
-    header = {image_tool.OFF_LEN, image_tool.OFF_LEN + 1, image_tool.OFF_LEN + 2,
-              image_tool.OFF_LEN + 3, image_tool.OFF_CRC, image_tool.OFF_CRC + 1,
-              image_tool.OFF_CRC + 2, image_tool.OFF_CRC + 3}
+    assert len(image) - len(stock) == 92, len(image) - len(stock)
+    sites = [nand_patch.HOOK_ADDRESS, nand_patch.CREATE_ADDRESS, nand_patch.TEARDOWN_ADDRESS]
+    hooked = set()
+    for address in sites:
+        at = nand_patch.PAYLOAD_OFFSET + (address - nand_patch.LINK_ADDRESS)
+        hooked.update(range(at, at + 4))
+    # Byte for byte the stock image, but for the three 4-byte hooks and the
+    # header's own length and CRC fields.
+    header = set(range(image_tool.OFF_LEN, image_tool.OFF_LEN + 4)) | \
+        set(range(image_tool.OFF_CRC, image_tool.OFF_CRC + 4))
     differ = [i for i in range(len(stock))
-              if stock[i] != image[i] and i not in header and not at <= i < at + 4]
+              if stock[i] != image[i] and i not in header and i not in hooked]
     assert not differ, [hex(i) for i in differ[:8]]
+    # ...and each hook really is what it is meant to be.
+    def at_file(address):
+        o = nand_patch.PAYLOAD_OFFSET + (address - nand_patch.LINK_ADDRESS)
+        return image[o:o + 4]
+    assert at_file(nand_patch.TEARDOWN_ADDRESS) == nand_patch.TEARDOWN_REPLACEMENT
+    assert at_file(nand_patch.HOOK_ADDRESS) != nand_patch.HOOK_EXPECTED
+    assert at_file(nand_patch.CREATE_ADDRESS) != nand_patch.CREATE_EXPECTED
+
+
+def test_the_teardown_is_a_plain_return_and_the_guard_rejoins_the_original():
+    # The two hooks that keep the storage stack up and leak-free (#70): the
+    # teardown returns 0 without doing anything, and the create guard goes back to
+    # the instruction after the two it replaced.
+    image = patched()
+    assert nand_patch.TEARDOWN_REPLACEMENT == bytes.fromhex("00204770")   # movs r0,#0; bx lr
+    info = image_tool.parse(image)
+    routine_at = (nand_patch.LINK_ADDRESS + info["payload_len"] - 92 + 3) & ~3
+    guard_at = routine_at + len(nand_patch.build_routine(routine_at)[0])
+    guard, sources, offsets = nand_patch.build_create_guard(guard_at)
+    nand_patch.check_guard(guard, guard_at, sources, offsets)
+    lines = nand_patch.disassemble(guard[:-4], guard_at)
+    assert any(line.endswith(f"b.w #0x{nand_patch.CREATE_RESUME:x}") for line in lines), lines
+    assert int.from_bytes(guard[-4:], "little") == nand_patch.DRIVER_LOCK
 
 
 def test_the_routine_assembles_to_what_it_is_written_as():
@@ -252,14 +280,15 @@ def test_a_read_spanning_two_nand_pages_returns_all_of_it():
     assert r["across"] == CONTENT[ACROSS:ACROSS + 0x80], (r["across"] or b"").hex(" ")
 
 
-def test_a_read_that_loses_the_nand_to_the_ui_is_zero_filled_and_retryable():
+def test_a_read_that_loses_the_nand_to_the_ui_says_so_and_is_retryable():
     # Not a defect of the patch but the fact a dump client is built around: the
-    # driver's lock has a short timeout, the UI holds it to draw, and a read that
-    # loses comes back as the handler's zeroed buffer -- all zeros, never
-    # partial. Every read above was answered, and within four tries.
+    # driver's lock has a short timeout and the UI holds it to draw, so a read
+    # loses that race fairly often. What the patch adds is that losing says so --
+    # a one-byte reply with the reason instead of a buffer of zeros that cannot be
+    # told from zero data (#70). Every read above was answered within four tries.
     r = session()
     assert r["attempts"], "no reads were recorded"
-    assert 0 not in r["attempts"], f"a read was zero-filled four times over: {r['attempts']}"
+    assert 0 not in r["attempts"], f"a read failed four times over: {r['attempts']}"
     assert max(r["attempts"]) <= 4, r["attempts"]
 
 

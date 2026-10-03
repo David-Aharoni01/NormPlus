@@ -94,10 +94,34 @@ from pathlib import Path
 
 from . import image_tool
 
-#: The ``bl memcpy`` at the end of the 0xEE handler -- the one instruction we change.
+#: The ``bl memcpy`` at the end of the 0xEE handler -- the call we redirect.
 HOOK_ADDRESS = 0x000377CE
 #: What must be there: ``bl 0x00020EC4``. Refuse to patch anything else.
 HOOK_EXPECTED = bytes.fromhex("e9f779fb")
+
+#: **The storage teardown** (0x00032F78): it powers the NAND down, unregisters the
+#: device -- which is what puts 0xFF in the instance field -- and destroys the lock
+#: every access takes. Replaced with ``movs r0, #0; bx lr``, so the storage stack,
+#: once up, stays up and a dump can run without the watch being touched (#70).
+TEARDOWN_ADDRESS = 0x00032F78
+TEARDOWN_EXPECTED = bytes.fromhex("10b5ff20")        # push {r4, lr}; movs r0, #0xff
+TEARDOWN_REPLACEMENT = bytes.fromhex("00204770")     # movs r0, #0;  bx lr
+
+#: **The lock create** (0x00031BA8), where the only repeatable allocation in all of
+#: this lives: it allocates (0x000B9A5C) and stores into ``slot+4`` without ever
+#: checking whether the slot already holds a lock. With the teardown gone the
+#: storage manager still believes it tore down and calls its bring-up again, so
+#: without this guard each cycle would leak one lock. The guard makes it
+#: create-if-absent **for the storage slot only**: every other lock in the firmware
+#: behaves exactly as shipped. The rest of the bring-up is safe to repeat --
+#: 0x00030C50 registers a device by assigning its fields (``str r6, [r5]`` is the
+#: instance), not by linking it into anything.
+CREATE_ADDRESS = 0x00031BA8
+CREATE_EXPECTED = bytes.fromhex("70b51646")          # push {r4,r5,r6,lr}; mov r6, r2
+#: Where the guard rejoins the original function, after the two it replaced.
+CREATE_RESUME = 0x00031BAC
+#: The slot the guard protects: ``{object, allocation}`` for the storage lock.
+DRIVER_LOCK = 0x1000186C
 
 #: ``memcpy(dst, src, len)``; the patch tail-calls it for every CPU address.
 MEMCPY = 0x00020EC4
@@ -189,16 +213,29 @@ def build_routine(at: int) -> tuple[bytes, list[str]]:
         # and taking a NULL one asserts (0x00031B58) -- which never returns.
         emit(struct.pack("<H", 0x4C00 | literal("lock")), "ldr r4, [pc, #lock]")
         emit(b"\x24\x68", "ldr r4, [r4]")                   # -> 0x1000186C
-        emit(cbz("done"), "cbz r4, #done")
+        emit(cbz("down"), "cbz r4, #down")
         emit(b"\x24\x68", "ldr r4, [r4]")                   # the lock object itself
-        emit(cbz("done"), "cbz r4, #done")                  # not up: answer nothing
+        emit(cbz("down"), "cbz r4, #down")                  # not up: say so
         emit(struct.pack("<H", 0x4C00 | literal("device")), "ldr r4, [pc, #device]")
         emit(b"\x24\x68", "ldr r4, [r4]")                   # the device object
-        emit(cbz("done"), "cbz r4, #done")
+        emit(cbz("down"), "cbz r4, #down")
         emit(struct.pack("<H", 0x6800 | ((READ_SLOT >> 2) << 6) | (4 << 3) | 4),
              "ldr r4, [r4, #0xc]")                          # ew_dev_spinand's read
         emit(b"\x00\x20", "movs r0, #0")                    # instance 0, as it asserts
-        emit(b"\xa0\x47", "blx r4")
+        emit(b"\xa0\x47", "blx r4")                         # -> r0 = 0, or an error
+        emit(cbz("done", rn=0), "cbz r0, #done")            # 0: the answer is the data
+        emit(struct.pack("<H", 0xE000 | ((offsets["fail"] - (pos + 4)) >> 1) & 0x7FF),
+             "b #fail")
+        # The driver is not up at all: our own code rather than one of its.
+        emit(b"\xfe\x20", "movs r0, #0xfe", "down")
+        # Report the failure in the REPLY LENGTH, which is the one channel there is:
+        # the handler puts r5 in the frame after this returns (0x000377DA) and never
+        # reloads it, so one byte means "this read did not happen, here is why" and
+        # the asked-for length means "this is what the NAND holds". Without it a
+        # failed read is 128 zero bytes, which is also what zero data looks like --
+        # and telling those apart by re-reading is most of a dump (#69).
+        emit(b"\x10\x70", "strb r0, [r2]", "fail")
+        emit(b"\x01\x25", "movs r5, #1")
         emit(b"\x10\xbd", "pop {r4, pc}", "done")
         while (pos + 2) % 4:                                # the literals must be aligned
             emit(b"\x00\xbf", "nop")
@@ -211,7 +248,8 @@ def build_routine(at: int) -> tuple[bytes, list[str]]:
     # masks keep those dummy encodings in range, and check_routine verifies the
     # real ones against the addresses they have to resolve to.
     offsets, at_offset = {}, 0
-    for entry in assemble(dict.fromkeys(("nand", "done", "lock", "device"), 0)):
+    labels = ("nand", "down", "fail", "done", "lock", "device")
+    for entry in assemble(dict.fromkeys(labels, 0)):
         if len(entry) == 3:          # this instruction carries a label
             offsets[entry[2]] = at_offset
         at_offset += len(entry[0])
@@ -267,10 +305,85 @@ def check_routine(blob: bytes, at: int, sources: list[str], offsets: dict) -> No
         raise AssertionError(f"the literals are {[hex(v) for v in held]}")
 
 
+def build_create_guard(at: int) -> tuple[bytes, list[str], dict]:
+    """"Create the storage lock only if it is not there already", as a detour.
+
+    Stands in for the two instructions at :data:`CREATE_ADDRESS` and rejoins the
+    function at :data:`CREATE_RESUME`. Nothing is saved at a function's entry, so
+    the only registers it may touch are the argument ones -- and r3, which this
+    function never reads (its body uses r0, r1 and r2 only), so the check needs no
+    wide encodings and no stack.
+    """
+    def assemble(offsets: dict[str, int]) -> list[tuple]:
+        out: list[tuple] = []
+        pos = 0
+
+        def emit(data: bytes, source: str, label: str | None = None) -> None:
+            nonlocal pos
+            out.append((data, source) if label is None else (data, source, label))
+            pos += len(data)
+
+        def literal(label: str) -> int:
+            return ((at + offsets[label] - ((at + pos + 4) & ~3)) >> 2) & 0xFF
+
+        def cbz(label: str, rn: int) -> bytes:
+            offset = offsets[label] - (pos + 4)
+            if offsets[label] and not 0 <= offset <= 126 or offset % 2:
+                raise AssertionError(f"cbz cannot reach {label} from +0x{pos:X}")
+            return struct.pack("<H", 0xB100 | (((offset >> 6) & 1) << 9)
+                               | (((offset >> 1) & 0x1F) << 3) | rn)
+
+        emit(struct.pack("<H", 0x4B00 | literal("slot")), "ldr r3, [pc, #slot]")
+        emit(b"\x99\x42", "cmp r1, r3")                 # is this the storage lock?
+        emit(struct.pack("<H", 0xD100 | ((offsets["proceed"] - (pos + 4)) >> 1) & 0xFF),
+             "bne #proceed")                            # no: every other lock as shipped
+        emit(b"\x0b\x68", "ldr r3, [r1]")               # the slot's object
+        emit(cbz("proceed", 3), "cbz r3, #proceed")     # empty: create it, as shipped
+        emit(b"\x00\x20", "movs r0, #0")                # there already: success...
+        emit(b"\x70\x47", "bx lr")                      # ...and nothing allocated
+        emit(b"\x70\xb5", "push {r4, r5, r6, lr}", "proceed")   # the two it replaced
+        emit(b"\x16\x46", "mov r6, r2")
+        emit(_bl(at + pos, CREATE_RESUME, link=False), "b.w #resume")
+        while (pos + 2) % 4:
+            emit(b"\x00\xbf", "nop")
+        emit(b"\x00\xbf", "nop")
+        emit(struct.pack("<I", DRIVER_LOCK), ".word 0x1000186C", "slot")
+        return out
+
+    offsets, at_offset = {}, 0
+    for entry in assemble(dict.fromkeys(("proceed", "slot"), 0)):
+        if len(entry) == 3:
+            offsets[entry[2]] = at_offset
+        at_offset += len(entry[0])
+    code = assemble(offsets)
+    blob = b"".join(entry[0] for entry in code)
+    if len(blob) % 4 or offsets["slot"] % 4 or len(blob) != offsets["slot"] + 4:
+        raise AssertionError(f"guard is {len(blob)} bytes, labels {offsets}")
+    return blob, [entry[1] for entry in code], offsets
+
+
+def check_guard(blob: bytes, at: int, sources: list[str], offsets: dict) -> None:
+    """The same read-back check as :func:`check_routine`, for the guard."""
+    got = disassemble(blob[:-4], at)
+    want = []
+    for source, line in zip((s for s in sources if not s.startswith(".")), got):
+        here = int(line.split("  ", 1)[0], 16)
+        source = source.replace("#slot", f"#0x{(at + offsets['slot']) - ((here + 4) & ~3):x}")
+        source = source.replace("#proceed", f"#0x{at + offsets['proceed']:x}")
+        want.append(source.replace("#resume", f"#0x{CREATE_RESUME:x}"))
+    for source, line in zip(want, got):
+        if line.split("  ", 1)[1] != source:
+            raise AssertionError(f"assembled {line!r}, meant {source!r}")
+    if len(got) != len(want):
+        raise AssertionError(f"disassembled {len(got)} instructions, wrote {len(want)}")
+    if int.from_bytes(blob[-4:], "little") != DRIVER_LOCK:
+        raise AssertionError(f"the guard's literal is {blob[-4:].hex(' ')}")
+
+
 def apply(image: bytes) -> tuple[bytes, int]:
     """Patch *image*; return the sealed result and the appended routine's address.
 
-    Refuses an image whose 0xEE handler does not hold the expected call, and one
+    Refuses an image whose three sites do not hold the bytes expected, and one
     that already carries the patch.
     """
     info = image_tool.parse(image)
@@ -280,22 +393,38 @@ def apply(image: bytes) -> tuple[bytes, int]:
         raise ValueError("image length field does not match its payload -- seal it first")
 
     data = bytearray(image)
-    at = PAYLOAD_OFFSET + (HOOK_ADDRESS - LINK_ADDRESS)
-    found = bytes(data[at:at + 4])
-    if found != HOOK_EXPECTED:
-        raise ValueError(
-            f"0x{HOOK_ADDRESS:08X} holds {found.hex(' ')}, expected "
-            f"{HOOK_EXPECTED.hex(' ')} (bl 0x{MEMCPY:08X}) -- this is not the image "
-            "this patch was derived from, or it is patched already")
 
-    # The routine goes after the payload's last byte, 4-byte aligned.
+    def site(address: int, expected: bytes, what: str) -> int:
+        """Where *address* is in the file, once its bytes are what they must be."""
+        at = PAYLOAD_OFFSET + (address - LINK_ADDRESS)
+        found = bytes(data[at:at + len(expected)])
+        if found != expected:
+            raise ValueError(
+                f"0x{address:08X} ({what}) holds {found.hex(' ')}, expected "
+                f"{expected.hex(' ')} -- this is not the image this patch was "
+                "derived from, or it is patched already")
+        return at
+
+    hook = site(HOOK_ADDRESS, HOOK_EXPECTED, "the 0xEE handler's memcpy call")
+    create = site(CREATE_ADDRESS, CREATE_EXPECTED, "the lock create")
+    teardown = site(TEARDOWN_ADDRESS, TEARDOWN_EXPECTED, "the storage teardown")
+
+    # Both appended blobs go after the payload's last byte, 4-byte aligned.
     end = LINK_ADDRESS + info["payload_len"]
     routine_at = (end + 3) & ~3
     data += b"\xff" * (routine_at - end)
     blob, sources, offsets = build_routine(routine_at)
     check_routine(blob, routine_at, sources, offsets)
     data += blob
-    data[at:at + 4] = _bl(HOOK_ADDRESS, routine_at)
+
+    guard_at = routine_at + len(blob)
+    guard, guard_sources, guard_offsets = build_create_guard(guard_at)
+    check_guard(guard, guard_at, guard_sources, guard_offsets)
+    data += guard
+
+    data[hook:hook + 4] = _bl(HOOK_ADDRESS, routine_at)
+    data[create:create + 4] = _bl(CREATE_ADDRESS, guard_at, link=False)
+    data[teardown:teardown + 4] = TEARDOWN_REPLACEMENT
 
     payload = bytes(data[PAYLOAD_OFFSET:])
     struct.pack_into("<I", data, image_tool.OFF_LEN, len(payload))
@@ -321,14 +450,24 @@ def main(argv=None) -> int:
         return 2
 
     before, after = image_tool.parse(image), image_tool.parse(patched)
-    print(f"hook      0x{HOOK_ADDRESS:08X}  bl 0x{MEMCPY:08X} -> bl 0x{routine_at:08X}")
-    print(f"routine   0x{routine_at:08X}  {after['payload_len'] - before['payload_len']} "
-          f"bytes appended")
-    blob = patched[PAYLOAD_OFFSET + routine_at - LINK_ADDRESS:]
-    for line in disassemble(blob[:-8], routine_at):
-        print(f"  {line}")
-    for i, value in enumerate((INSTANCE_LOCK, DEVICE_POINTER)):
-        print(f"  {routine_at + len(blob) - 8 + i * 4:08X}  .word 0x{value:08X}")
+    print(f"hook      0x{HOOK_ADDRESS:08X}  bl 0x{MEMCPY:08X} -> the read routine")
+    print(f"guard     0x{CREATE_ADDRESS:08X}  the lock create -> create-if-absent "
+          f"(the storage slot only)")
+    print(f"teardown  0x{TEARDOWN_ADDRESS:08X}  {TEARDOWN_EXPECTED.hex(' ')} -> "
+          f"{TEARDOWN_REPLACEMENT.hex(' ')}  (movs r0, #0; bx lr)")
+    print(f"appended  {after['payload_len'] - before['payload_len']} bytes at "
+          f"0x{routine_at:08X}")
+    routine, _, _ = build_routine(routine_at)
+    guard_at = routine_at + len(routine)
+    guard, _, _ = build_create_guard(guard_at)
+    for name, blob, start, words in (("the read", routine, routine_at,
+                                      (INSTANCE_LOCK, DEVICE_POINTER)),
+                                     ("the create guard", guard, guard_at, (DRIVER_LOCK,))):
+        print(f"  -- {name}, {len(blob)} bytes at 0x{start:08X}")
+        for line in disassemble(blob[:-4 * len(words)], start):
+            print(f"    {line}")
+        for i, value in enumerate(words):
+            print(f"    {start + len(blob) - 4 * len(words) + i * 4:08X}  .word 0x{value:08X}")
     print(f"length    {before['declared_len']} -> {after['declared_len']}")
     print(f"image CRC 0x{before['declared_crc']:08X} -> 0x{after['declared_crc']:08X}")
     print(f"transport CRC-16 is now 0x{after['transport_crc16']:04X}")

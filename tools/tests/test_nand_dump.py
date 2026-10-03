@@ -36,10 +36,11 @@ class FakeWatch:
     """
 
     def __init__(self, content: dict, *, loss: float = 0.0, die_after: int | None = None,
-                 seed: int = 1) -> None:
+                 seed: int = 1, down: bool = False) -> None:
         self.content = content          # address -> bytes, sparse; elsewhere erased
         self.loss = loss
         self.die_after = die_after
+        self.down = down                # the storage stack is not up: 0xFE to everything
         self.random = random.Random(seed)
         self.reads = 0
         self.asked: list[tuple[int, int]] = []
@@ -65,8 +66,10 @@ class FakeWatch:
         self.asked.append((address, length))
         if self.die_after is not None and self.reads > self.die_after:
             return                      # nothing comes back, ever again
-        if self.random.random() < self.loss:
-            answer = bytes(length)      # the handler's zeroed buffer
+        if self.down:
+            answer = bytes([nanddump.DRIVER_DOWN])      # one byte: the stack is not up
+        elif self.random.random() < self.loss:
+            answer = b"\x06"            # one byte: the driver's own error code
         else:
             answer = bytes(self.byte(address + i) for i in range(length))
         reply = frame(0xEE, 0x80, answer)
@@ -113,26 +116,56 @@ def test_the_payload_is_tagged_and_refuses_what_would_fault_the_watch():
 
 # -- reads that go wrong -------------------------------------------------------
 
-def test_a_lost_read_is_retried_and_not_counted_as_data():
+def test_a_failed_read_is_retried_and_never_mistaken_for_data():
+    # The patch answers a failed read with one byte -- the driver's error code --
+    # so a retry is never a guess about what the bytes mean (#70).
     data = bytes(range(256)) * 8
     watch = FakeWatch({0x1000: data}, loss=0.5, seed=7)
-    dumper = Dumper(log=quiet)
+    dumper = Dumper(tries=8, log=quiet)
     got = run(dumper.read_chunk(watch, 0x1000))
     assert got == data[:CHUNK]
     assert dumper.stats.lost == watch.reads - 1, (dumper.stats.lost, watch.reads)
-    assert dumper.stats.zero_chunks == 0
+    assert dumper.stats.errors == {0x06: watch.reads - 1}, dumper.stats.errors
 
 
-def test_a_page_of_real_zeros_is_recorded_as_zeros_not_as_a_failure():
-    # The one ambiguity the protocol leaves: zero data looks like a lost read.
-    # It is given zero_tries attempts and then believed.
+def test_a_page_of_real_zeros_costs_one_read_each():
+    # The whole point of the reply-length signal: zeros that arrive at full length
+    # ARE zeros. The first version asked again up to twelve times to find that out,
+    # and a resource image is full of zeros (#69, #70).
     watch = FakeWatch({0x2000: bytes(PAGE)})
-    dumper = Dumper(zero_tries=5, log=quiet)
+    dumper = Dumper(log=quiet)
     got = run(dumper.read_chunk(watch, 0x2000))
     assert got == bytes(CHUNK)
-    assert watch.reads == 5, watch.reads
-    assert dumper.stats.zero_chunks == 1
-    assert dumper.stats.lost == 0, "real zeros were counted as lost reads"
+    assert watch.reads == 1, watch.reads
+    assert dumper.stats.lost == 0 and not dumper.stats.errors
+
+
+def test_the_watch_saying_its_stack_is_down_is_its_own_answer():
+    # 0xFE is the patch's own code, not one of the driver's: the dump waits for the
+    # stack instead of recording anything, and cannot confuse it with zero data.
+    watch = FakeWatch({0x3000: bytes(PAGE)}, down=True)
+    dumper = Dumper(tries=2, log=quiet)
+    try:
+        run(dumper.read_chunk(watch, 0x3000))
+    except nanddump.DriverDown:
+        assert dumper.stats.driver_down == 2, dumper.stats.driver_down
+        assert not dumper.stats.errors, "0xFE was counted as a driver error"
+        return
+    raise AssertionError("a watch with its storage down produced an answer")
+
+
+def test_a_dump_waits_for_the_stack_and_gives_up_in_the_end():
+    start = 0x04000000
+    directory = work()
+    dumper = Dumper(tries=1, wait_for_driver=0, log=quiet)
+    try:
+        run(dumper.run(FakeWatch({}, down=True), [(start, start + PAGE)],
+                       Dump(directory, log=quiet)))
+    except DumpError as exc:
+        assert "stayed down" in str(exc), exc
+        assert dumper.stats.waits == 1
+        return
+    raise AssertionError("the dump did not give up")
 
 
 def test_a_frame_that_is_not_the_answer_is_not_mistaken_for_one():
@@ -185,8 +218,8 @@ def test_a_watch_that_stops_answering_fails_the_page_rather_than_inventing_one()
 def test_an_erased_page_is_skipped_after_two_samples():
     watch = FakeWatch({})                       # all 0xFF
     dumper = Dumper(log=quiet)
-    data, blank, zeros = run(dumper.read_page(watch, 0x4000))
-    assert data == b"\xff" * PAGE and blank and not zeros
+    data, blank = run(dumper.read_page(watch, 0x4000))
+    assert data == b"\xff" * PAGE and blank
     assert watch.reads == 2, watch.reads        # the first chunk and the last
     assert [a for a, _ in watch.asked] == [0x4000, 0x4000 + PAGE - CHUNK]
     assert dumper.stats.blank_pages == 1 and dumper.stats.pages == 0
@@ -196,7 +229,7 @@ def test_a_page_with_data_is_read_in_full_even_if_it_starts_erased():
     content = b"\xff" * CHUNK + b"\x11" * (PAGE - CHUNK)
     watch = FakeWatch({0x5000: content})
     dumper = Dumper(log=quiet)
-    data, blank, _ = run(dumper.read_page(watch, 0x5000))
+    data, blank = run(dumper.read_page(watch, 0x5000))
     assert not blank and data == content
     assert watch.reads == PAGE // CHUNK + 1     # the last-chunk sample, then all 16
 
@@ -204,7 +237,7 @@ def test_a_page_with_data_is_read_in_full_even_if_it_starts_erased():
 def test_no_skip_reads_every_chunk():
     watch = FakeWatch({})
     dumper = Dumper(skip_blank=False, log=quiet)
-    data, blank, _ = run(dumper.read_page(watch, 0x6000))
+    data, blank = run(dumper.read_page(watch, 0x6000))
     assert data == b"\xff" * PAGE and not blank
     assert watch.reads == PAGE // CHUNK
 

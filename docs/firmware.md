@@ -702,20 +702,39 @@ initialised and never opened -- while the emulated watch's values are those of a
 driver that has been read from. Taking a NULL lock asserts too (`0x00031B58`), so
 instance 0 alone would not have been enough.
 
-**What the patch does about it.** The instance is now a literal 0, and the routine
-checks that the lock exists before it calls anything, giving up quietly if it does
-not -- so it cannot wedge a watch whatever state the driver is in (56 bytes instead
-of 40). A read that gives up answers 128 zero bytes, which #69's client already
-treats as a lost read and retries.
+**What the patch does about it -- three hooks, 92 appended bytes.** The read runs
+with a literal instance 0 and checks the lock before calling anything, so it cannot
+wedge a watch whatever state the driver is in. On top of that:
 
-**What is still open.** Something has to bring the storage stack up before a dump.
-`0x00032EC0` is the function that does it -- it creates the lock at `0x1000186C` and
-registers the three MSPI devices, the NAND (`0x1005D644`) among them -- but it is
-reached through a registry, not a direct call, so nothing static says who calls it.
-The obvious candidate is the OTA path, which demonstrably writes NAND on hardware: a
-type-1 SET would erase only the staging scratch, and whether the lock appears after
-one is a single read-only check away. Until that is answered, the dump cannot start
-on hardware.
+| where | was | is | why |
+|---|---|---|---|
+| `0x000377CE` | `bl 0x00020EC4` | `bl` the appended read | the hook |
+| `0x00032F78` | `push {r4, lr}; movs r0, #0xff` | `movs r0, #0; bx lr` | the storage teardown never runs, so the stack stays up once it is up |
+| `0x00031BA8` | `push {r4,r5,r6,lr}; mov r6, r2` | `b.w` the appended guard | create the storage lock only if it is not there: without this the leak below |
+
+The teardown (`0x00032F78`) is what powers the NAND down, unregisters the device --
+which is what writes 0xFF into the instance word, since `0x00030C50` registers a
+device by `str r6, [r5]` -- and destroys the lock. With it gone, one touch of the
+watch brings the stack up and it stays up for a dump.
+
+That alone would leak, and the leak is in the *create*, not the teardown:
+`0x00031BA8` allocates (`0x000B9A5C`) and stores into `slot+4` without ever checking
+whether the slot is already populated, and the storage manager still believes it tore
+down, so it calls its bring-up again. The guard makes the create *create-if-absent*
+**for the storage slot only** -- every other lock in the firmware behaves exactly as
+shipped -- so the cost is one lock object, allocated once, never freed. Repeating the
+rest of the bring-up is harmless: registration assigns fields rather than linking
+anything.
+
+**And a failed read now says so.** The read function returns non-zero on failure
+(`0x0003E444`, `0x0003E44E`, `0x0003E464` all join a common error exit at
+`0x0003E466`), which the first version threw away. The handler puts the reply length
+in `r5` *after* the hook returns (`0x000377DA`) and never reloads it, so the routine
+reports failure by setting `r5 = 1` and leaving the code in the buffer: **one byte
+means the read did not happen and why (0xFE being the patch's own "the stack is not
+up"), and the length asked for means this is what the NAND holds.** A page of real
+zeros therefore costs 16 reads rather than ~96, which is what took the ~40 MB dump
+from an estimated 12 hours to about 3.5.
 
 ### Reading it out: `normwatch dump` (#69)
 
