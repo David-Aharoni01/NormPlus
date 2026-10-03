@@ -463,7 +463,9 @@ def cmd_dump(args) -> int:
     import asyncio
     import time
 
-    from .fw.nanddump import NAND_SIZE, PAGE, Dump, DumpError, Dumper
+    from .fw.nanddump import (NAND_SIZE, PAGE, WAKE_COMMAND, WAKE_OUT, Dump, DumpError,
+                              Dumper, waker)
+    from .fw.phone import SET, frame
     from .fw.phone import (BIND_END, BIND_START, DATETIME, EmulatedWatch, ack)
     from .physical import PhysicalPhone, mac_address
 
@@ -503,7 +505,8 @@ def cmd_dump(args) -> int:
     say(f"dump: {total:,} bytes in {len(ranges)} range(s) -> {args.output}")
     dump = Dump(args.output, log=say)
     dumper = Dumper(tries=args.tries, skip_blank=not args.no_skip,
-                    trigger=not args.no_trigger,
+                    trigger=not args.no_trigger, page_pause=args.page_pause,
+                    keep_awake=0.0 if args.no_wake else args.keep_awake,
                     wait_for_driver=args.wait_for_driver, log=say)
 
     watch = None
@@ -543,16 +546,54 @@ def cmd_dump(args) -> int:
                 if await phone.check_init() == 1:
                     break
             say("watch: bound")
-        await dumper.run(phone, ranges, dump, pages=args.pages)
+        # The storage stack goes down a few seconds after the watch stops drawing,
+        # and a message-count push brings it back (#70). One at the start saves the
+        # first stall; the dumper sends more whenever a read says the stack is down.
+        if not args.no_wake:
+            dumper.wake = waker(phone)
+            await dumper.wake()
+            await asyncio.sleep(6)
+        try:
+            await dumper.run(phone, ranges, dump, pages=args.pages)
+        finally:
+            if not args.no_wake:
+                # Leave the watch on its face, not on the screen we jumped to.
+                with contextlib.suppress(Exception):
+                    await phone.send(frame(WAKE_COMMAND, SET, bytes([WAKE_OUT])))
         await phone.disconnect()
 
     async def on_the_physical_watch() -> None:
         async with PhysicalPhone.open(log=say) as phone:
             await flow(phone)
 
+    def complete() -> bool:
+        return sum(r["done"] for r in dump.manifest["ranges"].values()) >= total
+
     try:
         if watch is None:
-            asyncio.run(on_the_physical_watch())
+            # A dump of tens of megabytes takes hours, and over hours this PC's
+            # Bluetooth stack drops the link -- WinRT's "operation was canceled"
+            # being the usual one, mid-connect or mid-read. The dump is resumable
+            # by design, so a drop is something to reconnect through rather than
+            # something to stop for: each session goes on from the manifest.
+            for attempt in range(1, args.sessions + 1):
+                failed = None                  # what flow() sets is the real reason
+                try:
+                    asyncio.run(on_the_physical_watch())
+                except DumpError as exc:
+                    failed = f"{exc}"
+                    break                      # the watch said no; retrying will not help
+                except (OSError, EOFError, asyncio.TimeoutError, RuntimeError) as exc:
+                    failed = f"{type(exc).__name__}: {exc}"
+                if complete() or args.pages is not None:
+                    break
+                if attempt < args.sessions:
+                    # Slowly: hammering connect leaves this PC's stack with stale
+                    # links, and then the watch -- which serves one connection at a
+                    # time -- stops advertising and nothing can reach it at all.
+                    say(f"link: {failed or 'the session ended'} -- reconnecting in "
+                        f"{args.reconnect_wait:g}s ({attempt} of {args.sessions})")
+                    time.sleep(args.reconnect_wait)
         else:
             watch.drive(flow, timeout=args.timeout)
     except DumpError as exc:
@@ -565,6 +606,8 @@ def cmd_dump(args) -> int:
     finally:
         if watch is not None:
             watch.stop()
+    if failed and complete():
+        failed = None                          # it finished, whatever the last link did
 
     stats = dumper.stats
     if watch is not None and stats.seconds:
@@ -578,9 +621,11 @@ def cmd_dump(args) -> int:
     say(f"dump: {stats.summary()}")
     done = sum(r["done"] for r in dump.manifest["ranges"].values())
     say(f"dump: {done:,} of {total:,} bytes in {args.output}")
-    if stats.zero_chunks:
-        say(f"dump: {stats.zero_chunks:,} chunks came back zero every time -- data that "
-            f"is zero, unless the watch was answering nothing at all")
+    if stats.driver_down or stats.errors:
+        say(f"dump: {stats.driver_down:,} reads refused because the storage stack was "
+            f"down" + (f", and the driver reported "
+                       f"{dict((hex(c), n) for c, n in sorted(stats.errors.items()))}"
+                       if stats.errors else ""))
     if stats.reads_per_second:
         for size, what in ((40 << 20, "the ~40 MB of missing resources"),
                            (166 << 20, "the whole 166 MB span")):
@@ -1032,6 +1077,26 @@ def main(argv=None) -> int:
     p_dump.add_argument("--no-skip", action="store_true",
                         help="read every chunk instead of skipping a page whose first and "
                              "last chunk are both erased")
+    p_dump.add_argument("--page-pause", type=float, default=0.3, metavar="S",
+                        help="seconds to leave the watch alone after each page (default "
+                             "0.3). Reading flat out starves its Bluetooth stack and the "
+                             "link drops after about 21 seconds (#70)")
+    p_dump.add_argument("--keep-awake", type=float, default=10.0, metavar="S",
+                        help="seconds between nudges that keep the watch awake (default "
+                             "10). It drops the link when it thinks it is idle, and "
+                             "reading its NAND does not count as activity (#70)")
+    p_dump.add_argument("--no-wake", action="store_true",
+                        help="do not push a message count to bring the storage stack up "
+                             "when a read says it is down (#70). Without it, a stall waits "
+                             "for the watch to be used by hand")
+    p_dump.add_argument("--reconnect-wait", type=float, default=30.0, metavar="S",
+                        help="seconds to leave the link alone before reconnecting "
+                             "(default 30). Reconnecting faster than this leaves stale "
+                             "links on this PC and the watch stops advertising at all")
+    p_dump.add_argument("--sessions", type=int, default=400, metavar="N",
+                        help="how many times to reconnect and go on after the link drops "
+                             "(default 400). Each session continues from the manifest; this "
+                             "PC's Bluetooth stack drops a long dump fairly often")
     p_dump.add_argument("--wait-for-driver", type=float, default=600.0, metavar="S",
                         help="seconds to wait for the storage stack when it is found down, "
                              "before giving up (default 600). It is up while the watch is "

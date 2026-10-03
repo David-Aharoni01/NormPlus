@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .phone import CHECK, CHECK_RESPONSE, frame
+from .phone import CHECK, CHECK_RESPONSE, SET, frame
 
 #: The most the patched handler will return in one reply (#68).
 CHUNK = 0x80
@@ -62,6 +62,17 @@ MEMORY_READ = 0xEE
 #: The one-byte code the patch answers with when the storage stack is not up, as
 #: opposed to one of the driver's own error codes (#70).
 DRIVER_DOWN = 0xFE
+#: What brings the storage stack back up, from here rather than by hand:
+#: ``CONTROL_DEVICE`` told to show a different screen. What the stack needs is a
+#: screen *change* -- the firmware redraws the face from images it already has, so
+#: on the physical watch neither a backlight (subcode 0x17, LIGHT_UP_SCREEN) nor a
+#: buzz (0x18) nor the charge screen brings it up, and a message-count push only
+#: does while the screen is already on. Jumping to the real-time heart-rate screen
+#: does, in about two seconds, because that screen's images have to be read
+#: (#70). The subcodes are ``BluetoothCommandConstant.smali``'s
+#: CONTROL_DEVICE_SET_JUMP_REAL_TIME_HEART_RATE and ..._EXITS_...
+WAKE_COMMAND = 0x1A
+WAKE_IN, WAKE_OUT = 0x03, 0x0F
 #: The NAND is 256 MB, and the tag leaves exactly 28 bits for the offset.
 NAND_SIZE = 1 << 28
 #: The storage driver's lock, which the patch checks before it reads: NULL means
@@ -100,6 +111,22 @@ def chunk_payload(address: int, length: int) -> bytes:
     return (address | NAND_TAG << 28).to_bytes(4, "big") + bytes([length])
 
 
+def waker(conv):
+    """``await wake()``: make the watch change screen, which brings its storage up.
+
+    In and out by turns, because arriving at a screen the watch is already on is
+    not a change and redraws nothing. Neither screen is anywhere the watch cannot
+    be already, and the dump leaves it on its face.
+    """
+    state = {"in": False}
+
+    async def wake() -> None:
+        state["in"] = not state["in"]
+        subcode = WAKE_IN if state["in"] else WAKE_OUT
+        await conv.send(frame(WAKE_COMMAND, SET, bytes([subcode])))
+    return wake
+
+
 @dataclass
 class Stats:
     """What the dump cost -- the numbers #69 exists to produce."""
@@ -112,6 +139,8 @@ class Stats:
     silent: int = 0
     #: Frames that came back but were not the answer asked for (the watch's own).
     strays: int = 0
+    #: Nudges sent to keep the watch awake.
+    nudges: int = 0
     #: Times the storage stack was found down, and how long was spent waiting.
     waits: int = 0
     wait_seconds: float = 0.0
@@ -161,7 +190,7 @@ class Stats:
         return {"reads": self.reads, "lost": self.lost, "silent": self.silent,
                 "strays": self.strays, "waits": self.waits,
                 "wait_seconds": round(self.wait_seconds, 1),
-                "driver_down": self.driver_down,
+                "driver_down": self.driver_down, "nudges": self.nudges,
                 "errors": {f"0x{code:02X}": n for code, n in sorted(self.errors.items())},
                 "blank_pages": self.blank_pages,
                 "pages": self.pages, "covered": self.covered,
@@ -232,6 +261,13 @@ class Dump:
         record["done"] = held + len(data)
         if blank:
             record["blank"].append(offset)
+        # Every page, not every sixty-fourth: the next run trusts the manifest and
+        # trims the file to it, so anything the manifest has not recorded is thrown
+        # away. A session killed mid-dump used to lose up to 64 pages that way --
+        # and did, which over a dump measured in hours is the difference between
+        # resuming and starting again. One small JSON write a page is nothing
+        # beside the ~0.5 s the page itself took.
+        self.flush()
 
     def flush(self, stats: Optional[Stats] = None) -> None:
         """Write the manifest. The range files are already up to date."""
@@ -258,6 +294,18 @@ class Dumper:
     timeout: float = 5.0
     #: Seconds to wait for the storage stack to come back before giving up.
     wait_for_driver: float = 600.0
+    #: ``await wake()`` to bring the storage stack up; see :func:`waker`. Without
+    #: one, a stall waits for the watch to be used by hand.
+    wake: Optional[Callable] = None
+    #: Seconds to leave the watch alone after each page.
+    page_pause: float = 0.0
+    #: Seconds between nudges that keep the watch awake. It drops the link when it
+    #: decides it is idle, and reading its NAND does not count as activity: every
+    #: session ended with one unanswered read and then a dropped link, after
+    #: anywhere from 9 to 73 reads, while the one session that ran for two minutes
+    #: was one where the watch was being handled. So :attr:`wake` goes out on a
+    #: timer, not only when a read says the storage stack is down (#70).
+    keep_awake: float = 10.0
     #: Write ``[03]`` to 8002 after each request, as the companion app does. The
     #: emulated watch answers 0xEE without it, which saves a write a read, but the
     #: physical one has only ever been asked with it -- so it stays on by default.
@@ -367,7 +415,7 @@ class Dumper:
         *pages* stops after that many pages, which is how the tests exercise a
         resume without needing the link to actually drop.
         """
-        started = time.monotonic()
+        started = last_nudge = time.monotonic()
         done_pages = 0
         # One notification an answer instead of seven, where the transport can.
         if hasattr(conv, "request_mtu"):
@@ -403,18 +451,27 @@ class Dumper:
                                 self.log(f"  [dump] 0x{at:08X}: the storage stack is "
                                          f"down -- waiting up to {self.wait_for_driver:g}s "
                                          "for it (use the watch to bring it up)")
+                            if self.wake is not None:
+                                await self.wake()
                             if waited >= self.wait_for_driver:
                                 self.stats.wait_seconds += waited
                                 raise DumpError(
                                     f"the storage stack stayed down at 0x{at:08X} for "
                                     f"{self.wait_for_driver:g}s. Use the watch and run the "
                                     "same command again -- it goes on from here") from None
-                            await asyncio.sleep(2)
-                            waited += 2
+                            await asyncio.sleep(3)
+                            waited += 3
                     if waited:
                         self.stats.wait_seconds += waited
                         self.log(f"  [dump] up again after {waited:g}s; going on")
                     dump.write_page(start, at - start, data, blank=blank)
+                    if self.page_pause:
+                        await asyncio.sleep(self.page_pause)
+                    if (self.wake is not None and self.keep_awake
+                            and time.monotonic() - last_nudge >= self.keep_awake):
+                        await self.wake()
+                        last_nudge = time.monotonic()
+                        self.stats.nudges += 1
                     at += PAGE
                     done_pages += 1
                     if done_pages % progress_every == 0:

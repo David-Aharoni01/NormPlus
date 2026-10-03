@@ -380,11 +380,15 @@ def check_guard(blob: bytes, at: int, sources: list[str], offsets: dict) -> None
         raise AssertionError(f"the guard's literal is {blob[-4:].hex(' ')}")
 
 
-def apply(image: bytes) -> tuple[bytes, int]:
+def apply(image: bytes, *, keep_storage_up: bool = False) -> tuple[bytes, int]:
     """Patch *image*; return the sealed result and the appended routine's address.
 
-    Refuses an image whose three sites do not hold the bytes expected, and one
-    that already carries the patch.
+    Refuses an image whose sites do not hold the bytes expected, and one that
+    already carries the patch.
+
+    *keep_storage_up* adds the two hooks that stop the storage stack being torn
+    down. **It crashed the watch** and is off by default: see the warning in the
+    module docstring. The read hook on its own is what has run for hours.
     """
     info = image_tool.parse(image)
     if info["link"] != LINK_ADDRESS:
@@ -406,8 +410,10 @@ def apply(image: bytes) -> tuple[bytes, int]:
         return at
 
     hook = site(HOOK_ADDRESS, HOOK_EXPECTED, "the 0xEE handler's memcpy call")
-    create = site(CREATE_ADDRESS, CREATE_EXPECTED, "the lock create")
-    teardown = site(TEARDOWN_ADDRESS, TEARDOWN_EXPECTED, "the storage teardown")
+    create = teardown = None
+    if keep_storage_up:
+        create = site(CREATE_ADDRESS, CREATE_EXPECTED, "the lock create")
+        teardown = site(TEARDOWN_ADDRESS, TEARDOWN_EXPECTED, "the storage teardown")
 
     # Both appended blobs go after the payload's last byte, 4-byte aligned.
     end = LINK_ADDRESS + info["payload_len"]
@@ -417,14 +423,14 @@ def apply(image: bytes) -> tuple[bytes, int]:
     check_routine(blob, routine_at, sources, offsets)
     data += blob
 
-    guard_at = routine_at + len(blob)
-    guard, guard_sources, guard_offsets = build_create_guard(guard_at)
-    check_guard(guard, guard_at, guard_sources, guard_offsets)
-    data += guard
-
     data[hook:hook + 4] = _bl(HOOK_ADDRESS, routine_at)
-    data[create:create + 4] = _bl(CREATE_ADDRESS, guard_at, link=False)
-    data[teardown:teardown + 4] = TEARDOWN_REPLACEMENT
+    if keep_storage_up:
+        guard_at = routine_at + len(blob)
+        guard, guard_sources, guard_offsets = build_create_guard(guard_at)
+        check_guard(guard, guard_at, guard_sources, guard_offsets)
+        data += guard
+        data[create:create + 4] = _bl(CREATE_ADDRESS, guard_at, link=False)
+        data[teardown:teardown + 4] = TEARDOWN_REPLACEMENT
 
     payload = bytes(data[PAYLOAD_OFFSET:])
     struct.pack_into("<I", data, image_tool.OFF_LEN, len(payload))
@@ -440,29 +446,41 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--output", help="where to write the patched image")
     ap.add_argument("--print", action="store_true", dest="print_only",
                     help="disassemble the routine and stop, writing nothing")
+    ap.add_argument("--keep-storage-up", action="store_true",
+                    help="also stop the storage stack being torn down (two more hooks). "
+                         "THIS CRASHED THE WATCH -- the teardown frees a second object "
+                         "(0x10001868) whose create is not guarded, so every cycle leaks "
+                         "it until the heap runs out. Do not use it until that is fixed")
     args = ap.parse_args(argv)
 
     image = Path(args.image).read_bytes()
     try:
-        patched, routine_at = apply(image)
+        patched, routine_at = apply(image, keep_storage_up=args.keep_storage_up)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     before, after = image_tool.parse(image), image_tool.parse(patched)
     print(f"hook      0x{HOOK_ADDRESS:08X}  bl 0x{MEMCPY:08X} -> the read routine")
-    print(f"guard     0x{CREATE_ADDRESS:08X}  the lock create -> create-if-absent "
-          f"(the storage slot only)")
-    print(f"teardown  0x{TEARDOWN_ADDRESS:08X}  {TEARDOWN_EXPECTED.hex(' ')} -> "
-          f"{TEARDOWN_REPLACEMENT.hex(' ')}  (movs r0, #0; bx lr)")
+    if args.keep_storage_up:
+        print(f"guard     0x{CREATE_ADDRESS:08X}  the lock create -> create-if-absent "
+              f"(the storage slot only)")
+        print(f"teardown  0x{TEARDOWN_ADDRESS:08X}  {TEARDOWN_EXPECTED.hex(' ')} -> "
+              f"{TEARDOWN_REPLACEMENT.hex(' ')}  (movs r0, #0; bx lr)")
+        print("          !! this pair crashed the watch (#70): the leak above")
+    else:
+        print("          the storage stack is left alone: it goes down when the watch "
+              "idles, and a read then answers 0xFE")
     print(f"appended  {after['payload_len'] - before['payload_len']} bytes at "
           f"0x{routine_at:08X}")
     routine, _, _ = build_routine(routine_at)
     guard_at = routine_at + len(routine)
     guard, _, _ = build_create_guard(guard_at)
-    for name, blob, start, words in (("the read", routine, routine_at,
-                                      (INSTANCE_LOCK, DEVICE_POINTER)),
-                                     ("the create guard", guard, guard_at, (DRIVER_LOCK,))):
+    shown = (("the read", routine, routine_at, (INSTANCE_LOCK, DEVICE_POINTER)),
+             ("the create guard", guard, guard_at, (DRIVER_LOCK,))) \
+        if args.keep_storage_up else \
+        (("the read", routine, routine_at, (INSTANCE_LOCK, DEVICE_POINTER)),)
+    for name, blob, start, words in shown:
         print(f"  -- {name}, {len(blob)} bytes at 0x{start:08X}")
         for line in disassemble(blob[:-4 * len(words)], start):
             print(f"    {line}")
