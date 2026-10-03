@@ -42,13 +42,24 @@ Two facts that cost a lot to rediscover, in this order:
    `tests/test_ble_end_to_end.py` and `:app`'s pairing screen both do exactly that now.
    `--flash-state FILE` keeps it: a watch bound once boots straight to its face.
 
-**Most screens show "No data", and the boot animation is black: that is missing data, not
-broken drawing (#64).** It is LVGL's placeholder for an image it could not decode, and every
-one of those images lies in the watch's factory resources (tens of MB of NAND from
-`0x026DA430` upwards), which no file in the app contains -- the emulated NAND has only the
-401 KB resource image. The live window counts them ("N images not in the NAND") and the boot
-report lists the ranges. See "Most of the watch's images are not in the resource image" in
-`watch-emulator-internals.md`; getting the resources is #65.
+**The watch's factory resources are in `NORM/_nand`; mount them with `--nand` (#65).**
+
+```bash
+normwatch boot --live --nand NORM/_nand
+```
+
+Without them most screens show "No data" and the boot animation runs black -- which is
+missing data, not broken drawing (#64): LVGL's placeholder for an image it could not
+decode, for images that live in tens of MB of NAND from `0x026DA430` upwards and in no
+file the app ships. The emulated NAND otherwise has only the app's 401 KB resource image.
+
+Those 40 MB were read off the physical watch on 2026-10-03 over a patched 0xEE (#70,
+`docs/firmware.md` section 11) and are the vendor's material, so they live in the private
+reference repo rather than here. With them mounted the boot report says `images: every
+image the firmware drew was in the NAND`, the animation plays its 134 frames, and the
+setup screen has its artwork. The live window counts what is missing ("N images not in the
+NAND") and the boot report lists the ranges. See "Most of the watch's images are not in
+the resource image" in `watch-emulator-internals.md`.
 
 ## The BLE controller
 
