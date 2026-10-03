@@ -790,10 +790,34 @@ as `{it, 0x800}` (`0x0003BE36`). All five references to it are in the OTA handle
 
 A dump therefore **anchors each page once** with `0xF` and takes the other fifteen chunks
 with `0xE`. A page costs one page read and sixteen round trips instead of sixteen page
-reads, which at the measured CPU-read rate is ~0.75 s a page: **about four hours for the
-40 MB**, and a sixteenth of the time with the storage lock held. The page is re-anchored
+reads, and a sixteenth of the time with the storage lock held. The page is re-anchored
 every 2 KB, so even if something did overwrite that buffer mid-page -- nothing but an OTA
 writes it -- the damage could not outlive one page.
+
+**Flashed on 2026-10-03 and measured on the watch.** The running firmware read back over
+0xEE differs from the stock image at exactly the four hook bytes, and the appended 144
+bytes are byte-identical to the image sent. Then the check that matters: six pages the
+previous patch had already dumped, read the new way, came back **byte-identical**.
+
+| | before | after |
+|---|---|---|
+| a 2 KB page | 29 s | **0.55 s** |
+| reads lost to the UI | ~20% of chunks | **1%**, and only the 1 chunk in 16 that can lose |
+| the link | dropped after 13-25 s of reading, every time | **68 s and counting; the drops are gone** |
+| the ~38 MB | 3-6 days | **~3.2 h** |
+
+The drops going away is the lock-hold explanation confirmed: the firmware now sits in the
+driver for one page read where it used to sit for sixteen, and its BLE stack gets the rest.
+
+What ends a session now is the driver's own **`0xFA`** -- the UI holding the lock, 13 times
+in 1,938 reads -- and it arrives in **runs**: four in a row at one address. So the retries
+are two budgets rather than one, because the two failures are not alike. Silence means the
+link has gone, each attempt costs a 5 s timeout, and the session must end before anything
+can be retried, so `--tries` stays at 4; the patch's own `0xFE` keeps that budget too,
+because a stack that is down is a state the waker fixes rather than a run of bad luck. A
+driver error code costs one read to retry, so `--refusals` is 12, with `--retry-pause`
+0.05 s between attempts so the retry lands in a different frame than the redraw that lost
+it.
 
 Two things are deliberately given up for it. A read may no longer span two pages (above),
 and the watch holds state between two commands, which nothing else in the 0x6F protocol
