@@ -88,6 +88,20 @@ def save(path, machine, nand=None) -> dict:
     return manifest
 
 
+def _blob_pages(nand, address: int, size: int) -> int:
+    """How many pages the blob mounted at *address* covers.
+
+    ``origin`` keeps where each blob went but not how long it was, so the extent
+    comes from the pages the NAND actually holds from there on -- which is what a
+    mounted blob leaves behind.
+    """
+    first = address // size
+    n = 0
+    while (first + n) in nand.pages:
+        n += 1
+    return n
+
+
 def load(path, machine, nand=None, *, log=print) -> dict:
     """Put a saved state back over a freshly built machine.
 
@@ -109,10 +123,31 @@ def load(path, machine, nand=None, *, log=print) -> dict:
                 f"{_image_digest(machine)[:16]}...)")
         if manifest["nand_pages"] or manifest["nand_origin"]:
             here = [list(o) for o in nand.origin] if nand is not None else []
-            if manifest["nand_origin"] != here:
+            # Every blob the state was saved over must still be here, unchanged.
+            # More of them is allowed, and is the usual case since the watch's
+            # factory resources arrived (#65): a state saved over the app's
+            # resource image alone restores perfectly well onto that image plus
+            # the dumped resources, which sit in page ranges it never touched.
+            missing = [o for o in manifest["nand_origin"] if o not in here]
+            if missing:
                 raise FlashStateMismatch(
-                    f"{path} was saved over a different NAND (resource blob "
-                    f"{manifest['nand_origin']}, this run has {here})")
+                    f"{path} was saved over a different NAND (it needs "
+                    f"{missing}, this run has {here})")
+            # ...but a page it restores must not land inside a blob that was not
+            # there when it was saved, or the state would quietly shadow it.
+            added = [o for o in here if o not in manifest["nand_origin"]]
+            if added and nand is not None:
+                size = nand.page_size
+                shadowed = sorted(
+                    n for n in manifest["nand_pages"]
+                    for address, _ in added
+                    if address // size <= n < (address // size)
+                    + _blob_pages(nand, address, size))
+                if shadowed:
+                    raise FlashStateMismatch(
+                        f"{path} restores NAND pages {shadowed[:4]} that fall "
+                        f"inside a blob mounted only in this run; it would "
+                        f"shadow it")
 
         page = manifest["flash_page_size"]
         if page != BootRom.PAGE_SIZE:

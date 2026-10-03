@@ -29,6 +29,14 @@ PAGE = 2048
 RESOURCE_BASE = 0x0C780000
 RESOURCE_END = RESOURCE_BASE + (g.RESOURCES.stat().st_size - 4)
 ANIMATION_FIRST, FRAME = 0x0288B517, 0x3F484
+#: An LVGL image header for a 360x360 TRUE_COLOR image, as the shipped resource blob's
+#: first image carries and as every boot-animation frame does.
+HEADER_360 = bytes.fromhex("04a0052d")
+#: The watch's factory resources, read off the physical watch over the patched 0xEE
+#: (#70) and kept in the private reference repo, which is where the vendor's material
+#: lives. The tests above pin what the emulator does *without* them -- which is still
+#: how it runs by default -- and the ones below what it does with them.
+DUMP = g.REPO / "NORM/_nand"
 
 _run = None
 
@@ -71,6 +79,76 @@ def test_the_summary_says_why():
     _, _, missing = run()
     text = missing.summary()
     assert "factory resources" in text and "0x0288B517" in text, text
+
+
+
+# -- with the factory resources mounted (#65) ----------------------------------------
+
+_with_dump = None
+
+
+def dumped() -> list:
+    """The dumped NAND blobs, if this machine has them."""
+    return sorted(DUMP.glob("0x*.bin")) if DUMP.is_dir() else []
+
+
+def with_resources():
+    """A bound watch with the dumped factory resources in its NAND as well."""
+    m, devices, _ = g.build("face_swipe", stimulus=False)
+    for blob in dumped():
+        data = blob.read_bytes()
+        devices["nand"].load(data[4:], int.from_bytes(data[:4], "little"))
+    return m, devices
+
+
+def mounted():
+    """...run, with the placeholder monitor watching."""
+    global _with_dump
+    if _with_dump is None:
+        m, devices = with_resources()
+        missing = MissingResources(m)
+        m.run(max_instructions=420 * M, slice_size=4 * M)
+        _with_dump = (m, devices, missing)
+    return _with_dump
+
+
+def test_the_dump_has_all_134_boot_animation_frames():
+    """The frames that made the boot animation run black (#64, #65).
+
+    Checked in the NAND rather than on the screen: each frame is a 360x360
+    TRUE_COLOR image, so its first four bytes are the LVGL header, and an address
+    the dump did not reach reads back erased.
+    """
+    if not dumped():
+        print("   (skipped: NORM/_nand holds no dump on this machine)")
+        return
+    _, devices = with_resources()
+    nand = devices["nand"]
+
+    def header(address: int) -> bytes:
+        page = nand.pages.get(address // PAGE)
+        if page is None:
+            return b"\xff" * 4
+        return bytes(page[address % PAGE:address % PAGE + 4])
+
+    absent = [n for n in range(134)
+              if header(ANIMATION_FIRST + n * FRAME) != HEADER_360]
+    assert not absent, f"frames without a 360x360 header: {absent[:8]}"
+
+
+def test_with_the_resources_mounted_the_placeholders_are_gone():
+    """What #65 asked for: the screens the emulator could not draw, drawn.
+
+    The same workload as the tests above -- a bound watch swiped on its face --
+    with the factory resources in the NAND. Every image it drew as "No data"
+    before is an address the dump now has, so nothing should be left over.
+    """
+    if not dumped():
+        print("   (skipped: NORM/_nand holds no dump on this machine)")
+        return
+    _, _, missing = mounted()
+    assert missing.active
+    assert not missing.missing,         f"still missing: {sorted(hex(a) for a in missing.missing)[:8]}"
 
 
 if __name__ == "__main__":
