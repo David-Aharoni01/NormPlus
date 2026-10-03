@@ -151,6 +151,62 @@ def test_with_the_resources_mounted_the_placeholders_are_gone():
     assert not missing.missing,         f"still missing: {sorted(hex(a) for a in missing.missing)[:8]}"
 
 
+
+# -- which blobs `normwatch boot` mounts (#71) ---------------------------------------
+
+class _Args:
+    """Just the attributes ``nand_blobs`` reads off an argparse namespace."""
+
+    def __init__(self, **kw):
+        self.nand = kw.get("nand")
+        self.no_resources = kw.get("no_resources", False)
+        self.no_factory_resources = kw.get("no_factory_resources", False)
+
+
+def test_boot_mounts_the_factory_resources_by_default():
+    """What #71 changed, and the two ways out of it.
+
+    Without them most screens draw "No data" and the animation runs black, which
+    is not what the watch does -- so they are the default. They cost ~22 s on a
+    boot that plays the whole animation, which is why both opt-outs exist.
+    """
+    from normplus.watch.__main__ import DEFAULT_FACTORY_NAND, nand_blobs
+
+    if not dumped():
+        print("   (skipped: NORM/_nand holds no dump on this machine)")
+        return
+    blobs, factory = nand_blobs(_Args())
+    assert factory and blobs, (factory, blobs)
+    assert {b.name for b in blobs} == {b.name for b in dumped()}
+    assert all(b.parent == DEFAULT_FACTORY_NAND for b in blobs)
+
+    # ...the app's resource image alone, as the emulator ran until today
+    blobs, factory = nand_blobs(_Args(no_factory_resources=True))
+    assert not factory and not blobs
+
+    # ...nothing at all
+    blobs, factory = nand_blobs(_Args(no_resources=True))
+    assert not factory and not blobs
+
+    # ...and an explicit --nand replaces the default rather than adding to it, so
+    # a dump under test is not quietly mixed with the watch's own resources.
+    blobs, factory = nand_blobs(_Args(nand=[str(DUMP)]))
+    assert not factory and blobs
+
+
+def test_without_the_resources_on_disk_boot_falls_back_quietly():
+    """They are in the private submodule, so a checkout without it still boots."""
+    import normplus.watch.__main__ as cli
+
+    was = cli.DEFAULT_FACTORY_NAND
+    try:
+        cli.DEFAULT_FACTORY_NAND = was.parent / "_nand-that-is-not-there"
+        blobs, factory = cli.nand_blobs(_Args())
+        assert not factory and not blobs
+    finally:
+        cli.DEFAULT_FACTORY_NAND = was
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

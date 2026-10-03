@@ -205,6 +205,11 @@ normwatch boot --seconds 18
 # --no-ble is ~2.9x faster and reaches the same screen in --seconds 14; use it
 # whenever the run is not about the radio. See "The BLE controller" below.
 normwatch boot --seconds 14 --no-ble
+# The watch's own factory resources (NORM/_nand, #65) are mounted by default, so the
+# screens and the boot animation are the real ones. That is ~22s on a full boot --
+# 18,420 NAND page reads against 509 -- so --no-factory-resources is the --no-ble of
+# artwork: use it whenever the run is not about what is on the screen (#71).
+normwatch boot --seconds 14 --no-ble --no-factory-resources
 normwatch boot --live        # window + mouse touch
 normwatch boot --screenshot out.png
 # A radio behind the firmware's BLE stack (a bumble controller): the watch advertises.

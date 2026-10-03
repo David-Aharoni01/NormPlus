@@ -28,6 +28,10 @@ REPO = _find_root()
 NORM = REPO / "NORM"
 #: The watch firmware the emulator runs, and the watch's resource image.
 FIRMWARE = NORM / "assets" / "Apollo3_P03B_NORM2_F0.2B01.bin"
+#: The watch's **factory resources**, read off the physical watch (#65, #70): the
+#: artwork most of its screens are drawn from, which the companion app does not
+#: carry. Vendor material, so it is in the private submodule and may be absent.
+FACTORY_NAND = NORM / "_nand"
 RESOURCES = NORM / "assets" / "Picture_P03B_NORM2_0.4.bin"
 #: The command names normwatch/normcmd display come from :protocol, their single source.
 COMMAND_CODES = REPO / "protocol/src/main/kotlin/com/norm2hacked/protocol/CommandCode.kt"

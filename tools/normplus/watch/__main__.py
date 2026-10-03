@@ -36,6 +36,8 @@ DEFAULT_IMAGE = paths.FIRMWARE
 #: Flash states under here are read-only to `boot --flash-state` (test_golden hashes them).
 FIXTURES = (paths.TESTS / "fixtures").resolve()
 DEFAULT_RESOURCES = paths.RESOURCES
+#: The watch's own factory resources, mounted by `boot` when they are there (#71).
+DEFAULT_FACTORY_NAND = paths.FACTORY_NAND
 
 
 def _load(path: str | Path) -> image_mod.FirmwareImage:
@@ -431,6 +433,29 @@ def cmd_ota(args) -> int:
     return 0
 
 
+def nand_blobs(args) -> tuple[list[Path], bool]:
+    """Which NAND blobs `boot` should mount, and whether the factory ones are among them.
+
+    The watch's factory resources are mounted **by default** when the private
+    submodule has them (#71): without them most screens draw LVGL's "No data" and
+    the boot animation runs black, which is not what the watch does. They cost
+    about 22 s on a boot that plays the whole animation -- 134 full-screen images
+    really decoded instead of failing fast, which is 18,000 NAND page reads
+    through the emulated SPI rather than 500 -- so `--no-factory-resources` leaves
+    them out, and `--no-resources` leaves the NAND erased altogether.
+    """
+    if getattr(args, "no_resources", False):
+        return [], False
+    chosen = list(getattr(args, "nand", None) or [])
+    factory = (not getattr(args, "no_factory_resources", False)
+               and not chosen
+               and DEFAULT_FACTORY_NAND.is_dir()
+               and any(DEFAULT_FACTORY_NAND.glob("0x*.bin")))
+    if factory:
+        chosen.append(str(DEFAULT_FACTORY_NAND))
+    return mount_blobs(chosen), factory
+
+
 def mount_blobs(paths) -> list[Path]:
     """The NAND blobs behind each ``--nand``: a file, or every one in a dump directory."""
     out = []
@@ -672,9 +697,13 @@ def cmd_boot(args) -> int:
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
     # Dumped NAND (normwatch dump, #69): each blob carries the address it belongs
     # at, exactly as the app's resource image does, so it mounts the same way.
-    for blob in mount_blobs(getattr(args, "nand", None) or []):
+    blobs, factory = nand_blobs(args)
+    for blob in blobs:
         data = blob.read_bytes()
         devices["nand"].load(data[4:], int.from_bytes(data[:4], "little"))
+    if factory:
+        log("  [nand] the watch's factory resources are mounted; "
+            "--no-factory-resources is ~22s faster on a full boot")
     # Kept off the machine (a snapshot walks the machine): which images the firmware drew
     # as "No data" because the NAND does not have them (fw/resources.py, #64).
     missing_images = MissingResources(machine)
@@ -900,11 +929,19 @@ def main(argv=None) -> int:
                         help=f"resource blob to mount in the SPI NAND "
                              f"(default: {DEFAULT_RESOURCES})")
     p_boot.add_argument("--nand", action="append", metavar="PATH",
-                        help="a dumped NAND blob to mount as well, or a `dump -o` "
-                             "directory of them (#69). Each goes at the address in its "
-                             "first four bytes. Repeatable")
+                        help="a dumped NAND blob to mount, or a `dump -o` directory of "
+                             "them (#69). Each goes at the address in its first four "
+                             "bytes. Repeatable, and giving any replaces the factory "
+                             "resources that would be mounted by default")
+    p_boot.add_argument("--no-factory-resources", action="store_true",
+                        help=f"do not mount the watch's own factory resources from "
+                             f"{DEFAULT_FACTORY_NAND} (they are mounted when they are "
+                             f"there, and a boot that plays the whole animation is ~22s "
+                             f"faster without them: 134 full-screen images are really "
+                             f"decoded with them, and drawn as \"No data\" without)")
     p_boot.add_argument("--no-resources", action="store_true",
-                        help="leave the SPI NAND erased")
+                        help="leave the SPI NAND erased: no app resource image and no "
+                             "factory resources either")
     p_boot.add_argument("--press", action="append", metavar="PIN[:AT[:HOLD]]",
                         help="inject a button/sensor edge on a GPIO pin, optionally at a "
                              "given instruction count and held for HOLD instructions "

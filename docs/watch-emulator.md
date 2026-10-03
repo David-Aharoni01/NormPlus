@@ -42,11 +42,29 @@ Two facts that cost a lot to rediscover, in this order:
    `tests/test_ble_end_to_end.py` and `:app`'s pairing screen both do exactly that now.
    `--flash-state FILE` keeps it: a watch bound once boots straight to its face.
 
-**The watch's factory resources are in `NORM/_nand`; mount them with `--nand` (#65).**
+**The watch's factory resources are in `NORM/_nand` and are mounted by default (#65, #71).**
 
 ```bash
-normwatch boot --live --nand NORM/_nand
+normwatch boot --live                         # the watch as it really looks
+normwatch boot --live --no-factory-resources  # ~22s faster, and "No data" everywhere
 ```
+
+**They cost about 22 s on a boot that plays the whole animation** -- 134 full-screen
+images really decoded instead of failing fast, which is 18,420 NAND page reads through
+the emulated SPI against 509 without. The mounting itself is 0.176 s of that; the rest is
+the data moving. The penalty tracks how much of the animation plays:
+
+| `--seconds` | without | with | cost |
+|---|---|---|---|
+| 2 | 3.2 s | 8.2 s | +5.1 s |
+| 6 | 7.8 s | 23.9 s | +16.0 s |
+| 14 (animation done) | 15.8 s | 37.4 s | +21.6 s |
+
+So `--no-factory-resources` is the `--no-ble` of artwork: use it when the run is not about
+what is on the screen. `--no-resources` leaves the NAND erased altogether, and any
+explicit `--nand` replaces the default rather than adding to it. Nothing in the test suite
+goes through this path -- the tests build their machines directly -- so none of this
+changes what they cost.
 
 Without them most screens show "No data" and the boot animation runs black -- which is
 missing data, not broken drawing (#64): LVGL's placeholder for an image it could not
@@ -232,6 +250,13 @@ the firmware expects. So nothing waits for the watch to catch up: a phone binds 
 setup screen is *drawn* -- the panel's 136th frame, not the animation's last -- and that
 is all (#55; README "Binding"). `--hci-trace` is the first thing to turn on when the two
 disagree about what was said.
+
+The factory resources make that lag bigger, because the animation is now really drawn
+(#71): they are mounted by default on `boot`, so a `--netsim` session that only needs the
+pairing to happen is quicker with `--no-factory-resources`. Nothing about the handshake
+depends on it -- the phone binds on the setup screen being drawn, and `Air` keeps to the
+watch's clock either way -- but there is no reason to spend the 22 s if nobody is looking
+at the screen.
 
 ## Architecture
 
