@@ -1077,10 +1077,12 @@ def main(argv=None) -> int:
     p_dump.add_argument("--no-skip", action="store_true",
                         help="read every chunk instead of skipping a page whose first and "
                              "last chunk are both erased")
-    p_dump.add_argument("--page-pause", type=float, default=0.3, metavar="S",
+    p_dump.add_argument("--page-pause", type=float, default=0.0, metavar="S",
                         help="seconds to leave the watch alone after each page (default "
-                             "0.3). Reading flat out starves its Bluetooth stack and the "
-                             "link drops after about 21 seconds (#70)")
+                             "0: pacing was measured and does not stop the drops -- the "
+                             "link went at 13-25s of reading at every pause tried, 0 "
+                             "included, and a pause is 40%% of the run with the page "
+                             "buffer in (#70). Kept for tuning)")
     p_dump.add_argument("--keep-awake", type=float, default=10.0, metavar="S",
                         help="seconds between nudges that keep the watch awake (default "
                              "10). It drops the link when it thinks it is idle, and "

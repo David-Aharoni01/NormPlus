@@ -851,6 +851,32 @@ The `[03]` trigger write after each request makes no measurable difference (9.8 
 it, 10.7 without, inside the noise), and the emulated watch answers 0xEE without it -- but it
 stays on, because it is what the app does and what the physical watch has been asked with.
 
+**On the physical watch, and what it cost to learn (#70).** The first dump of the real NAND
+ran at **29 s a 2 KB page** -- 0.28 s a chunk against the 0.031 s the same channel costs for a
+CPU read -- which is the sixteen PAGE READs a page above, since fixed now. Three other things
+the hardware taught, which the emulator could not:
+
+- **The storage stack is down unless the watch has just changed screen.** An idle watch has
+  the NAND driver initialised and never opened (the table in the previous section), so a read
+  answers `0xFE`. What brings it up is a *screen change* -- `CONTROL_DEVICE SET [03]`, about
+  2 s -- and not a backlight (`0x17`), not a buzz (`0x18`), not the charge screen, and not a
+  message-count push while the screen is off. `nanddump`'s `waker` therefore goes in and out
+  by turns, because arriving at the screen the watch is already on changes nothing.
+- **The link drops after 13-25 s of reading, every time.** Ruled out by measurement: the wake
+  command, the page pacing (`--page-pause`, including 0), a fixed read count, the storage
+  stack, and the keep-awake nudges. The emulated watch never drops -- 242 reads over 15.5 s --
+  so it is the hardware's own stack. The driver holding the storage lock for 0.28 s a chunk
+  with the BLE stack getting what is left is the best explanation left standing, and the page
+  buffer cuts that by sixteen; `--sessions` reconnects and continues either way, and a dropped
+  session costs the page in flight.
+- **A session must be its own process.** A dump that is killed and restarted in the same
+  process leaves bleak holding the watch, and the watch serves one connection at a time -- the
+  next attempt then looks exactly like a crashed watch. It is not: check for orphaned processes
+  before concluding anything about the hardware.
+
+The screen timeout was raised from 5 s to 60 s on the watch (`BRIGHT_SCREEN_TIME`, `0x13`) to
+keep the stack up for longer. **It is a setting on the owner's watch: put it back to 5.**
+
 ---
 
 ## Appendix: reproducing the analysis
