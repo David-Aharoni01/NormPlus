@@ -332,6 +332,19 @@ def session() -> dict:
         result["missing"] = await read(tagged(MISSING, 0x20))
         result["short"] = await read(tagged(PARTITION, 8))
         result["cpu"] = await read(bytes.fromhex("00020000") + bytes([0x10]))
+        # Last, because it leaves the storage stack unusable: put the watch into
+        # the state a physical one rests in. On an idle watch the driver has been
+        # initialised and never opened -- the lock every access takes is NULL
+        # (docs/firmware.md section 11) -- and the emulated stack never goes down
+        # on its own, so this is the only way to see that state here (#74).
+        slot = int.from_bytes(watch.machine.uc.mem_read(nand_patch.INSTANCE_LOCK, 4),
+                              "little")
+        result["lock_slot"] = slot
+        if slot:
+            watch.machine.uc.mem_write(slot, b"\x00" * 4)
+        # Through a reader that does not record attempts: this one is meant to
+        # fail, and the retry statistics above are about reads that are not.
+        result["stack_down"] = await reader(phone)(tagged(PARTITION, 0x80), tries=1)
         await phone.disconnect()
 
     try:
@@ -392,6 +405,27 @@ def test_a_page_is_sixteen_chunks_and_one_page_read():
     assert r["page"] == CONTENT[PAGE_UNDER_TEST:PAGE_UNDER_TEST + PAGE],         f"the page came back {len(r['page'] or b'')} bytes"
     assert r["anchor_pages"] == 1, r["anchor_pages"]
     assert r["page_pages"] == 1, f"{r['page_pages']} page reads for one page"
+
+
+def test_a_read_with_the_storage_stack_down_answers_0xFE_rather_than_wedging():
+    """The emulator's storage stack never goes down; the real watch's usually is,
+    and that difference wedged the watch (#74).
+
+    On an idle physical watch the NAND driver has been initialised and never
+    opened: instance state 0, the lock NULL, and the device object's first word
+    0xFF. The first version of this patch passed that first word as the driver's
+    instance argument -- 0 here, 0xFF there -- so on hardware it hit
+    ``assert(instance < 1)``, and every assert in this firmware ends in an
+    infinite loop. The 0x6F channel was dead until the watch was restarted by
+    hand, and the emulator had been green throughout.
+
+    It cannot reach that state by itself, so the session puts it there: the lock
+    is NULLed as a teardown leaves it, and the read must come back as the one
+    byte that says so instead of taking a lock that is not there.
+    """
+    r = session()
+    assert r.get("lock_slot"), "the emulated stack was not up to begin with"
+    assert r["stack_down"] == bytes([nand_patch.DRIVER_DOWN_CODE]),         f"a read with the lock gone answered {(r['stack_down'] or b'').hex(' ')}"
 
 
 def test_a_read_that_loses_the_nand_to_the_ui_says_so_and_is_retryable():

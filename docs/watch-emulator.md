@@ -93,6 +93,145 @@ setup screen has its artwork. The live window counts what is missing ("N images 
 NAND") and the boot report lists the ranges. See "Most of the watch's images are not in
 the resource image" in `watch-emulator-internals.md`.
 
+## Where the emulated watch and the real one differ
+
+The emulator runs the watch's own firmware, so most of what it does is what the watch
+does. These are the places where it is not, found by running the same firmware on both
+through the NAND read-out work (#66-#70) and collected here because one of them cost a
+wedged watch and two crashes -- **all three were green in the emulator first**.
+
+Each entry says what not to trust, and whether the emulator can simply be made to behave
+like the hardware instead.
+
+### 1. The storage stack never goes down
+
+| | emulated | physical, idle |
+|---|---|---|
+| `[0x10006BCC]`, the device object | `0x1005D644` | `0x1005D644` |
+| `dev+0x00`, the instance word | `0` | **`0xFF`** |
+| `[0x10011CD0]`, instance state | `1` | **`0`** |
+| `[[0x10011CD4]]`, the driver's lock | `0x10000614` | **NULL** |
+| `[0x10001548]`, the die cache | `0x01` | **`0xFF`** |
+
+The physical watch's values are what the driver's init (`0x0003E7A8`) leaves behind: on an
+idle watch the NAND driver has been **initialised and never opened**. The emulated watch's
+are those of a driver that has been read from, and they never change back -- 44 s of watch
+time on the face and the teardown at `0x00032F78` is called **zero** times (the lock is
+created once, from `0x32ED4`).
+
+**What it cost.** The first version of the read-out patch passed `dev+0x00` as the
+driver's instance argument, copying the firmware's own call site. That word is 0 here and
+0xFF there, so on hardware it hit `assert(instance < ( 1 ))` -- and every assert in this
+firmware ends in `b .`, an infinite loop. The 0x6F channel was dead until the watch was
+restarted by hand. The emulator had been green.
+
+**Do not trust** any code that touches the storage driver, or any "it works in the
+emulator" about storage. On hardware a read answers `0xFE` unless the watch has just
+changed screen.
+
+**Can it be closed?** Not yet. Nothing calls the teardown directly -- there is no
+`bl 0x00032F78` anywhere in the image -- so it is reached through a pointer: it appears
+as `0x00032F79` at `0x000CCCF4`, in a run of thumb function pointers. What indexes that
+run has not been identified (a scan outwards from it walks into code, so the table bounds
+are not what they first look like), and nothing in an emulated run reaches it. **What is closed is the consequence**: the emulator can be put into
+that state deliberately, and
+`test_a_read_with_the_storage_stack_down_answers_0xFE_rather_than_wedging` does exactly
+that -- it NULLs the lock as a teardown leaves it and requires the one-byte answer. The
+state is not reached on its own, but the class of bug it hid is now covered.
+
+### 2. Nothing cycles, so a leak never shows
+
+Two hooks that stopped the storage stack being torn down ran clean in the emulator for
+minutes and **crashed the physical watch twice**: the teardown frees two objects and the
+guard protected one, so every bring-up leaked the other until the heap ran out.
+
+This follows from (1) -- with no teardown there is no second bring-up and nothing
+accumulates -- and from runs being minutes where a watch is worn for hours.
+
+**Do not trust** emulator-green for any patch that changes when something is freed; audit
+every object on that path instead. That rule is in `CLAUDE.md`.
+
+**Can it be closed?** It closes with (1), plus running long enough for an allocation count
+to grow. Until then the rule stands in place of the test.
+
+### 3. The link never drops under sustained load
+
+The physical watch dropped the BLE link after **13-25 s of continuous reading, every
+time**, with one unanswered read just before it. Ruled out by measurement: the wake
+command, page pacing at every value including none, a fixed read count, the storage stack,
+and the keep-awake nudges. The emulated watch has never dropped one -- 242 reads over
+15.5 s, and nothing since.
+
+**Do not trust** link robustness. A dump client that runs clean against the emulator still
+needs session restarts against the watch.
+
+**Can it be closed?** No, and it should not be. The emulated radio is a bumble controller
+on a virtual air, not the watch's silicon; its buffering and scheduling are not the
+watch's, and pretending otherwise would be inventing behaviour. The page buffer (#70)
+removed the symptom on hardware -- the firmware now holds the storage lock for one page
+read instead of sixteen -- so the two agree in practice again, for a reason that has
+nothing to do with the emulator being faithful.
+
+### 4. 0xEE answers about 2.5x slower
+
+**10-15 reads/s (~1.5 KB/s) emulated against 29-30 reads/s (~3.7-4.0 KB/s) on hardware**,
+for the same CPU-address reads over the same protocol.
+
+**Do not trust** any time estimate taken from an emulator run. The ~40 MB dump was put at
+7-9 hours from the emulator and took **3 h 01 m**.
+
+**Can it be closed?** Only partly, and it is not worth it. The emulator runs at ~0.9x real
+time, so this is not emulation speed -- it is the round trip through the emulated radio.
+The honest fix is to take rates from hardware, which is what `normcmd --mac` is for.
+
+### 5. Reads lost to the UI: ~20% against ~1%
+
+The emulated watch loses about **one read in five** to the UI while the face is drawing
+(0-4% with the screen idle); the physical watch lost **1%** during the dump and 0.4% over
+three hours. Both report it the same way, as the driver's own error code.
+
+**Do not trust** retry budgets tuned in the emulator -- `--tries` and `--refusals` were set
+from hardware. The direction is at least safe: the emulator is pessimistic.
+
+**Can it be closed?** Not worth it. The emulated NAND completes a page read instantly, so
+the driver holds its lock for a different length of time than the real part makes it.
+Giving the model realistic timing would move the golden fingerprints and buy nothing that
+measuring on hardware does not.
+
+### 6. The first-stage bootloader cannot run at all
+
+A type-1 (main MCU) update rehearsal ends at the watch's reset. The bootloader that copies
+the staged image from `0x0FC00000` into internal flash is not in the application image, so
+the emulator has no code to run for that step.
+
+**Do not trust** anything about what happens after `REBOOT`. That step has only ever been
+proven on the watch -- three times now, all successful, each verified by reading the
+running firmware back.
+
+**Can it be closed?** Not without SWD (#14). The bootloader lives in the low ~32-48 KB of
+flash, which is read-protected, so 0xEE cannot fetch it either. It is the one item here
+that cannot be closed by reading more off the watch.
+
+### 7. The factory resources were missing -- closed
+
+Most screens drew LVGL's "No data" and the boot animation ran black, because the emulated
+NAND held only the app's 401 KB resource image. **Closed on 2026-10-03**: 40,089,600 bytes
+read off the watch (#70) and mounted by default (#65, #71).
+
+### Written down as a difference, and wrong
+
+The physical watch sends generic `6F 01 81` acknowledgements "which the emulated one never
+does" -- recorded in `nanddump._once` and used to justify filtering replies. **It is not a
+difference.** The emulated watch answers the same SET with a byte-identical ack
+(`6f 01 81 02 00 13 00 8f`, checked both ways). What differed was the dump: it nudges a
+physical watch awake with a SET and never nudged an emulated one, so only one of the two
+ever had an ack to trip over. The filter is still right; the reason given for it was not.
+
+### Not the watch
+
+The physical watch takes ~12 s to connect against ~3 s for the emulated one. That is
+Windows' BLE stack and the bond ceremony, not the firmware.
+
 ## The BLE controller
 
 **The radio powers up.** For a long time the story here was "the firmware never touches

@@ -353,11 +353,15 @@ class Dumper:
         frame is whole, because waiting half a second for a second answer that
         never comes is most of a dump.
 
-        Only a **0xEE CHECK_RESPONSE** counts, whatever its length: the physical
-        watch sends frames of its own (the generic ``6F 01 81 ...`` acknowledgement
-        among them) which the emulated one never does, and taking whatever arrived
-        first once turned one of those into a short chunk and a page 127 bytes short
-        of a page. The length is left to :meth:`read_chunk` to read, because with
+        Only a **0xEE CHECK_RESPONSE** counts, whatever its length: other frames
+        arrive on the same channel -- the generic ``6F 01 81 ...`` acknowledgement
+        among them, which is how a SET is answered, and the keep-awake nudge is a
+        SET -- and taking whatever arrived first once turned one of those into a
+        short chunk and a page 127 bytes short of a page. (Recorded here for a
+        while as the physical watch sending frames "the emulated one never does".
+        That was wrong, and checked: the emulated watch answers the same SET with
+        a byte-identical ack. What differed was the dump, which nudges a physical
+        watch awake and did not nudge an emulated one -- #74.) The length is left to :meth:`read_chunk` to read, because with
         the patch it carries the meaning: as asked for is data, one byte is a
         failure and its reason.
         """

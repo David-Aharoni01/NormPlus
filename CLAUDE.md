@@ -130,7 +130,7 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 | `docs/app.md` | `:app` and `:protocol` architecture: BLE layer, the cold-connect penalty, always-on uptime, notifications, calls, data, UI; what is verified on the watch |
 | `docs/protocol.md` | The 0x6F channel, CHECK/SET rules, the Apollo DFU update as the firmware answers it, the version string, key smali files, apktool |
 | `docs/firmware.md` | The watch firmware itself: image format, the two CRCs, hardware, the vendor OTA server, what can be patched, the NAND read-out patch |
-| `docs/watch-emulator.md` | The watch emulator in summary: boot, radio, NZ8801, architecture, performance switches |
+| `docs/watch-emulator.md` | The watch emulator in summary: boot, radio, NZ8801, architecture, performance switches, and **where it differs from the real watch** (#74) -- read that before trusting an emulator-only result |
 | `docs/watch-emulator-internals.md` | The watch emulator in full -- read it before changing anything in `fw/` |
 | `docs/android-emulator.md` | The Android emulator and its Bluetooth bridge |
 | `docs/history.md` | Retired tools (`normlink-cli`) and corrected beliefs |
@@ -410,6 +410,13 @@ disagree about what was said.
   resource image -- not the watch's factory resources (tens of MB from `0x026DA430`), where
   most screens' images and all 134 boot-animation frames live. The boot report's `images:`
   line and the live window's status line count them (`fw/resources.py`, #64, #65).
+
+**An emulator-only result is not a result about the watch.** The places the two are known
+to differ are listed in `docs/watch-emulator.md` ("Where the emulated watch and the real
+one differ", #74) -- the storage stack never goes down here and usually is down there,
+nothing cycles so leaks never show, the link never drops, and 0xEE answers 2.5x slower.
+Three separate incidents on the only watch we have were green in the emulator first. Read
+that list before trusting a run, and add to it when the two disagree again.
 
 Claims about firmware behaviour need firmware evidence — an address, an assert string, a
 traced value. Two specific traps:
