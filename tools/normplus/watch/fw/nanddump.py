@@ -43,13 +43,14 @@ reason continues where it left off.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .phone import CHECK, frame
+from .phone import CHECK, CHECK_RESPONSE, frame
 
 #: The most the patched handler will return in one reply (#68).
 CHUNK = 0x80
@@ -61,6 +62,12 @@ NAND_TAG = 0xF
 MEMORY_READ = 0xEE
 #: The NAND is 256 MB, and the tag leaves exactly 28 bits for the offset.
 NAND_SIZE = 1 << 28
+#: The storage driver's lock, NULL until something brings the stack up. On the
+#: physical watch that happens when the watch is *used* and goes away again when it
+#: idles (#70), and a read taken while it is down answers zeros -- which is exactly
+#: what data that is zero looks like. So a dump checks it before every page: see
+#: :func:`driver_probe`.
+DRIVER_LOCK = 0x1000186C
 
 FORMAT = 1
 MANIFEST = "manifest.json"
@@ -83,6 +90,23 @@ def chunk_payload(address: int, length: int) -> bytes:
     return (address | NAND_TAG << 28).to_bytes(4, "big") + bytes([length])
 
 
+def driver_probe(dumper, conv):
+    """``await probe()`` -> is the storage stack up? A plain CPU read of the lock.
+
+    Cheap (one read a page, ~6%) and the difference between a dump that can be
+    trusted and one that might have recorded a stretch of zeros because the watch
+    had powered its NAND down.
+    """
+    async def probe() -> bool:
+        payload = DRIVER_LOCK.to_bytes(4, "big") + bytes([4])
+        for _ in range(dumper.tries):
+            got = await dumper._once(conv, payload)
+            if got is not None and len(got) >= 4:
+                return any(got)
+        return False
+    return probe
+
+
 @dataclass
 class Stats:
     """What the dump cost -- the numbers #69 exists to produce."""
@@ -93,6 +117,11 @@ class Stats:
     lost: int = 0
     #: Reads that got no reply at all.
     silent: int = 0
+    #: Frames that came back but were not the answer asked for (the watch's own).
+    strays: int = 0
+    #: Times the storage stack was found down, and how long was spent waiting.
+    waits: int = 0
+    wait_seconds: float = 0.0
     #: Chunks that stayed zero for every attempt: data that is zero, almost surely.
     zero_chunks: int = 0
     #: Pages skipped as erased, and pages read in full.
@@ -124,12 +153,17 @@ class Stats:
                 f"({self.bytes_per_second / 1024:.1f} KB/s, "
                 f"{self.reads_per_second:.1f} reads/s); "
                 f"{self.reads:,} reads, {self.lost:,} lost to the UI "
-                f"({self.loss_rate * 100:.0f}%), {self.silent} unanswered; "
+                f"({self.loss_rate * 100:.0f}%), {self.silent} unanswered, "
+                f"{self.strays} stray frames; "
                 f"{self.pages:,} pages read, {self.blank_pages:,} blank; "
-                f"{self.zero_chunks:,} chunks are zero")
+                f"{self.zero_chunks:,} chunks are zero"
+                + (f"; waited {self.wait_seconds:.0f}s over {self.waits} stalls"
+                   if self.waits else ""))
 
     def as_dict(self) -> dict:
         return {"reads": self.reads, "lost": self.lost, "silent": self.silent,
+                "strays": self.strays, "waits": self.waits,
+                "wait_seconds": round(self.wait_seconds, 1),
                 "zero_chunks": self.zero_chunks, "blank_pages": self.blank_pages,
                 "pages": self.pages, "covered": self.covered,
                 "seconds": round(self.seconds, 3),
@@ -230,6 +264,8 @@ class Dumper:
     skip_blank: bool = True
     #: Seconds to wait for one reply.
     timeout: float = 5.0
+    #: Seconds to wait for the storage stack to come back before giving up.
+    wait_for_driver: float = 600.0
     #: Write ``[03]`` to 8002 after each request, as the companion app does. The
     #: emulated watch answers 0xEE without it, which saves a write a read, but the
     #: physical one has only ever been asked with it -- so it stays on by default.
@@ -264,12 +300,26 @@ class Dumper:
         Through ``frames``, not ``replies``: the answer is taken as soon as its
         frame is whole, because waiting half a second for a second answer that
         never comes is most of a dump.
+
+        Only a 0xEE CHECK_RESPONSE of exactly the length asked for counts. The
+        physical watch sends frames of its own (the generic ``6F 01 81 ...``
+        acknowledgement among them) which the emulated one never does, and the
+        first version of this took whatever arrived first -- so a 1-byte reply once
+        became a short chunk, and a page 127 bytes short of a page. Anything else
+        is skipped, and if nothing fits, this is a read that did not happen.
         """
+        wanted = payload[4]
         conv.clear()
         await conv.send(frame(MEMORY_READ, CHECK, payload), trigger=self.trigger)
         got = await conv.frames(timeout=self.timeout)
         self.stats.reads += 1
-        return got[0][5:-1] if got else None
+        for reply in got:
+            if (len(reply) >= 6 and reply[1] == MEMORY_READ and reply[2] == CHECK_RESPONSE
+                    and len(reply) - 6 == wanted):
+                return reply[5:-1]
+        if got:
+            self.stats.strays += len(got)
+        return None
 
     async def read_chunk(self, conv, address: int, length: int = CHUNK) -> Optional[bytes]:
         """One chunk, retried; None if the watch stopped answering.
@@ -324,12 +374,15 @@ class Dumper:
             if got is None:
                 raise DumpError(f"no answer for 0x{at:08X}")
             chunks.append(got)
+        page = b"".join(chunks)
+        if len(page) != PAGE:
+            raise DumpError(f"0x{address:08X} came back {len(page)} bytes, not {PAGE}")
         self.stats.pages += 1
         self.stats.covered += PAGE
-        return b"".join(chunks), False, self.stats.zero_chunks - before
+        return page, False, self.stats.zero_chunks - before
 
     async def run(self, conv, ranges, dump: Dump, *, pages: Optional[int] = None,
-                  progress_every: int = 64) -> Stats:
+                  progress_every: int = 64, probe=None) -> Stats:
         """Dump *ranges* (pairs of addresses) into *dump*, continuing where it left off.
 
         *pages* stops after that many pages, which is how the tests exercise a
@@ -356,6 +409,30 @@ class Dumper:
                 while at < end:
                     if pages is not None and done_pages >= pages:
                         return self.stats
+                    if probe is not None and not await probe():
+                        # Down rather than gone: the physical watch powers its NAND
+                        # down when it is not being used (#70), and brings it back
+                        # when it is. Waiting beats failing, because the alternative
+                        # is reading zeros that look like data.
+                        self.stats.waits += 1
+                        self.log(f"  [dump] 0x{at:08X}: the storage stack is down -- "
+                                 f"waiting up to {self.wait_for_driver:g}s for it "
+                                 f"(use the watch to bring it up)")
+                        waited = 0.0
+                        while waited < self.wait_for_driver:
+                            await asyncio.sleep(2)
+                            waited += 2
+                            if await probe():
+                                self.stats.wait_seconds += waited
+                                self.log(f"  [dump] up again after {waited:g}s; going on")
+                                break
+                        else:
+                            self.stats.wait_seconds += waited
+                            raise DumpError(
+                                f"the storage stack stayed down at 0x{at:08X} for "
+                                f"{self.wait_for_driver:g}s. Use the watch (or put it on "
+                                "its charger) and run the same command again -- it goes "
+                                "on from here")
                     data, blank, zeros = await self.read_page(conv, at)
                     dump.write_page(start, at - start, data, blank=blank, zero_chunks=zeros)
                     at += PAGE

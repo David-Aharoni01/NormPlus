@@ -135,6 +135,40 @@ def test_a_page_of_real_zeros_is_recorded_as_zeros_not_as_a_failure():
     assert dumper.stats.lost == 0, "real zeros were counted as lost reads"
 
 
+def test_a_frame_that_is_not_the_answer_is_not_mistaken_for_one():
+    """The physical watch sends frames of its own; the emulated one does not (#70).
+
+    The first version of the client took whatever frame arrived first, so a
+    1-byte reply became a 1-byte chunk and a page 127 bytes short -- caught only
+    because the dump file's own bookkeeping refused it. Now only a 0xEE
+    CHECK_RESPONSE of exactly the length asked for counts.
+    """
+    data = bytes(range(256)) * 8
+
+    class Chatty(FakeWatch):
+        async def send(self, frame_bytes, *, char="8001", trigger=True):
+            await super().send(frame_bytes, char=char, trigger=trigger)
+            # The generic acknowledgement, ahead of the real answer.
+            stray = frame(0x01, 0x81, bytes([0xEE, 0x00]))
+            self._replies = ([("8002", stray)] + self._replies)
+
+    watch = Chatty({0x7000: data})
+    dumper = Dumper(log=quiet)
+    got = run(dumper.read_chunk(watch, 0x7000))
+    assert got == data[:CHUNK], (got or b"")[:16].hex(" ")
+    assert dumper.stats.strays == 0, "a stray was counted even though the answer came"
+
+    # ...and a watch that sends only strays is a watch that did not answer.
+    class Useless(FakeWatch):
+        async def send(self, frame_bytes, *, char="8001", trigger=True):
+            self._replies = [("8002", frame(0x01, 0x81, bytes([0xEE, 0x00])))]
+            self.reads += 1
+
+    only = Dumper(tries=2, log=quiet)
+    assert run(only.read_chunk(Useless({0x7000: data}), 0x7000)) is None
+    assert only.stats.strays >= 2 and only.stats.silent == 2
+
+
 def test_a_watch_that_stops_answering_fails_the_page_rather_than_inventing_one():
     watch = FakeWatch({0x3000: b"\x5a" * PAGE}, die_after=2)
     dumper = Dumper(tries=3, log=quiet)

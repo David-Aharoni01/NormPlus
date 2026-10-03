@@ -463,7 +463,7 @@ def cmd_dump(args) -> int:
     import asyncio
     import time
 
-    from .fw.nanddump import NAND_SIZE, PAGE, Dump, DumpError, Dumper
+    from .fw.nanddump import NAND_SIZE, PAGE, Dump, DumpError, Dumper, driver_probe
     from .fw.phone import (BIND_END, BIND_START, DATETIME, EmulatedWatch, ack)
     from .physical import PhysicalPhone, mac_address
 
@@ -503,7 +503,8 @@ def cmd_dump(args) -> int:
     say(f"dump: {total:,} bytes in {len(ranges)} range(s) -> {args.output}")
     dump = Dump(args.output, log=say)
     dumper = Dumper(tries=args.tries, zero_tries=args.zero_tries,
-                    skip_blank=not args.no_skip, trigger=not args.no_trigger, log=say)
+                    skip_blank=not args.no_skip, trigger=not args.no_trigger,
+                    wait_for_driver=args.wait_for_driver, log=say)
 
     watch = None
     if mac is not None:
@@ -542,7 +543,8 @@ def cmd_dump(args) -> int:
                 if await phone.check_init() == 1:
                     break
             say("watch: bound")
-        await dumper.run(phone, ranges, dump, pages=args.pages)
+        await dumper.run(phone, ranges, dump, pages=args.pages,
+                         probe=None if args.no_check_driver else driver_probe(dumper, phone))
         await phone.disconnect()
 
     async def on_the_physical_watch() -> None:
@@ -1035,6 +1037,14 @@ def main(argv=None) -> int:
     p_dump.add_argument("--no-skip", action="store_true",
                         help="read every chunk instead of skipping a page whose first and "
                              "last chunk are both erased")
+    p_dump.add_argument("--wait-for-driver", type=float, default=600.0, metavar="S",
+                        help="seconds to wait for the storage stack when it is found down, "
+                             "before giving up (default 600). It is up while the watch is "
+                             "being used and goes down when it idles (#70)")
+    p_dump.add_argument("--no-check-driver", action="store_true",
+                        help="do not check before each page that the storage stack is up. "
+                             "It is up only while the watch is being used (#70), and a read "
+                             "taken while it is down answers zeros that look like data")
     p_dump.add_argument("--no-trigger", action="store_true",
                         help="do not write [03] to 8002 after each request. The emulated "
                              "watch answers 0xEE without it, saving a write a read; the "
