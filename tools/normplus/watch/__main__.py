@@ -13,6 +13,7 @@ with `uv run normwatch ...`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -313,6 +314,121 @@ def boot_animation_note(machine) -> str:
             f"behind it.\n"
             f"                  Try --seconds {needed / 48_000_000:.0f} "
             f"(about {needed:,} instructions).")
+
+
+def cmd_ota(args) -> int:
+    """Send a firmware update to a watch -- the emulated one, or the physical one.
+
+    The rehearsal and the real thing are the same code (``fw.otasend``), which is
+    the point: what goes to the watch has been sent to the emulator first. A
+    main-MCU update (type 1) needs --allow-mcu, because it replaces the code that
+    receives updates and there is no way back if it does not boot (#14, #70).
+
+    Exit status: 0 the watch took it, 1 it refused a step, 2 the setup failed.
+    """
+    import asyncio
+    import time
+
+    from .fw.otasend import OtaError, send_update
+    from .fw.phone import (BIND_END, BIND_START, DATETIME, EmulatedWatch, OTA_TYPE_MCU, ack)
+    from .physical import PhysicalPhone, mac_address
+
+    try:
+        mac = mac_address(args.mac) if args.mac else None
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    raw = Path(args.update).read_bytes()
+    target = mac or args.address
+    state = Path(args.flash_state) if args.flash_state else None
+    if state is not None and not state.exists():
+        print(f"error: no flash state at {state}", file=sys.stderr)
+        return 2
+
+    t0 = time.monotonic()
+
+    def say(text: str) -> None:
+        print(f"{time.monotonic() - t0:6.1f}s  {text}", flush=True)
+
+    if args.type == OTA_TYPE_MCU and mac is not None:
+        say("!! a main-MCU update to the PHYSICAL watch: it reboots into its bootloader "
+            "when this finishes, and that step cannot be rehearsed (#70)")
+    watch = None
+    if mac is not None:
+        say(f"watch: the physical one at {mac}")
+    else:
+        try:
+            watch = EmulatedWatch(args.image, args.resources, address=args.address,
+                                  flash_state=state)
+        except flashstate.FlashStateMismatch as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        watch.start()
+    failed = None
+    sent = None
+
+    async def flow(phone) -> None:
+        nonlocal failed, sent
+        if not await phone.find(target):
+            failed = f"{target} was never heard advertising"
+            return
+        await phone.connect(target)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        say("phone: connected, paired")
+        init = await phone.check_init()
+        if init == 0:
+            if watch is not None and not await watch.past_boot_animation(timeout=90):
+                failed = "the setup screen never came up"
+                return
+            bound = await phone.bind()
+            if list(bound.values()) != [ack(BIND_START), ack(DATETIME), ack(BIND_END)]:
+                failed = "the bind was not acknowledged"
+                return
+            for _ in range(30):
+                await asyncio.sleep(0.5)
+                if await phone.check_init() == 1:
+                    break
+            say("watch: bound")
+        # Never over the boot animation: an OTA screen opened there overflows the
+        # UI task's stack (#57). The emulated watch is waited for above; a
+        # physical one has been up for a while by the time it is reachable.
+        if watch is not None:
+            await watch.past_boot_animation(timeout=90)
+            await asyncio.sleep(2)
+        try:
+            sent = await send_update(phone, raw, args.type, allow_mcu=args.allow_mcu,
+                                     log=say, progress_every=args.progress_every)
+        except OtaError as exc:
+            failed = str(exc)
+            return
+        with contextlib.suppress(Exception):
+            await phone.disconnect()
+
+    async def on_the_physical_watch() -> None:
+        async with PhysicalPhone.open(log=say) as phone:
+            await flow(phone)
+
+    try:
+        if watch is None:
+            asyncio.run(on_the_physical_watch())
+        else:
+            watch.drive(flow, timeout=args.timeout)
+    except ImportError as exc:
+        failed = (f"{exc.name or exc} is not installed: run `uv sync` at the "
+                  "repository root")
+    except Exception as exc:  # noqa: BLE001 - reported, and the watch still stops
+        failed = f"{type(exc).__name__}: {exc}"
+    finally:
+        if watch is not None:
+            watch.stop(save_to=state if args.save and state else None)
+
+    if failed:
+        say(f"failed: {failed}")
+        return 1 if sent is None else 2
+    say(f"ota: done -- {sent.summary() if sent else 'nothing sent'}")
+    return 0
 
 
 def mount_blobs(paths) -> list[Path]:
@@ -939,6 +1055,37 @@ def main(argv=None) -> int:
     p_dump.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
                         help="the emulated watch's BD address")
     p_dump.set_defaults(func=cmd_dump)
+
+    p_ota = sub.add_parser(
+        "ota", help="send a firmware update to a watch: the emulated one, or the physical "
+                    "one with --mac. A main-MCU update needs --allow-mcu")
+    p_ota.add_argument("update", metavar="FILE",
+                       help="the update .bin, sealed (`normfw verify` it first)")
+    p_ota.add_argument("--type", type=int, default=4, choices=[1, 2, 3, 4],
+                       help="update type: 4 the resource partition (default), 1 the main "
+                            "MCU, 2 the touch panel, 3 the heart-rate sensor")
+    p_ota.add_argument("--allow-mcu", action="store_true",
+                       help="permit a type-1 (main MCU) update. It replaces the code that "
+                            "receives updates, so an image that does not boot leaves no "
+                            "way back without SWD (#14)")
+    p_ota.add_argument("--progress-every", type=int, default=200, metavar="N",
+                       help="print progress every N pieces (default 200)")
+    p_ota.add_argument("--timeout", type=float, default=3600.0, metavar="S",
+                       help="seconds the emulated watch may run (default 1 h)")
+    p_ota.add_argument("--flash-state", metavar="PATH", default=None,
+                       help="start the emulated watch from this saved flash")
+    p_ota.add_argument("--save", action="store_true",
+                       help="write the emulated watch's flash back to --flash-state")
+    p_ota.add_argument("--mac", metavar="MAC", default=None,
+                       help="send to the PHYSICAL watch at MAC over this PC's Bluetooth "
+                            "adapter. It must not be connected to a phone")
+    p_ota.add_argument("--image", default=str(DEFAULT_IMAGE),
+                       help="firmware the EMULATED watch runs (not the update)")
+    p_ota.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                       help="resource blob loaded into the emulated NAND")
+    p_ota.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
+                       help="the emulated watch's BD address")
+    p_ota.set_defaults(func=cmd_ota)
 
     args = parser.parse_args(argv)
     if getattr(args, "seconds", None):

@@ -42,6 +42,10 @@ from .fw.phone import WATCH, Conversation, quiet
 #: The 0x6F service, and the characteristics a phone listens to.
 MAIN_SERVICE = "6006"
 NOTIFY = ("8002", "8004")
+#: The Apollo DFU service and its two characteristics: control in and every
+#: reply out on 1531, image data in on 1532 (docs/protocol.md, "Apollo DFU").
+DFU_SERVICE = "1530"
+DFU_CONTROL, DFU_DATA = "1531", "1532"
 _MAC = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 
 
@@ -193,6 +197,57 @@ class PhysicalPhone(Conversation):
         await self.client.write_gatt_char(self.chars[char], data, response=True)
         if trigger:
             await self.client.write_gatt_char(self.chars["8002"], b"\x03", response=False)
+
+    async def request_mtu(self, mtu: int = 247) -> int:
+        """The MTU is the OS's to negotiate here; this reports what it got.
+
+        WinRT settles it when the link comes up and bleak only reads it back, so
+        unlike the bumble phone there is nothing to ask for -- worth knowing for a
+        dump, where the MTU decides how many notifications an answer takes (#69).
+        """
+        return getattr(self.client, "mtu_size", 0) or 0
+
+    # -- the Apollo DFU service ------------------------------------------------
+    #
+    # The same four calls the bumble phone has (``fw.phone.Phone``), so one OTA
+    # sender drives the emulated watch and this one. Both characteristics are
+    # write-without-response only, and every reply is a notification on 1531.
+
+    async def open_dfu(self, *, mtu: int = 247) -> None:
+        """Find the DFU service and listen to 1531, the one that notifies."""
+        service = next((s for s in self.client.services
+                        if short_uuid(s.uuid) == DFU_SERVICE), None)
+        if service is None:
+            raise RuntimeError(f"the watch has no {DFU_SERVICE} DFU service")
+        self.dfu = {short_uuid(c.uuid): c for c in service.characteristics}
+        missing = [n for n in (DFU_CONTROL, DFU_DATA) if n not in self.dfu]
+        if missing:
+            raise RuntimeError(f"the DFU service has no {', '.join(missing)}")
+        self._dfu_queue: asyncio.Queue = asyncio.Queue()
+        await self.client.start_notify(
+            self.dfu[DFU_CONTROL],
+            lambda _char, value: self._dfu_queue.put_nowait(bytes(value)))
+
+    async def _dfu_reply(self, timeout: float) -> Optional[bytes]:
+        try:
+            return await asyncio.wait_for(self._dfu_queue.get(), timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    async def dfu_command(self, data: bytes, *, timeout: float = 5.0) -> Optional[bytes]:
+        """A control command to 1531; the reply, or None (BT_PARAM has none)."""
+        while not self._dfu_queue.empty():
+            self._dfu_queue.get_nowait()
+        await self.client.write_gatt_char(self.dfu[DFU_CONTROL], data, response=False)
+        return await self._dfu_reply(timeout)
+
+    async def dfu_piece(self, piece: bytes, *, timeout: float = 5.0,
+                        write_size: int = 0x80) -> Optional[bytes]:
+        """One data piece to 1532, in *write_size* writes; the watch's answer."""
+        for at in range(0, len(piece), write_size):
+            await self.client.write_gatt_char(
+                self.dfu[DFU_DATA], piece[at:at + write_size], response=False)
+        return await self._dfu_reply(timeout)
 
     async def disconnect(self) -> None:
         if self.client is not None and self.client.is_connected:

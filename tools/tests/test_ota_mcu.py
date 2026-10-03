@@ -62,7 +62,11 @@ STOCK = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
 IMAGE = _argument("--image", STOCK)
 RESOURCES = REPO / "NORM/assets/Picture_P03B_NORM2_0.4.bin"
 BOUND = _argument("--bound", HERE / "fixtures/bound-watch.zip")
-RAW = IMAGE.read_bytes()
+#: The image SENT, which is not always the image the watch is RUNNING: a
+#: main-MCU flash sends a patched image to a watch running the stock one, and
+#: that is the pre-flight for #70 -- `normtest ota_mcu -- --payload patched.bin`.
+PAYLOAD = _argument("--payload", IMAGE)
+RAW = PAYLOAD.read_bytes()
 ADDRESS, CONTENT = RAW[:4], RAW[4:]
 PAGE = 2048
 FIRST_PAGE = OTA_STAGING_ADDRESS // PAGE
@@ -97,7 +101,7 @@ def test_the_set_header_is_the_one_for_this_image():
     assert header[10:14] == apollo_crc(CONTENT)
     assert header[14] == 0x0A
     assert ota_init(CONTENT) == bytes([0x01]) + len(CONTENT).to_bytes(4, "little")
-    if IMAGE != STOCK:
+    if (IMAGE, PAYLOAD) != (STOCK, STOCK):
         return
     # The vendor image, byte for byte: 747,200 bytes, transport CRC 0x1979
     # (docs/firmware.md §2) -- this is the frame the firmware answered [02 01].
@@ -110,7 +114,7 @@ def test_the_pieces_and_writes_are_the_apps():
     pieces = ota_pieces(CONTENT)
     assert b"".join(pieces) == CONTENT
     assert ota_write_size(OTA_TYPE_MCU) == 0x14
-    if IMAGE == STOCK:
+    if PAYLOAD == STOCK:
         assert len(pieces) == 4013, len(pieces)
 
 

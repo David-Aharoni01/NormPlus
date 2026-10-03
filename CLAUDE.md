@@ -427,10 +427,19 @@ watch, re-record with `test_golden.py --update` and read the diff it prints.
 
 ## OTA safety -- hard rules
 
-- **Only the resource partition (update type 4) is sent.** `ApolloOtaSession` refuses types
-  outside 1-4 and refuses a main-MCU update (type 1) unless explicitly allowed; nothing in the
-  app allows it. The code that receives an update is the code a main-MCU update replaces, so a
-  non-booting image has no recovery path until SWD is established (#14).
+- **The resource partition (update type 4) is the only one sent casually.** `ApolloOtaSession`
+  refuses types outside 1-4 and refuses a main-MCU update (type 1) unless explicitly allowed;
+  nothing in `:app` allows it, and that stays true. The code that receives an update is the
+  code a main-MCU update replaces, so a non-booting image has no recovery path until SWD is
+  established (#14).
+- **A main-MCU update (type 1) goes only through `normwatch ota --allow-mcu`, and only with
+  the owner's go-ahead for that flash.** It was first done for #70 (the NAND read-out patch).
+  Everything that gates it is in `fw/otasend.py` and cannot be flagged away: a Telink image is
+  refused, and so is an image whose length or CRC does not match its own contents -- the
+  bootloader checks that CRC and a half-sealed image is a brick. Before any such flash:
+  rehearse the exact image against the emulated watch (`normtest ota_mcu -- --payload FILE`),
+  and read the running firmware back over 0xEE to confirm the watch is running the image the
+  patch was built from.
 - **Never send a Telink image.** The vendor's public OTA server serves Norm 1 firmware for a
   Telink SoC (`KNLT` at +0x08); `OtaImage.parse` refuses it. Do not keep copies in the repo.
 - **A type-4 SET erases the live resource partition at once.** An interrupted update leaves

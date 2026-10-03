@@ -594,7 +594,7 @@ memory-mapped. So the firmware has to be asked to use its own NAND driver. That 
 `tools/tests/test_nand_patch.py`; it has **not** been flashed to the watch (that is #70).
 
 **It changes one instruction.** The 0xEE handler ends with `bl 0x00020EC4` (`memcpy`) at
-`0x000377CE`; that call becomes a `bl` to 40 bytes appended after the image's last byte,
+`0x000377CE`; that call becomes a `bl` to 56 bytes appended after the image's last byte,
 which for a tagged address calls the firmware's own NAND read and otherwise tail-calls the
 same `memcpy`. Every other byte of the image is unchanged, so the length at +0x0C and the
 CRC at +0x10 are the only other fields that move (§7, `normfw seal` does it).
@@ -654,6 +654,68 @@ resource (type 4) update and type-1 staging still work (`normtest nand_patch -- 
 which runs `test_ota.py` and `test_ota_mcu.py` with `--image`).
 
 The patched image is vendor-derived and is never committed; it is built on demand.
+
+### On the physical watch: flashed, and what it found (#70)
+
+The patch was flashed to the watch on 2026-10-03 as a type-1 update, after the
+pre-flight below, and **the flash itself went perfectly**: 4,013 pieces in 2.3 min at
+5.3 KB/s, CRC `04 01`, REBOOT `05 01`, the watch rebooted through its first-stage
+bootloader -- the step the emulator cannot run -- and came back with the hook at
+`0x000377CE` holding the patched branch and the appended routine byte-identical to
+what was built. Nothing was bricked, and 0xEE went on answering CPU addresses.
+
+**The pre-flight, which is the part worth copying.** Before sending anything: the
+image verified and re-sealed; a *stock* emulated watch accepted the *patched* image
+as a type-1 update all the way through CRC and REBOOT (`normtest ota_mcu --
+--payload patched.bin`); and -- the strongest check -- the watch's **whole running
+firmware was read back over 0xEE and compared**, all 747,156 bytes, byte-for-byte
+identical to the image the patch was built from, in 3.1 min at 31.8 reads/s with 0
+retries. That also measured the read rate on real hardware for the first time:
+**4.0 KB/s, about 2.5x the emulated watch**, which puts the ~40 MB of missing
+resources at roughly 3 hours rather than 7-9.
+
+**But the NAND read did not work, and the reason is instructive.** The first version
+passed the device object's first word as the read's instance argument, copying the
+firmware's own OTA call site (`0x0005A54E`). That word is 0 on the emulated watch and
+**0xFF** on an idle physical one, so the read hit `assert(instance < ( 1 ))` -- and
+every assert in this firmware ends in an infinite loop (`b .` at `0x0003063A`, after
+printing `Assert Failed:`). The calling task never returned: the watch kept
+advertising and its OTA task kept answering (a REBOOT written to 1531 is a usable
+recovery channel), but the entire 0x6F command channel was dead until the watch was
+restarted by hand.
+
+Reading the watch's SRAM out over 0xEE -- 384 KB in 2.1 min, read-only -- showed the
+rest:
+
+| | emulated watch | physical watch, idle |
+|---|---|---|
+| `[0x10006BCC]` the device object | `0x1005D644` | `0x1005D644` |
+| `dev+0x00`, the instance word | `0` | **`0xFF`** |
+| `dev+0x0C`, the read function | `0x0003E2F9` | `0x0003E2F9` |
+| `[0x10011CD0]` instance state | `1` | **`0`** |
+| `[[0x10011CD4]]` the driver's lock | `0x10000614` | **`0` (NULL)** |
+| `[0x10001548]` die cache | `0x01` | **`0xFF`** |
+
+State byte 0, die cache 0xFF and no lock is **exactly what the driver's init
+(`0x0003E7A8`) leaves behind**, so on an idle physical watch the NAND driver has been
+initialised and never opened -- while the emulated watch's values are those of a
+driver that has been read from. Taking a NULL lock asserts too (`0x00031B58`), so
+instance 0 alone would not have been enough.
+
+**What the patch does about it.** The instance is now a literal 0, and the routine
+checks that the lock exists before it calls anything, giving up quietly if it does
+not -- so it cannot wedge a watch whatever state the driver is in (56 bytes instead
+of 40). A read that gives up answers 128 zero bytes, which #69's client already
+treats as a lost read and retries.
+
+**What is still open.** Something has to bring the storage stack up before a dump.
+`0x00032EC0` is the function that does it -- it creates the lock at `0x1000186C` and
+registers the three MSPI devices, the NAND (`0x1005D644`) among them -- but it is
+reached through a registry, not a direct call, so nothing static says who calls it.
+The obvious candidate is the OTA path, which demonstrably writes NAND on hardware: a
+type-1 SET would erase only the staging scratch, and whether the lock appears after
+one is a single read-only check away. Until that is answered, the dump cannot start
+on hardware.
 
 ### Reading it out: `normwatch dump` (#69)
 

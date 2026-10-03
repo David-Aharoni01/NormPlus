@@ -31,6 +31,32 @@ told apart from a stale one::
     normcmd EE 70 --payload 'f2 6d a4 30 80'     # NAND 0x026DA430, 128 bytes
     normcmd EE 70 --payload '00 02 00 00 10'     # 0x00020000 as before (CPU)
 
+**What the physical watch taught us (#70), and why the routine is 56 bytes and not
+40.** The first version passed the device object's first word as the read's
+instance argument, because that is what the firmware's own OTA call site does
+(0x0005A54E). On the emulated watch that word is 0; on the physical watch, idle, it
+is **0xFF** -- so the read hit ``assert(instance < ( 1 ))`` at its very first
+branch. Every assert in this firmware ends in ``b .`` (an infinite loop at
+0x0003063A, after printing ``Assert Failed:``), so the task that called it never
+came back: the watch kept advertising, its OTA task kept answering, and its whole
+0x6F channel was dead until it was restarted. So the instance is now a literal
+**0**, which is the only value the assert permits.
+
+Reading the watch's own SRAM out over 0xEE then showed the rest of it. On an idle
+physical watch the NAND driver is exactly as its init left it -- instance state
+byte 0, die cache 0xFF, and **the lock every access takes is NULL** -- while on the
+emulated watch all three show a driver that has been opened and used. Taking a NULL
+lock asserts as well (0x00031B58), so the routine now **checks that the lock exists
+and gives up quietly if it does not**, which is why it cannot wedge a watch
+whatever state the driver is in. A read that gives up answers 128 zero bytes, which
+is what a lost read looks like too (see #69's retry discipline).
+
+That leaves one thing still open: something has to bring the storage stack up
+before a dump. The function that does it (0x00032EC0: it creates the lock at
+0x1000186C and registers the three MSPI devices, our NAND at 0x1005D644 among them)
+is reached through a registry rather than a direct call, so who calls it, and
+whether an OTA step or a UI action is enough, is #70's remaining question.
+
 **The routine it calls** is the vtable read of the device object the firmware keeps
 at ``[0x10006BCC]``: ``read(instance, byte_address, destination, length)`` at
 ``+0x0C``, which is ``..\\..\\Device\\Nand\\ew_dev_spinand.c`` (its asserts
@@ -79,6 +105,10 @@ MEMCPY = 0x00020EC4
 DEVICE_POINTER = 0x10006BCC
 #: Its vtable slot for ``read(instance, address, destination, length)``.
 READ_SLOT = 0x0C
+#: Instance 0's slot in the driver's own table (0x10011CD0 + instance * 48), +4:
+#: the pointer whose target is the lock every access takes. NULL until the
+#: storage stack is brought up, and taking a NULL lock asserts (#70).
+INSTANCE_LOCK = 0x10011CD4
 #: Top nibble of the address field that means "this is a NAND offset".
 NAND_TAG = 0xF
 
@@ -110,36 +140,86 @@ def build_routine(at: int) -> tuple[bytes, list[str]]:
     and nothing else disturbed, so the memcpy path is indistinguishable from the
     unpatched firmware. r4 is the only register it touches beyond the argument
     registers, and it is saved.
+
+    Two of its four instructions exist because of what the physical watch turned
+    out to do (#70); the module docstring explains both:
+
+    * the instance argument is a literal 0, not the device object's first word,
+      which is 0xFF on an idle watch and trips ``assert(instance < ( 1 ))``;
+    * it gives up quietly unless the driver's lock object exists, because every
+      assert in this firmware ends in an infinite loop.
     """
-    # Offsets within the routine, so the branches can be encoded.
-    nand, done, literal = 0x0A, 0x20, 0x24
-    code: list[tuple[bytes, str]] = [
-        (b"\x0b\x0f", "lsrs r3, r1, #0x1c"),                  # the address's top nibble
-        (b"\x0f\x2b", "cmp r3, #0xf"),                      # tagged as a NAND offset?
-        (struct.pack("<H", 0xD000 | ((nand - (0x04 + 4)) >> 1) & 0xFF), "beq #nand"),
-        (_bl(at + 0x06, MEMCPY, link=False), "b.w #memcpy"),  # no: as shipped, a tail call
-        # nand:
-        (b"\x10\xb5", "push {r4, lr}"),
-        (b"\x6f\xf3\x1f\x71", "bfc r1, #0x1c, #4"),           # r1 = the NAND byte offset
-        (b"\x13\x46", "mov r3, r2"),                        # r3 = length
-        (b"\x02\x46", "mov r2, r0"),                        # r2 = destination
-        (struct.pack("<H", 0x4C00 | ((at + literal - ((at + 0x14 + 4) & ~3)) >> 2)),
-         "ldr r4, [pc, #literal]"),                         # r4 = &device pointer
-        (b"\x24\x68", "ldr r4, [r4]"),                      # r4 = the device object
-        (struct.pack("<H", 0xB100 | (((done - (0x18 + 4)) >> 1) << 3) | 4), "cbz r4, #done"),
-        (b"\x20\x68", "ldr r0, [r4]"),                      # r0 = instance (0)
-        (struct.pack("<H", 0x6800 | ((READ_SLOT >> 2) << 6) | (4 << 3) | 4),
-         "ldr r4, [r4, #0xc]"),                             # r4 = ew_dev_spinand read
-        (b"\xa0\x47", "blx r4"),
-        # done:
-        (b"\x10\xbd", "pop {r4, pc}"),
-        (b"\x00\xbf", "nop"),                               # align the literal
-        (struct.pack("<I", DEVICE_POINTER), ".word 0x10006BCC"),
-    ]
-    blob = b"".join(b for b, _ in code)
-    if len(blob) != literal + 4:
-        raise AssertionError(f"routine is {len(blob)} bytes, expected {literal + 4}")
-    return blob, [source for _, source in code]
+    # Assembled twice: once to find where the labels land, once for real. Each
+    # instruction's own position comes from what has been emitted before it rather
+    # than from a number written here, because a stale offset in hand-assembled
+    # Thumb is a watch that has to be flashed again.
+    def assemble(offsets: dict[str, int]) -> list[tuple]:
+        out: list[tuple] = []
+        pos = 0
+
+        def emit(data: bytes, source: str, label: str | None = None) -> None:
+            nonlocal pos
+            out.append((data, source) if label is None else (data, source, label))
+            pos += len(data)
+
+        def literal(label: str) -> int:
+            """``ldr rX, [pc, #imm]``'s imm8, from where this instruction sits."""
+            return ((at + offsets[label] - ((at + pos + 4) & ~3)) >> 2) & 0xFF
+
+        def branch(label: str) -> int:
+            return (offsets[label] - (pos + 4)) >> 1
+
+        def cbz(label: str, rn: int = 4) -> bytes:
+            """``cbz rN, label``: imm5 holds bits 5:1 of the offset, i holds bit 6."""
+            offset = offsets[label] - (pos + 4)
+            if offsets[label] and not 0 <= offset <= 126 or offset % 2:
+                raise AssertionError(f"cbz cannot reach {label} from +0x{pos:X}")
+            return struct.pack("<H", 0xB100 | (((offset >> 6) & 1) << 9)
+                               | (((offset >> 1) & 0x1F) << 3) | rn)
+
+        emit(b"\x0b\x0f", "lsrs r3, r1, #0x1c")             # the address's top nibble
+        emit(b"\x0f\x2b", "cmp r3, #0xf")                   # tagged as a NAND offset?
+        emit(struct.pack("<H", 0xD000 | (branch("nand") & 0xFF)), "beq #nand")
+        emit(_bl(at + pos, MEMCPY, link=False), "b.w #memcpy")      # no: as shipped
+        emit(b"\x10\xb5", "push {r4, lr}", "nand")
+        emit(b"\x6f\xf3\x1f\x71", "bfc r1, #0x1c, #4")      # r1 = the NAND byte offset
+        emit(b"\x13\x46", "mov r3, r2")                     # r3 = length
+        emit(b"\x02\x46", "mov r2, r0")                     # r2 = destination
+        # Is the driver even up? [[instance 0 + 4]] is the lock every access takes,
+        # and taking a NULL one asserts (0x00031B58) -- which never returns.
+        emit(struct.pack("<H", 0x4C00 | literal("lock")), "ldr r4, [pc, #lock]")
+        emit(b"\x24\x68", "ldr r4, [r4]")                   # -> 0x1000186C
+        emit(cbz("done"), "cbz r4, #done")
+        emit(b"\x24\x68", "ldr r4, [r4]")                   # the lock object itself
+        emit(cbz("done"), "cbz r4, #done")                  # not up: answer nothing
+        emit(struct.pack("<H", 0x4C00 | literal("device")), "ldr r4, [pc, #device]")
+        emit(b"\x24\x68", "ldr r4, [r4]")                   # the device object
+        emit(cbz("done"), "cbz r4, #done")
+        emit(struct.pack("<H", 0x6800 | ((READ_SLOT >> 2) << 6) | (4 << 3) | 4),
+             "ldr r4, [r4, #0xc]")                          # ew_dev_spinand's read
+        emit(b"\x00\x20", "movs r0, #0")                    # instance 0, as it asserts
+        emit(b"\xa0\x47", "blx r4")
+        emit(b"\x10\xbd", "pop {r4, pc}", "done")
+        while (pos + 2) % 4:                                # the literals must be aligned
+            emit(b"\x00\xbf", "nop")
+        emit(b"\x00\xbf", "nop")
+        emit(struct.pack("<I", INSTANCE_LOCK), ".word 0x10011CD4", "lock")
+        emit(struct.pack("<I", DEVICE_POINTER), ".word 0x10006BCC", "device")
+        return out
+
+    # The first pass only needs each instruction's WIDTH, so zeroed labels do; the
+    # masks keep those dummy encodings in range, and check_routine verifies the
+    # real ones against the addresses they have to resolve to.
+    offsets, at_offset = {}, 0
+    for entry in assemble(dict.fromkeys(("nand", "done", "lock", "device"), 0)):
+        if len(entry) == 3:          # this instruction carries a label
+            offsets[entry[2]] = at_offset
+        at_offset += len(entry[0])
+    code = assemble(offsets)
+    blob = b"".join(entry[0] for entry in code)
+    if len(blob) % 4 or len(blob) != offsets["device"] + 4 or offsets["lock"] % 4:
+        raise AssertionError(f"routine is {len(blob)} bytes, labels {offsets}")
+    return blob, [entry[1] for entry in code], offsets
 
 
 def disassemble(blob: bytes, at: int) -> list[str]:
@@ -151,28 +231,40 @@ def disassemble(blob: bytes, at: int) -> list[str]:
             for i in md.disasm(blob, at)]
 
 
-def check_routine(blob: bytes, at: int, sources: list[str]) -> None:
+def check_routine(blob: bytes, at: int, sources: list[str], offsets: dict) -> None:
     """Assert the bytes really are the instructions they are meant to be.
 
     Hand-assembled Thumb-2 is exactly the kind of thing that is wrong in a way
     nothing notices until a watch does not boot, so every instruction is read back
     with the same disassembler the firmware was read with and compared against the
-    source line it came from. The labels are resolved to the addresses they must be.
+    source line it came from, with every label resolved to the address it must be.
+    A `ldr rX, [pc, #n]` is checked against where *n* actually lands, so a literal
+    that drifted out of word alignment or out of reach cannot pass.
     """
+    words = sum(1 for source in sources if source.startswith("."))
+    code = blob[:-4 * words] if words else blob
+    got = disassemble(code, at)
     want = []
-    for source in sources:
-        if source.startswith("."):
-            continue
-        want.append(source.replace("#nand", f"#0x{at + 0x0a:x}")
-                    .replace("#done", f"#0x{at + 0x20:x}")
-                    .replace("#memcpy", f"#0x{MEMCPY:x}")
-                    .replace("#literal", f"#0x{(at + 0x24) - ((at + 0x14 + 4) & ~3):x}"))
-    got = disassemble(blob[:-4], at)
+    for source, line in zip((s for s in sources if not s.startswith(".")), got):
+        here = int(line.split("  ", 1)[0], 16)       # where this instruction really is
+        for label, offset in offsets.items():
+            if f"#{label}" not in source:
+                continue
+            if label in ("lock", "device"):          # a literal, named pc-relatively
+                source = source.replace(
+                    f"#{label}", f"#0x{(at + offset) - ((here + 4) & ~3):x}")
+            else:
+                source = source.replace(f"#{label}", f"#0x{at + offset:x}")
+        want.append(source.replace("#memcpy", f"#0x{MEMCPY:x}"))
     for source, line in zip(want, got):
         if line.split("  ", 1)[1] != source:
             raise AssertionError(f"assembled {line!r}, meant {source!r}")
     if len(got) != len(want):
         raise AssertionError(f"disassembled {len(got)} instructions, wrote {len(want)}")
+    # ...and the literals hold what they are supposed to.
+    held = [int.from_bytes(blob[-4 * words:][i * 4:i * 4 + 4], "little") for i in range(words)]
+    if held != [INSTANCE_LOCK, DEVICE_POINTER]:
+        raise AssertionError(f"the literals are {[hex(v) for v in held]}")
 
 
 def apply(image: bytes) -> tuple[bytes, int]:
@@ -200,8 +292,8 @@ def apply(image: bytes) -> tuple[bytes, int]:
     end = LINK_ADDRESS + info["payload_len"]
     routine_at = (end + 3) & ~3
     data += b"\xff" * (routine_at - end)
-    blob, sources = build_routine(routine_at)
-    check_routine(blob, routine_at, sources)
+    blob, sources, offsets = build_routine(routine_at)
+    check_routine(blob, routine_at, sources, offsets)
     data += blob
     data[at:at + 4] = _bl(HOOK_ADDRESS, routine_at)
 
@@ -233,9 +325,10 @@ def main(argv=None) -> int:
     print(f"routine   0x{routine_at:08X}  {after['payload_len'] - before['payload_len']} "
           f"bytes appended")
     blob = patched[PAYLOAD_OFFSET + routine_at - LINK_ADDRESS:]
-    for line in disassemble(blob[:-4], routine_at):
+    for line in disassemble(blob[:-8], routine_at):
         print(f"  {line}")
-    print(f"  {routine_at + len(blob) - 4:08X}  .word 0x{DEVICE_POINTER:08X}")
+    for i, value in enumerate((INSTANCE_LOCK, DEVICE_POINTER)):
+        print(f"  {routine_at + len(blob) - 8 + i * 4:08X}  .word 0x{value:08X}")
     print(f"length    {before['declared_len']} -> {after['declared_len']}")
     print(f"image CRC 0x{before['declared_crc']:08X} -> 0x{after['declared_crc']:08X}")
     print(f"transport CRC-16 is now 0x{after['transport_crc16']:04X}")

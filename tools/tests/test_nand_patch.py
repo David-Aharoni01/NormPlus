@@ -120,7 +120,7 @@ def test_the_hook_is_the_instruction_the_patch_claims():
 
 def test_only_the_hook_changed_and_the_routine_was_appended():
     stock, image = STOCK.read_bytes(), patched()
-    assert len(image) - len(stock) == 40, len(image) - len(stock)
+    assert len(image) - len(stock) == 56, len(image) - len(stock)
     at = nand_patch.PAYLOAD_OFFSET + (nand_patch.HOOK_ADDRESS - nand_patch.LINK_ADDRESS)
     # Byte for byte the stock image, but for the 4-byte call and the header's own
     # length and CRC fields.
@@ -136,12 +136,17 @@ def test_the_routine_assembles_to_what_it_is_written_as():
     # build_routine's own check, run here so a bad hand-assembly fails the suite
     # and not only the builder.
     at = (nand_patch.LINK_ADDRESS + image_tool.parse(STOCK.read_bytes())["payload_len"] + 3) & ~3
-    blob, sources = nand_patch.build_routine(at)
-    nand_patch.check_routine(blob, at, sources)
-    lines = nand_patch.disassemble(blob[:-4], at)
+    blob, sources, offsets = nand_patch.build_routine(at)
+    nand_patch.check_routine(blob, at, sources, offsets)
+    lines = nand_patch.disassemble(blob[:-8], at)
     assert lines[0].endswith("lsrs r3, r1, #0x1c"), lines[0]
     assert lines[3].endswith(f"b.w #0x{nand_patch.MEMCPY:x}"), lines[3]
+    assert int.from_bytes(blob[-8:-4], "little") == nand_patch.INSTANCE_LOCK
     assert int.from_bytes(blob[-4:], "little") == nand_patch.DEVICE_POINTER
+    # The two things the physical watch taught us (#70), where a reader will look:
+    # the instance is a literal 0, and the lock is checked before anything is called.
+    assert any(line.endswith("movs r0, #0") for line in lines), lines
+    assert sum(1 for line in lines if "cbz r4," in line) == 3, lines
 
 
 def test_the_patched_image_verifies_and_is_sealed():
