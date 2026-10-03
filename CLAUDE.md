@@ -206,9 +206,11 @@ normwatch boot --seconds 18
 # whenever the run is not about the radio. See "The BLE controller" below.
 normwatch boot --seconds 14 --no-ble
 # The watch's own factory resources (NORM/_nand, #65) are mounted by default, so the
-# screens and the boot animation are the real ones. That is ~22s on a full boot --
-# 18,420 NAND page reads against 509 -- so --no-factory-resources is the --no-ble of
-# artwork: use it whenever the run is not about what is on the screen (#71).
+# screens and the boot animation are the real ones. That is ~22s of BOOT and nothing
+# after it: idling, swiping and changing screen cost the same with them as without
+# (#72). So for a live session skip the boot, not the artwork -- --load-state gives a
+# usable window with every image in 3.6s. --no-factory-resources is for cold runs that
+# are not about what is on the screen (#71).
 normwatch boot --seconds 14 --no-ble --no-factory-resources
 normwatch boot --live        # window + mouse touch
 normwatch boot --screenshot out.png

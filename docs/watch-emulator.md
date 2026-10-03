@@ -49,22 +49,36 @@ normwatch boot --live                         # the watch as it really looks
 normwatch boot --live --no-factory-resources  # ~22s faster, and "No data" everywhere
 ```
 
-**They cost about 22 s on a boot that plays the whole animation** -- 134 full-screen
-images really decoded instead of failing fast, which is 18,420 NAND page reads through
-the emulated SPI against 509 without. The mounting itself is 0.176 s of that; the rest is
-the data moving. The penalty tracks how much of the animation plays:
+**They cost about 22 s of boot and nothing afterwards.** The whole of it is the boot
+animation: 134 full-screen images really decoded instead of failing fast, 18,420 NAND page
+reads against 509. The mounting itself is 0.176 s; the rest is that data moving.
 
-| `--seconds` | without | with | cost |
-|---|---|---|---|
-| 2 | 3.2 s | 8.2 s | +5.1 s |
-| 6 | 7.8 s | 23.9 s | +16.0 s |
-| 14 (animation done) | 15.8 s | 37.4 s | +21.6 s |
+**Using the watch is not affected** -- measured on the golden workloads, watch time
+delivered per wall-clock second:
 
-So `--no-factory-resources` is the `--no-ble` of artwork: use it when the run is not about
-what is on the screen. `--no-resources` leaves the NAND erased altogether, and any
-explicit `--nand` replaces the default rather than adding to it. Nothing in the test suite
-goes through this path -- the tests build their machines directly -- so none of this
-changes what they cost.
+| | without them | with them |
+|---|---|---|
+| boot | 0.95x real time | **0.33x** |
+| idle on the face | 0.95x | **0.90x** |
+| a swipe across the face | 0.88x | **0.88x** |
+| a tap that changes screen | 1.05x | **1.07x** |
+
+Idling reads the same 275 pages either way, a swipe 331 against 365, a screen change 85
+against 100. The artwork a screen needs is small; it is the animation that is 34.7 MB.
+
+**So for a live session, skip the boot rather than the artwork.** Save the machine once
+past the animation and start from it: a usable window with every image, in 3.6 s --
+quicker than the 17 s it takes to boot with no artwork at all.
+
+```bash
+normwatch boot --seconds 12 --no-ble --save-state ui.snap   # once, 37s
+normwatch boot --load-state ui.snap --live                  # 3.6s, every time after
+```
+
+`--no-factory-resources` remains for runs that boot from cold and are not about what is on
+the screen, and `--no-resources` leaves the NAND erased altogether. Any explicit `--nand`
+replaces the default rather than adding to it. Nothing in the test suite goes through this
+path -- the tests build their machines directly -- so none of this changes what they cost.
 
 Without them most screens show "No data" and the boot animation runs black -- which is
 missing data, not broken drawing (#64): LVGL's placeholder for an image it could not
