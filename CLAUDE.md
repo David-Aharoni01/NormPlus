@@ -147,7 +147,7 @@ Everything in Python is one uv project: `pyproject.toml` at the root, the code i
 
 | Command | What |
 |---|---|
-| `normwatch` | the watch emulator: `boot`, `info`, `modules` (`tools/normplus/watch/`) |
+| `normwatch` | the watch emulator: `boot`, `info`, `modules`, `dump` (`tools/normplus/watch/`) |
 | `normcmd` | one 0x6F question to a watch -- the emulated one, or the physical one with `--mac` |
 | `normphone` | the Android emulator: `setup`, `start [--watch / --no-bridge]`, `install`, `clear-bond`, `bridge` |
 | `normfw` | firmware images: `verify`, `seal`, `patch-nand`, `query-ota` |

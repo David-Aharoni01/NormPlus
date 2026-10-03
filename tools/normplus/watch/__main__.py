@@ -315,6 +315,167 @@ def boot_animation_note(machine) -> str:
             f"(about {needed:,} instructions).")
 
 
+def mount_blobs(paths) -> list[Path]:
+    """The NAND blobs behind each ``--nand``: a file, or every one in a dump directory."""
+    out = []
+    for text in paths:
+        path = Path(text)
+        if path.is_dir():
+            found = sorted(path.glob("0x*.bin"))
+            if not found:
+                raise SystemExit(f"normwatch: no 0x<address>.bin in {path}")
+            out += found
+        elif path.exists():
+            out.append(path)
+        else:
+            raise SystemExit(f"normwatch: no such NAND blob: {path}")
+    return out
+
+
+def cmd_dump(args) -> int:
+    """Read a range of the watch's SPI NAND out, through the patch's 0xEE (#68, #69).
+
+    Needs a watch running a patched image: `normfw patch-nand` for the emulated
+    one (--image), and for the physical one (--mac) the patch flashed, which is
+    #70. The conversation is the same one `cmd` has -- connect, pair, bind if the
+    watch is not initialised -- and then `nanddump` asks for 128 bytes at a time
+    for as long as it takes, continuing a dump already in the output directory.
+
+    Exit status: 0 the ranges are complete, 1 it stopped part way (run it again),
+    2 the setup failed.
+    """
+    import asyncio
+    import time
+
+    from .fw.nanddump import NAND_SIZE, PAGE, Dump, DumpError, Dumper
+    from .fw.phone import (BIND_END, BIND_START, DATETIME, EmulatedWatch, ack)
+    from .physical import PhysicalPhone, mac_address
+
+    def parse_range(text: str) -> tuple[int, int]:
+        try:
+            first, _, last = text.partition("-")
+            start, end = int(first, 16), int(last, 16)
+        except ValueError:
+            raise ValueError(f"{text!r} is not START-END in hex, e.g. 026DA430-0496C000")
+        if not 0 <= start < end <= NAND_SIZE:
+            raise ValueError(f"{text!r} is not a range inside the NAND's 256 MB")
+        # Whole pages: the dump is page-at-a-time so that a blank one is cheap.
+        return start & ~(PAGE - 1), (end + PAGE - 1) & ~(PAGE - 1)
+
+    try:
+        ranges = [parse_range(text) for text in args.range]
+        mac = mac_address(args.mac) if args.mac else None
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    target = mac or args.address
+    state = Path(args.flash_state) if args.flash_state else None
+    if mac is not None and state is not None:
+        print("error: --flash-state is the emulated watch's; the physical one keeps "
+              "its own flash", file=sys.stderr)
+        return 2
+    if state is not None and not state.exists():
+        print(f"error: no flash state at {state}", file=sys.stderr)
+        return 2
+
+    t0 = time.monotonic()
+
+    def say(text: str) -> None:
+        print(f"{time.monotonic() - t0:6.1f}s  {text}", flush=True)
+
+    total = sum(end - start for start, end in ranges)
+    say(f"dump: {total:,} bytes in {len(ranges)} range(s) -> {args.output}")
+    dump = Dump(args.output, log=say)
+    dumper = Dumper(tries=args.tries, zero_tries=args.zero_tries,
+                    skip_blank=not args.no_skip, trigger=not args.no_trigger, log=say)
+
+    watch = None
+    if mac is not None:
+        say(f"watch: the physical one at {mac} -- it must be running a patched image")
+    else:
+        try:
+            watch = EmulatedWatch(args.image, args.resources, address=args.address,
+                                  flash_state=state)
+        except flashstate.FlashStateMismatch as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        watch.start()
+    failed = None
+
+    async def flow(phone) -> None:
+        nonlocal failed
+        if not await phone.find(target):
+            failed = f"{target} was never heard advertising"
+            return
+        await phone.connect(target)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        say("phone: connected, paired")
+        init = await phone.check_init()
+        if init == 0:
+            if watch is not None and not await watch.past_boot_animation(timeout=90):
+                failed = "the setup screen never came up"
+                return
+            bound = await phone.bind()
+            if list(bound.values()) != [ack(BIND_START), ack(DATETIME), ack(BIND_END)]:
+                failed = "the bind was not acknowledged"
+                return
+            for _ in range(30):
+                await asyncio.sleep(0.5)
+                if await phone.check_init() == 1:
+                    break
+            say("watch: bound")
+        await dumper.run(phone, ranges, dump, pages=args.pages)
+        await phone.disconnect()
+
+    async def on_the_physical_watch() -> None:
+        async with PhysicalPhone.open(log=say) as phone:
+            await flow(phone)
+
+    try:
+        if watch is None:
+            asyncio.run(on_the_physical_watch())
+        else:
+            watch.drive(flow, timeout=args.timeout)
+    except DumpError as exc:
+        failed = f"{exc}"
+    except ImportError as exc:
+        failed = (f"{exc.name or exc} is not installed: run `uv sync` at the "
+                  "repository root")
+    except Exception as exc:  # noqa: BLE001 - reported, and the watch still stops
+        failed = f"{type(exc).__name__}: {exc}"
+    finally:
+        if watch is not None:
+            watch.stop()
+
+    stats = dumper.stats
+    if watch is not None and stats.seconds:
+        # How much of the time was the emulator rather than the protocol: the
+        # watch's own clock against the wall clock. A physical watch runs at 1.0
+        # by definition, so a figure well under that says this rate is the
+        # emulator's and the real one would be faster.
+        watch_seconds = watch.machine.cycles / Apollo3Machine.CYCLES_PER_SECOND
+        say(f"dump: the emulated watch ran {watch_seconds / stats.seconds:.2f}x real time "
+            f"({watch_seconds:.0f}s of watch time in {stats.seconds:.0f}s)")
+    say(f"dump: {stats.summary()}")
+    done = sum(r["done"] for r in dump.manifest["ranges"].values())
+    say(f"dump: {done:,} of {total:,} bytes in {args.output}")
+    if stats.zero_chunks:
+        say(f"dump: {stats.zero_chunks:,} chunks came back zero every time -- data that "
+            f"is zero, unless the watch was answering nothing at all")
+    if stats.reads_per_second:
+        for size, what in ((40 << 20, "the ~40 MB of missing resources"),
+                           (166 << 20, "the whole 166 MB span")):
+            say(f"dump: {what}, read in full, would take "
+                f"{stats.estimate(size) / 3600:.1f} h at this rate "
+                f"({stats.reads_per_second:.1f} reads/s); blank pages cost an eighth of that")
+    if failed:
+        say(f"stopped: {failed} -- run it again to go on from here")
+        return 2 if not stats.covered else 1
+    return 0 if done >= total else 1
+
+
 def cmd_boot(args) -> int:
     img = _load(args.image)
     quiet = args.json
@@ -346,6 +507,11 @@ def cmd_boot(args) -> int:
                              ble=not args.no_ble, realtime=realtime)
     resources = None if args.no_resources else Path(args.resources)
     devices = attach_mspi_devices(machine, resource_blob=resources, log=log)
+    # Dumped NAND (normwatch dump, #69): each blob carries the address it belongs
+    # at, exactly as the app's resource image does, so it mounts the same way.
+    for blob in mount_blobs(getattr(args, "nand", None) or []):
+        data = blob.read_bytes()
+        devices["nand"].load(data[4:], int.from_bytes(data[:4], "little"))
     # Kept off the machine (a snapshot walks the machine): which images the firmware drew
     # as "No data" because the NAND does not have them (fw/resources.py, #64).
     missing_images = MissingResources(machine)
@@ -570,6 +736,10 @@ def main(argv=None) -> int:
     p_boot.add_argument("--resources", default=str(DEFAULT_RESOURCES),
                         help=f"resource blob to mount in the SPI NAND "
                              f"(default: {DEFAULT_RESOURCES})")
+    p_boot.add_argument("--nand", action="append", metavar="PATH",
+                        help="a dumped NAND blob to mount as well, or a `dump -o` "
+                             "directory of them (#69). Each goes at the address in its "
+                             "first four bytes. Repeatable")
     p_boot.add_argument("--no-resources", action="store_true",
                         help="leave the SPI NAND erased")
     p_boot.add_argument("--press", action="append", metavar="PIN[:AT[:HOLD]]",
@@ -725,6 +895,50 @@ def main(argv=None) -> int:
                        help="the emulated watch's BD address (default: the physical "
                             "watch's)")
     p_cmd.set_defaults(func=cmd_command)
+
+    p_dump = sub.add_parser(
+        "dump", help="read a range of the watch's SPI NAND out through the patched 0xEE "
+                     "(#68); resumable, so stopping it costs one page")
+    p_dump.add_argument("-o", "--output", required=True, metavar="DIR",
+                        help="directory for the dump: one 0x<start>.bin per range, in the "
+                             "resource-blob format `boot --nand` mounts, and a manifest. "
+                             "An existing dump is continued")
+    p_dump.add_argument("--range", action="append", required=True, metavar="START-END",
+                        help="a NAND range in hex, e.g. 026DA430-0496C000 (rounded out to "
+                             "whole 2 KB pages). Repeatable. The missing resources are "
+                             "026DA430-0496BDAC, 04E1152B-04E1C618, 08CBF981-0902DDCA, "
+                             "0AA58ACE-0AA6E974 and 0C53D84A-0C55619B (docs/firmware.md)")
+    p_dump.add_argument("--pages", type=int, default=None, metavar="N",
+                        help="stop after N pages (a sample, or a measurement)")
+    p_dump.add_argument("--tries", type=int, default=4, metavar="N",
+                        help="attempts for a read that gets no reply at all (default 4)")
+    p_dump.add_argument("--zero-tries", type=int, default=12, metavar="N",
+                        help="attempts for a read that comes back zero-filled, which is "
+                             "either a read the watch's UI won the NAND from or data that "
+                             "really is zero (default 12)")
+    p_dump.add_argument("--no-skip", action="store_true",
+                        help="read every chunk instead of skipping a page whose first and "
+                             "last chunk are both erased")
+    p_dump.add_argument("--no-trigger", action="store_true",
+                        help="do not write [03] to 8002 after each request. The emulated "
+                             "watch answers 0xEE without it, saving a write a read; the "
+                             "physical one has only been asked with it")
+    p_dump.add_argument("--timeout", type=float, default=36000.0, metavar="S",
+                        help="seconds the emulated watch may run (default 10 h)")
+    p_dump.add_argument("--flash-state", metavar="PATH", default=None,
+                        help="start the emulated watch from this saved flash, read only")
+    p_dump.add_argument("--mac", metavar="MAC", default=None,
+                        help="dump the PHYSICAL watch at MAC instead, over this PC's "
+                             "Bluetooth adapter. It must already be running a patched "
+                             "image, which is #70 -- untried")
+    p_dump.add_argument("--image", default=str(DEFAULT_IMAGE),
+                        help="firmware .bin for the emulated watch: a PATCHED one "
+                             "(normfw patch-nand), or nothing will answer")
+    p_dump.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                        help="resource blob loaded into the emulated NAND")
+    p_dump.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
+                        help="the emulated watch's BD address")
+    p_dump.set_defaults(func=cmd_dump)
 
     args = parser.parse_args(argv)
     if getattr(args, "seconds", None):

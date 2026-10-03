@@ -18,7 +18,8 @@ TOOLS = [
      ["normwatch boot --live                       the watch's screen in a window; click to touch",
       "normwatch boot --seconds 14 --no-ble        boot to the UI and print a report",
       "normwatch boot --netsim --live --flash-state watch.zip   on the air, for the Android emulator",
-      "normwatch info                              the firmware image's header"]),
+      "normwatch info                              the firmware image's header",
+      "normwatch dump -o DIR --range 026DA430-0496C000   read the NAND out (needs a patched image)"]),
     ("normcmd", "normplus.watch.__main__:cmd_main",
      "Asks a watch one command and decodes the reply: the emulated one, or the real one with --mac.",
      ["normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   the real watch",
@@ -71,6 +72,11 @@ RECIPES = [
     ("Check something on the real watch, quickly", [
         "normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1",
         "(the watch must not be connected to a phone at the time)"]),
+    ("Read the watch's NAND out (the missing resources, #65)", [
+        "normfw patch-nand NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin",
+        "normwatch dump -o dump --range 026DA430-0496C000 --image patched.bin --flash-state bound.zip",
+        "normwatch boot --live --nand dump          (mount what came back)",
+        "The physical watch needs the patch flashed first, which is #70."]),
 ]
 
 DOCS = [

@@ -655,6 +655,54 @@ which runs `test_ota.py` and `test_ota_mcu.py` with `--image`).
 
 The patched image is vendor-derived and is never committed; it is built on demand.
 
+### Reading it out: `normwatch dump` (#69)
+
+```bash
+normfw patch-nand NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin
+normwatch dump -o dump --range 026DA430-0496C000 --image patched.bin --flash-state bound.zip
+normwatch boot --live --nand dump          # the watch running on what came back
+```
+
+`tools/normplus/watch/fw/nanddump.py` asks for 128 bytes at a time for as long as it takes,
+and writes one `0x<start>.bin` per range in the app's own resource-blob format -- four bytes
+of address, then the bytes -- which is what `SpiNand.load` mounts, plus a `manifest.json` of
+what is done. Each page is appended the moment it is read, so a dump that stops for any
+reason (`exit 1`) continues from the same command; what it loses is the page in flight.
+`tools/tests/test_nand_dump.py` pins the awkward cases against a fake watch -- a lost read, a
+page of real zeros, a watch that stops answering mid-page, a resume -- and then dumps the
+emulated watch and compares.
+
+**Measured against the emulated watch** (patched image, bound, screen idle):
+
+| | |
+|---|---|
+| Rate | **10-15 reads/s, i.e. ~1.5 KB/s** -- about 100 ms a round trip |
+| Emulator's share of that | **none to speak of**: the watch ran at 0.81x real time, so this is what the channel costs, not what the emulator costs |
+| Loss to the UI | **0-4%** with the screen idle, against the ~20% measured while the face was drawing (#68) |
+| Blank pages | 2 reads instead of 16 |
+| The ~40 MB of missing resources | **~7-9 hours**, read in full |
+| The whole 166 MB span | ~26-37 hours -- so dump the five clusters, not the span |
+
+Three things make that rate what it is, and two of them were mistakes worth recording:
+
+- **The ATT MTU.** The 0x6F channel sits at the default 23 bytes, where a 128-byte answer is
+  seven notifications and seven connection intervals. Asking for 247 (`Phone.request_mtu`,
+  what the OTA path already did) made it one, and the dump four times faster.
+- **Waiting for the frame, not for the silence.** `Conversation.replies` waits half a second
+  after a whole frame in case more follow, which is right for a command whose answers are
+  unknown and wrong for a dump: it was most of the time per read. `Conversation.frames`
+  returns the moment the frame is whole.
+- **Not re-reading zeros 12 times.** Zero data and a read the UI won are the same 128 zero
+  bytes, so a zero answer has to be asked again -- but 12 attempts on a quiet watch is 11
+  wasted, and a resource image has a great deal of zero in it (the face background alone is
+  259,200 zero bytes). The count now follows the loss rate actually being seen: enough
+  attempts that all of them being losses has a chance of 1e-9, which is 13 at a 20% loss
+  rate and 3 at 0.3%.
+
+The `[03]` trigger write after each request makes no measurable difference (9.8 reads/s with
+it, 10.7 without, inside the noise), and the emulated watch answers 0xEE without it -- but it
+stays on, because it is what the app does and what the physical watch has been asked with.
+
 ---
 
 ## Appendix: reproducing the analysis

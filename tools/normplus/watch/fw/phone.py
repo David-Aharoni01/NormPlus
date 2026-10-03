@@ -452,6 +452,27 @@ class Conversation:
         except asyncio.TimeoutError:
             return None
 
+    async def frames(self, *, timeout: float, count: int = 1) -> list:
+        """Whole 0x6F frames, returned the moment the last one is complete.
+
+        What :meth:`replies` cannot do: it waits ``settle`` seconds after a frame
+        in case more follow, which is right when printing everything a command
+        provoked and wrong when one answer is expected and the next request is
+        waiting on it -- half a second a read is most of a NAND dump's time (#69).
+        """
+        deframer, out = Deframer(), []
+        deadline = time.monotonic() + timeout
+        while len(out) < count:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                _, value = await asyncio.wait_for(self._queue.get(), left)
+            except asyncio.TimeoutError:
+                break
+            out += deframer.feed(value)
+        return out
+
     async def replies(self, *, timeout: float, settle: float = 0.5) -> list:
         """Notifications from now on: until a whole frame has come and *settle*
         seconds pass without another, or until *timeout*."""
@@ -603,6 +624,17 @@ class Phone(Conversation):
         await self.peer.write_value(self.chars[char], data, with_response=True)
         if trigger:
             await self.peer.write_value(self.chars["8002"], b"\x03", with_response=False)
+
+    async def request_mtu(self, mtu: int = 247) -> int:
+        """Raise the ATT MTU, so a long reply is one notification and not seven.
+
+        The 0x6F channel works at the default 23, which is what the companion app
+        leaves it at for everything but an update -- but then every notification
+        carries 20 bytes and costs a connection interval, and a 128-byte answer
+        is seven of them. A NAND dump is nothing but long answers (#69).
+        """
+        await self.peer.request_mtu(mtu)
+        return mtu
 
     # -- OTA -------------------------------------------------------------------
 
