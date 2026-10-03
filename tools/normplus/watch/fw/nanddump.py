@@ -55,13 +55,25 @@ from .phone import CHECK, CHECK_RESPONSE, SET, frame
 CHUNK = 0x80
 #: The NAND's page size, which is what blank-skipping works in.
 PAGE = 2048
-#: The top nibble that tells the patched 0xEE handler "this is a NAND offset".
+#: The top nibble that tells the patched 0xEE handler "this is a NAND offset":
+#: read the page this address is in, then answer the slice asked for.
 NAND_TAG = 0xF
+#: The other tag: "answer a slice of the page you already hold", which touches no
+#: NAND at all. The driver does a full PAGE READ on every call, so asking for the
+#: sixteen chunks of a page with :data:`NAND_TAG` reads that page sixteen times;
+#: anchoring the page once and slicing it fifteen times reads it once (#70). The
+#: page lives in the OTA's assembly buffer, whose only other writers are the OTA
+#: handlers, so nothing can move it under a dump -- and a page is re-anchored
+#: every 2 KB, so even then the damage could not outlive one page.
+BUFFER_TAG = 0xE
 #: The command byte the patch hooks.
 MEMORY_READ = 0xEE
 #: The one-byte code the patch answers with when the storage stack is not up, as
 #: opposed to one of the driver's own error codes (#70).
 DRIVER_DOWN = 0xFE
+#: And when the slice asked for would run past the end of the page it holds. Only
+#: a caller asking wrongly can provoke it, so it is fatal rather than retried.
+CROSSES_PAGE = 0xFD
 #: What brings the storage stack back up, from here rather than by hand:
 #: ``CONTROL_DEVICE`` told to show a different screen. What the stack needs is a
 #: screen *change* -- the firmware redraws the face from images it already has, so
@@ -98,17 +110,25 @@ class DriverDown(DumpError):
     """
 
 
-def chunk_payload(address: int, length: int) -> bytes:
+def chunk_payload(address: int, length: int, tag: int = NAND_TAG) -> bytes:
     """The 0xEE payload for a NAND read: the tagged address, big-endian, then the length.
 
     Refuses an address that would not be tagged, or a length the handler cannot
     answer: an untagged address faults the watch rather than failing politely.
+    Also refuses a slice that crosses a page boundary, which the patch refuses too
+    (:data:`CROSSES_PAGE`) -- it holds one page at a time, and the bytes after it
+    are not this page's.
     """
     if not 0 <= address < NAND_SIZE:
         raise ValueError(f"0x{address:08X} is outside the NAND's 256 MB")
     if not 1 <= length <= CHUNK:
         raise ValueError(f"{length} bytes is not between 1 and {CHUNK}")
-    return (address | NAND_TAG << 28).to_bytes(4, "big") + bytes([length])
+    if tag not in (NAND_TAG, BUFFER_TAG):
+        raise ValueError(f"0x{tag:X} is not a tag the patch answers")
+    if address % PAGE + length > PAGE:
+        raise ValueError(
+            f"0x{address:08X} + {length} crosses the end of its page")
+    return (address | tag << 28).to_bytes(4, "big") + bytes([length])
 
 
 def waker(conv):
@@ -339,7 +359,8 @@ class Dumper:
             self.stats.strays += len(got)
         return None
 
-    async def read_chunk(self, conv, address: int, length: int = CHUNK) -> Optional[bytes]:
+    async def read_chunk(self, conv, address: int, length: int = CHUNK,
+                         tag: int = NAND_TAG) -> Optional[bytes]:
         """One chunk, retried; None if the watch stopped answering.
 
         The patch reports a failed read as a **one-byte reply** holding the
@@ -349,7 +370,7 @@ class Dumper:
         read -- where telling the two apart by re-reading used to cost six, which
         was most of a dump (#69).
         """
-        payload = chunk_payload(address, length)
+        payload = chunk_payload(address, length, tag)
         silent = failed = 0
         while True:
             got = await self._once(conv, payload)
@@ -364,6 +385,10 @@ class Dumper:
             # One byte: the read did not happen, and this is why.
             code = got[0] if got else 0
             self.stats.lost += 1
+            if code == CROSSES_PAGE:
+                raise DumpError(
+                    f"0x{address:08X} + {length}: the watch says that slice crosses "
+                    "the end of the page it holds -- a bug here, not there")
             if code == DRIVER_DOWN:
                 self.stats.driver_down += 1
             else:
@@ -378,14 +403,22 @@ class Dumper:
                 return None
 
     async def read_page(self, conv, address: int) -> tuple[bytes, bool, int]:
-        """One NAND page: its bytes, whether it was skipped as erased, zero chunks."""
+        """One NAND page: its bytes, whether it was skipped as erased, zero chunks.
+
+        The page is **anchored once** -- the first chunk is asked for with
+        :data:`NAND_TAG`, which costs the one PAGE READ the driver does on every
+        call, and every chunk after it with :data:`BUFFER_TAG`, which is a copy out
+        of the page the watch is already holding. Sixteen chunks, one page read.
+        """
         erased = b"\xff" * CHUNK
         if self.skip_blank:
             first = await self.read_chunk(conv, address)
             if first is None:
                 raise DumpError(f"no answer for 0x{address:08X}")
             if first == erased:
-                last = await self.read_chunk(conv, address + PAGE - CHUNK)
+                # The far end of the same page, so this costs no second page read.
+                last = await self.read_chunk(conv, address + PAGE - CHUNK,
+                                             tag=BUFFER_TAG)
                 if last is None:
                     raise DumpError(f"no answer for 0x{address + PAGE - CHUNK:08X}")
                 if last == erased:
@@ -397,7 +430,10 @@ class Dumper:
             chunks = []
         while len(chunks) * CHUNK < PAGE:
             at = address + len(chunks) * CHUNK
-            got = await self.read_chunk(conv, at)
+            # Only the first chunk of a page goes to the NAND; the rest are slices
+            # of what that read left in the watch's buffer.
+            got = await self.read_chunk(
+                conv, at, tag=NAND_TAG if not chunks else BUFFER_TAG)
             if got is None:
                 raise DumpError(f"no answer for 0x{at:08X}")
             chunks.append(got)

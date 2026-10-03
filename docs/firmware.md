@@ -594,14 +594,15 @@ memory-mapped. So the firmware has to be asked to use its own NAND driver. That 
 `tools/tests/test_nand_patch.py`; it has **not** been flashed to the watch (that is #70).
 
 **It changes one instruction.** The 0xEE handler ends with `bl 0x00020EC4` (`memcpy`) at
-`0x000377CE`; that call becomes a `bl` to 56 bytes appended after the image's last byte,
-which for a tagged address calls the firmware's own NAND read and otherwise tail-calls the
+`0x000377CE`; that call becomes a `bl` to 144 bytes appended after the image's last byte,
+which for a tagged address reads the firmware's own NAND and otherwise tail-calls the
 same `memcpy`. Every other byte of the image is unchanged, so the length at +0x0C and the
 CRC at +0x10 are the only other fields that move (§7, `normfw seal` does it).
 
 **Asking for a NAND read.** The address field's top nibble selects the address space:
-`0xFnnnnnnn` is NAND byte offset `0xnnnnnnn` (the whole 256 MB, both dies), anything else is
-a CPU address and behaves exactly as the shipped firmware does. 0xF0000000 is unmapped on
+`0xFnnnnnnn` is NAND byte offset `0xnnnnnnn` (the whole 256 MB, both dies), `0xEnnnnnnn` is a
+slice of the page already loaded (below), anything else is a CPU address and behaves exactly
+as the shipped firmware does. 0xF0000000 is unmapped on
 the Apollo3, so nothing that means something today changes meaning. The tag costs no payload
 byte, which matters: the handler never sees the payload length (the dispatcher passes it in
 r2 at 0x00039F38 and the handler overwrites r2 before the hook), so a sixth payload byte
@@ -631,8 +632,12 @@ not up.
   dump time. **Decided against (#69, owner's call): 128 stays.** A longer dump is worth more
   than a patch that touches the handler's frame, because the image this becomes is the one
   flashed to the only watch we have. Do not revisit it to save time.
-- **A read may span pages.** The driver clamps each transfer to the end of the page it is in
-  (`0x0003E39C`-`0x0003E3BC`) and comes back for the rest, so nothing needs aligning.
+- **A read may not span pages.** The driver itself would: it clamps each transfer to the end
+  of the page it is in (`0x0003E39C`-`0x0003E3BC`) and comes back for the rest. The patch does
+  not, because it answers out of a one-page buffer (below), and the bytes past the end of that
+  page are the next SRAM variable along rather than the next page's. A slice that would cross
+  is refused with `0xFD`, checked before anything is called so it costs no page read; only a
+  client asking wrongly can provoke it, and `chunk_payload` refuses to send one.
 - **A read can lose the NAND to the UI, and must be retried.** The watch reads the NAND
   continuously to draw itself and the driver's lock is taken with a short timeout
   (`0x00031B40` from `0x0003E348`). About one read in five is lost while the face is up. It
@@ -647,7 +652,8 @@ not up.
 
 **What the rehearsal shows.** The patched image verifies and re-seals; the patched watch
 boots past its boot animation, pairs, binds and draws; a tagged address returns the emulated
-NAND byte for byte (including across a page boundary) and 0xFF where the NAND holds nothing
+NAND byte for byte -- a whole page in sixteen chunks, for one PAGE READ -- and 0xFF where the
+NAND holds nothing
 -- which the stock firmware could not read at all; a CPU address answers exactly the bytes
 #66 recorded from both watches; and both OTA rehearsals pass against the patched image, so a
 resource (type 4) update and type-1 staging still work (`normtest nand_patch -- --full`,
@@ -702,9 +708,12 @@ initialised and never opened -- while the emulated watch's values are those of a
 driver that has been read from. Taking a NULL lock asserts too (`0x00031B58`), so
 instance 0 alone would not have been enough.
 
-**What the patch does about it -- three hooks, 92 appended bytes.** The read runs
-with a literal instance 0 and checks the lock before calling anything, so it cannot
-wedge a watch whatever state the driver is in. On top of that:
+**What the patch does about it.** The read runs with a literal instance 0 and checks
+the lock before calling anything, so it cannot wedge a watch whatever state the
+driver is in. That hook alone is what `normfw patch-nand` builds, and what has run on
+the watch for hours. Two further hooks were tried, to keep the storage stack up
+between touches, and **they crashed the watch twice**; they are behind
+`--keep-storage-up` and are not flashed:
 
 | where | was | is | why |
 |---|---|---|---|
@@ -726,6 +735,18 @@ shipped -- so the cost is one lock object, allocated once, never freed. Repeatin
 rest of the bring-up is harmless: registration assigns fields rather than linking
 anything.
 
+**And it still crashed the watch, twice, which is the lesson.** The teardown frees
+*two* objects and the guard protected one of them. `0x10001868` is created at
+`0x000314FC` and freed at `0x00031570`, and with the teardown gone its create ran
+again on every bring-up with nothing to stop it: a leak of one allocation per screen
+change, until the heap ran out. The emulator cannot show this -- it ran the same image
+for minutes without complaint, because nothing there changes screens for an hour --
+and the physical watch died twice before the two creates were told apart. **A hook
+that changes an object's lifetime has to be checked against every object on that
+path, not the one the hook is about.** The read hook has no such reach, which is why
+it is the one that ships: the storage stack is left to go down when the watch idles,
+and a read that arrives then is answered `0xFE` rather than silently wrong.
+
 **And a failed read now says so.** The read function returns non-zero on failure
 (`0x0003E444`, `0x0003E44E`, `0x0003E464` all join a common error exit at
 `0x0003E466`), which the first version threw away. The handler puts the reply length
@@ -735,6 +756,52 @@ means the read did not happen and why (0xFE being the patch's own "the stack is 
 up"), and the length asked for means this is what the NAND holds.** A page of real
 zeros therefore costs 16 reads rather than ~96, which is what took the ~40 MB dump
 from an estimated 12 hours to about 3.5.
+
+### One page read a page, not sixteen (#70)
+
+The patch flashed on 2026-10-03 worked and was far too slow: **0.28 s a 128-byte chunk**
+on the watch, against 0.031 s for a CPU read over the same channel, which put the ~40 MB
+of factory resources at three to six days. It also dropped the link after 13-25 s of
+reading, every time, whatever the pacing.
+
+The cause is in the driver, and it is not a mystery once looked at: **every call issues a
+full PAGE READ.** `movs r0, #0x13` at `0x0003E416` builds the 4-byte command -- opcode
+then the three row-address bytes -- on the straight-line path of the read, so asking for
+128 bytes moves 2048 bytes out of the array into the part's cache and copies 128 of them
+out. The sixteen chunks of a page read that page sixteen times, and the fifteen extra
+reads are the whole of the difference between 0.28 s and 0.031 s. It is also a plausible
+cause of the drops: each one blocks the firmware in the driver with the storage lock
+held, and the BLE stack gets what is left.
+
+**So the patch loads a page and answers slices of it.** The driver's length argument is a
+word and it loops across pages, so one call can fetch a whole page; what it needed was
+somewhere to put one, and a 0x6F reply cannot carry 2048 bytes (the builder at
+`0x000393B8` refuses any frame of 255 bytes or more). The **OTA's own page-assembly
+buffer** is the right size and is idle whenever no update is running: 2048 bytes at
+`0x10010C64`, and the length is the firmware's own in three places -- the SET handler
+zeroes `0x800` of it (`bzero` at `0x00021122`, its length set at `0x0003B808`), the
+transport CRC runs over `0x800` of it (`0x0003BD12`), and the write descriptor is built
+as `{it, 0x800}` (`0x0003BE36`). All five references to it are in the OTA handlers.
+
+| tag | what it does | what it costs |
+|---|---|---|
+| `0xFnnnnnnn` | read the page this offset is in into that buffer, answer the slice | one PAGE READ |
+| `0xEnnnnnnn` | answer a slice of the page already there | no NAND at all |
+
+A dump therefore **anchors each page once** with `0xF` and takes the other fifteen chunks
+with `0xE`. A page costs one page read and sixteen round trips instead of sixteen page
+reads, which at the measured CPU-read rate is ~0.75 s a page: **about four hours for the
+40 MB**, and a sixteenth of the time with the storage lock held. The page is re-anchored
+every 2 KB, so even if something did overwrite that buffer mid-page -- nothing but an OTA
+writes it -- the damage could not outlive one page.
+
+Two things are deliberately given up for it. A read may no longer span two pages (above),
+and the watch holds state between two commands, which nothing else in the 0x6F protocol
+does. Both are checked on the emulated watch by
+`test_a_page_is_sixteen_chunks_and_one_page_read`, which counts PAGE READs *of the page
+under test* -- the UI reads the NAND constantly to draw itself, so the device's own
+counter says nothing on its own -- and compares the sixteen chunks against the resource
+blob byte for byte.
 
 ### Reading it out: `normwatch dump` (#69)
 

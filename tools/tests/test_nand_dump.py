@@ -19,6 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+from normplus.firmware import nand_patch
 from normplus.watch.fw import nanddump
 from normplus.watch.fw.nanddump import CHUNK, PAGE, Dump, DumpError, Dumper
 from normplus.watch.fw.phone import CHECK, Deframer, frame
@@ -43,7 +44,11 @@ class FakeWatch:
         self.down = down                # the storage stack is not up: 0xFE to everything
         self.random = random.Random(seed)
         self.reads = 0
+        self.page_reads = 0             # how often the NAND itself was read
+        self.loaded: int | None = None  # which page the OTA buffer holds
+        self.buffer = b"\x00" * nanddump.PAGE
         self.asked: list[tuple[int, int]] = []
+        self.tags: list[int] = []       # the tag each read came in with
         self._replies: list = []
 
     def byte(self, address: int) -> int:
@@ -59,19 +64,29 @@ class FakeWatch:
         assert data[0] == 0x6F and data[1] == 0xEE and data[2] == CHECK, data.hex(" ")
         payload = data[5:-1]
         address = int.from_bytes(payload[:4], "big")
-        assert address >> 28 == nanddump.NAND_TAG, "an untagged address would fault the watch"
+        tag = address >> 28
+        assert tag in (nanddump.NAND_TAG, nanddump.BUFFER_TAG),             "an untagged address would fault the watch"
         address &= 0x0FFFFFFF
         length = payload[4]
         self.reads += 1
         self.asked.append((address, length))
+        self.tags.append(tag)
         if self.die_after is not None and self.reads > self.die_after:
             return                      # nothing comes back, ever again
+        page, offset = address - address % nanddump.PAGE, address % nanddump.PAGE
         if self.down:
             answer = bytes([nanddump.DRIVER_DOWN])      # one byte: the stack is not up
+        elif offset + length > nanddump.PAGE:
+            answer = bytes([nanddump.CROSSES_PAGE])     # one page is all it holds
         elif self.random.random() < self.loss:
             answer = b"\x06"            # one byte: the driver's own error code
         else:
-            answer = bytes(self.byte(address + i) for i in range(length))
+            if tag == nanddump.NAND_TAG:
+                # As the driver does: a whole PAGE READ, however little was asked for.
+                self.page_reads += 1
+                self.loaded = page
+                self.buffer = bytes(self.byte(page + i) for i in range(nanddump.PAGE))
+            answer = self.buffer[offset:offset + length]
         reply = frame(0xEE, 0x80, answer)
         # Answered in 20-byte notifications, as the real link does, so the
         # deframing is exercised rather than assumed.
@@ -242,6 +257,64 @@ def test_no_skip_reads_every_chunk():
     assert watch.reads == PAGE // CHUNK
 
 
+def test_a_page_costs_one_page_read_not_sixteen():
+    """The whole point of the page buffer (#70).
+
+    The driver issues a full PAGE READ however few bytes are asked for, so the
+    sixteen chunks of a page used to read that page sixteen times. Only the first
+    chunk is asked for with the NAND tag now; the fifteen after it are slices of
+    the page that read left behind, and they touch no NAND at all.
+    """
+    start = 0x0C780000
+    content = bytes(random.Random(11).randbytes(PAGE))
+    watch = FakeWatch({start: content})
+    dumper = Dumper(log=quiet)
+    data, blank = run(dumper.read_page(watch, start))
+    assert data == content and not blank
+    assert watch.reads == PAGE // CHUNK, watch.reads
+    assert watch.page_reads == 1, watch.page_reads
+    # ...and the tags are what did it: the NAND once, then fifteen slices.
+    assert watch.tags == [nanddump.NAND_TAG] + [nanddump.BUFFER_TAG] * 15, watch.tags
+
+
+def test_a_blank_page_is_sampled_without_reading_the_nand_twice():
+    watch = FakeWatch({})
+    dumper = Dumper(log=quiet)
+    data, blank = run(dumper.read_page(watch, 0x02000000))
+    assert blank and data == b"\xff" * PAGE
+    # Both samples are in the same page, so the far one is a slice, not a read.
+    assert watch.reads == 2 and watch.page_reads == 1, (watch.reads, watch.page_reads)
+
+
+def test_the_client_and_the_patch_agree_on_every_number_between_them():
+    """Two packages, one protocol: a drift here is a dump of wrong bytes.
+
+    The patch decides these -- they are in its instructions -- and the client has
+    to use the same ones. Nothing in a dump would look wrong if they parted: a
+    0xE read against a patch that does not know that tag would be answered from a
+    CPU address instead, and the file would fill up with plausible rubbish.
+    """
+    assert nanddump.NAND_TAG == nand_patch.NAND_TAG
+    assert nanddump.BUFFER_TAG == nand_patch.BUFFER_TAG
+    assert nanddump.DRIVER_DOWN == nand_patch.DRIVER_DOWN_CODE
+    assert nanddump.CROSSES_PAGE == nand_patch.CROSSES_PAGE_CODE
+    assert nanddump.PAGE == nand_patch.PAGE_SIZE
+    # ...and a chunk has to fit in the handler's own destination buffer.
+    assert CHUNK <= 0x80
+
+
+def test_a_slice_across_a_page_boundary_is_refused_before_it_is_sent():
+    watch = FakeWatch({})
+    dumper = Dumper(log=quiet)
+    try:
+        nanddump.chunk_payload(0x1FC0, CHUNK, nanddump.BUFFER_TAG)
+    except ValueError as exc:
+        assert "crosses" in str(exc), exc
+    else:
+        raise AssertionError("a slice over the end of a page should be refused")
+    assert watch.reads == 0
+
+
 # -- the dump file -------------------------------------------------------------
 
 def test_the_dump_is_a_blob_the_emulator_can_mount():
@@ -348,6 +421,8 @@ def test_the_blank_pages_are_recorded_and_cost_two_reads_each():
     # 16 reads for each full page -- the sampled first chunk is part of the page,
     # not an extra -- and 2 for each blank one.
     assert watch.reads == 2 * (PAGE // CHUNK) + 4 * 2, watch.reads
+    # One PAGE READ per page, blank ones included: that is the 2026-10-03 change.
+    assert watch.page_reads == pages, watch.page_reads
 
 
 def test_it_refuses_ranges_that_are_not_page_aligned_and_a_changed_range():

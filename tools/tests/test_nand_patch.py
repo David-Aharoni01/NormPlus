@@ -48,8 +48,13 @@ PARTITION, CONTENT = int.from_bytes(BLOB[:4], "little"), BLOB[4:]
 #: A factory-resource offset the emulated NAND has nothing at (test_resources.py).
 MISSING = 0x026DA430
 #: 64 bytes before a page boundary with data either side of it -- so a read that
-#: spans two NAND pages is checked against bytes that are not all zero.
+#: spans two NAND pages is a read the patch has to refuse rather than answer with
+#: the page's tail and whatever follows its buffer.
 ACROSS = 391168 - 64
+#: The NAND page size, and a page of the resource partition with data in it: the
+#: sixteen chunks of this page are what prove one PAGE READ serves all of them.
+PAGE = 0x800
+PAGE_UNDER_TEST = 0x8000
 MEMORY_READ = 0xEE
 FULL = "--full" in sys.argv
 
@@ -62,6 +67,27 @@ BOUND = _WORK / "patched-bound.zip"
 def tagged(address: int, length: int) -> bytes:
     """The 0xEE payload for a NAND read: the address big-endian, tagged, then the length."""
     return (address | nand_patch.NAND_TAG << 28).to_bytes(4, "big") + bytes([length])
+
+
+def sliced(address: int, length: int) -> bytes:
+    """The same, with the other tag: a slice of the page the watch already holds."""
+    return (address | nand_patch.BUFFER_TAG << 28).to_bytes(4, "big") + bytes([length])
+
+
+def appended(stock: bytes, *, guard: bool = False) -> int:
+    """How many bytes ``apply`` should add: the routine, its alignment, the guard.
+
+    Worked out rather than written down, so a change to the routine does not need
+    a number here changed with it -- what the test is for is that **only** those
+    bytes are appended, not how many there happen to be.
+    """
+    end = nand_patch.LINK_ADDRESS + image_tool.parse(stock)["payload_len"]
+    at = (end + 3) & ~3                     # where apply puts the routine
+    routine = nand_patch.build_routine(at)[0]
+    total = (at - end) + len(routine)
+    if guard:                               # ...and the guard goes right after it
+        total += len(nand_patch.build_create_guard(at + len(routine))[0])
+    return total
 
 
 def patched() -> bytes:
@@ -98,7 +124,10 @@ def reader(phone, attempts: list | None = None):
         wanted = payload[4]
         for attempt in range(1, tries + 1):
             got = await read(payload)
-            if got is None or len(got) == wanted:
+            # CROSSES_PAGE is an answer, not a loss: retrying a slice that does not
+            # fit in a page would refuse it again, so it ends here as it does in
+            # the dump client.
+            if got is None or len(got) == wanted or                     got == bytes([nand_patch.CROSSES_PAGE_CODE]):
                 if attempts is not None:
                     attempts.append(attempt)
                 return got
@@ -124,7 +153,7 @@ def test_only_the_read_hook_changes_by_default():
     # The two hooks that keep the storage stack up crashed the watch (#70), so the
     # image built by default carries the read hook and nothing else.
     stock, image = STOCK.read_bytes(), patched()
-    assert len(image) - len(stock) == 64, len(image) - len(stock)
+    assert len(image) - len(stock) == appended(stock), len(image) - len(stock)
     at = nand_patch.PAYLOAD_OFFSET + (nand_patch.HOOK_ADDRESS - nand_patch.LINK_ADDRESS)
     header = set(range(image_tool.OFF_LEN, image_tool.OFF_LEN + 4)) | \
         set(range(image_tool.OFF_CRC, image_tool.OFF_CRC + 4))
@@ -140,7 +169,7 @@ def test_only_the_read_hook_changes_by_default():
 def test_with_keep_storage_up_the_three_hooks_are_there_and_nothing_else():
     stock = STOCK.read_bytes()
     image, _ = nand_patch.apply(stock, keep_storage_up=True)
-    assert len(image) - len(stock) == 92, len(image) - len(stock)
+    assert len(image) - len(stock) == appended(stock, guard=True),         len(image) - len(stock)
     sites = [nand_patch.HOOK_ADDRESS, nand_patch.CREATE_ADDRESS, nand_patch.TEARDOWN_ADDRESS]
     hooked = set()
     for address in sites:
@@ -184,15 +213,31 @@ def test_the_routine_assembles_to_what_it_is_written_as():
     at = (nand_patch.LINK_ADDRESS + image_tool.parse(STOCK.read_bytes())["payload_len"] + 3) & ~3
     blob, sources, offsets = nand_patch.build_routine(at)
     nand_patch.check_routine(blob, at, sources, offsets)
-    lines = nand_patch.disassemble(blob[:-8], at)
+    pool = len([source for source in sources if source.startswith(".")]) * 4
+    lines = nand_patch.disassemble(blob[:len(blob) - pool], at)
     assert lines[0].endswith("lsrs r3, r1, #0x1c"), lines[0]
-    assert lines[3].endswith(f"b.w #0x{nand_patch.MEMCPY:x}"), lines[3]
-    assert int.from_bytes(blob[-8:-4], "little") == nand_patch.INSTANCE_LOCK
-    assert int.from_bytes(blob[-4:], "little") == nand_patch.DEVICE_POINTER
+    # An untagged address is a tail call to the shipped memcpy, reached before
+    # anything has been pushed: that is what makes it indistinguishable.
+    tail = next(i for i, line in enumerate(lines) if "b.w" in line)
+    assert lines[tail].endswith(f"b.w #0x{nand_patch.MEMCPY:x}"), lines[tail]
+    assert not any("push" in line for line in lines[:tail]), lines[:tail]
+    for name, value in (("lock", nand_patch.INSTANCE_LOCK),
+                        ("device", nand_patch.DEVICE_POINTER),
+                        ("buffer", nand_patch.PAGE_BUFFER)):
+        held = int.from_bytes(blob[offsets[name]:offsets[name] + 4], "little")
+        assert held == value, f"{name} is 0x{held:08X}"
     # The two things the physical watch taught us (#70), where a reader will look:
     # the instance is a literal 0, and the lock is checked before anything is called.
     assert any(line.endswith("movs r0, #0") for line in lines), lines
-    assert sum(1 for line in lines if "cbz r4," in line) == 3, lines
+    calls = [i for i, line in enumerate(lines) if "blx" in line]
+    assert len(calls) == 1, lines
+    guards = [i for i, line in enumerate(lines) if "cbz r4," in line]
+    assert len(guards) == 2 and max(guards) < calls[0], lines
+    # ...and the slice path reaches the NAND not at all, which is what makes a
+    # page cost one read: between `fetch` and `copy` nothing is called.
+    between = nand_patch.disassemble(blob[offsets["fetch"]:offsets["copy"]],
+                                     at + offsets["fetch"])
+    assert not any("bl" in line or "blx" in line for line in between), between
 
 
 def test_the_patched_image_verifies_and_is_sealed():
@@ -250,8 +295,40 @@ def session() -> dict:
         result["attempts"] = []
         read = reader(phone, result["attempts"])
         result["partition"] = await read(tagged(PARTITION, 0x80))
-        # A read spanning two NAND pages: 64 bytes short of a page boundary, 128 long.
+        # A read spanning two NAND pages: 64 bytes short of a page boundary, 128
+        # long. One page is all the patch holds, so this is refused rather than
+        # answered with the page's tail and whatever SRAM follows it.
         result["across"] = await read(tagged(PARTITION + ACROSS, 0x80))
+        # ...and the same page asked for properly, so a refusal can be told from
+        # a page the driver could not read in the first place.
+        result["across_page"] = await read(
+            tagged(PARTITION + ACROSS - ACROSS % PAGE, 0x80))
+        # The page buffer, which is the whole point (#70): one tagged read loads a
+        # page, and the fifteen slices after it must touch no NAND at all.
+        # ``pages_read`` counts the UI's own reads too -- it draws from the NAND
+        # constantly -- so what is counted here is PAGE READs *of this page*,
+        # which is the only number the claim is about.
+        nand = watch.devices["nand"]
+        mine = (PARTITION + PAGE_UNDER_TEST) // nand.page_size
+        rows, original = [], nand._row_to_page
+
+        def counting(row: int) -> int:
+            number = original(row)
+            rows.append(number)
+            return number
+
+        nand._row_to_page = counting
+        try:
+            chunks = [await read(tagged(PARTITION + PAGE_UNDER_TEST, 0x80))]
+            result["anchor_pages"] = rows.count(mine)
+            for offset in range(0x80, PAGE, 0x80):
+                chunks.append(
+                    await read(sliced(PARTITION + PAGE_UNDER_TEST + offset, 0x80)))
+            result["page_pages"] = rows.count(mine)
+        finally:
+            nand._row_to_page = original
+        result["page"] = b"".join(c for c in chunks if c)
+        result["page_chunks"] = sum(1 for c in chunks if c and len(c) == 0x80)
         result["missing"] = await read(tagged(MISSING, 0x20))
         result["short"] = await read(tagged(PARTITION, 8))
         result["cpu"] = await read(bytes.fromhex("00020000") + bytes([0x10]))
@@ -289,13 +366,32 @@ def test_a_tagged_address_reads_the_nand_byte_for_byte():
     assert r["short"] == CONTENT[:8], (r["short"] or b"").hex(" ")
 
 
-def test_a_read_spanning_two_nand_pages_returns_all_of_it():
-    # The driver clamps each transfer to the end of the page it is in
-    # (0x0003E39C-0x0003E3BC) and comes back for the rest, so the caller does not
-    # have to align anything -- worth pinning, because a dump client that had to
-    # align would be a different client (#69).
+def test_a_read_spanning_two_nand_pages_is_refused_rather_than_half_invented():
+    # The driver would clamp each transfer to the end of its page and come back for
+    # the rest (0x0003E39C-0x0003E3BC), so until 2026-10-03 this read was answered
+    # in full. It is not any more, and deliberately: the patch now loads one page
+    # into the OTA's buffer and answers slices of it, which made a page cost one
+    # PAGE READ instead of sixteen (#70) but leaves nothing valid past the end of
+    # that page. The bytes there would be the next SRAM variable along, and bytes
+    # that look like data but are not are worse than a refusal, so the routine
+    # checks the slice fits and answers CROSSES_PAGE if it does not.
     r = session()
-    assert r["across"] == CONTENT[ACROSS:ACROSS + 0x80], (r["across"] or b"").hex(" ")
+    page_at = ACROSS - ACROSS % PAGE
+    assert r["across_page"] == CONTENT[page_at:page_at + 0x80],         f"the page itself did not read: {(r['across_page'] or b'').hex(' ')}"
+    assert r["across"] == bytes([nand_patch.CROSSES_PAGE_CODE]), (r["across"] or b"").hex(" ")
+
+
+def test_a_page_is_sixteen_chunks_and_one_page_read():
+    # The whole reason the patch was changed on 2026-10-03: every call into the
+    # driver issues a full PAGE READ (0x0003E416), so asking for all sixteen chunks
+    # of a page with the NAND tag read that page sixteen times -- 0.28s a chunk on
+    # hardware, days for the factory resources (#70, #65). One tagged read now
+    # loads the page and fifteen BUFFER_TAG slices come out of it.
+    r = session()
+    assert r["page_chunks"] == PAGE // 0x80, r["page_chunks"]
+    assert r["page"] == CONTENT[PAGE_UNDER_TEST:PAGE_UNDER_TEST + PAGE],         f"the page came back {len(r['page'] or b'')} bytes"
+    assert r["anchor_pages"] == 1, r["anchor_pages"]
+    assert r["page_pages"] == 1, f"{r['page_pages']} page reads for one page"
 
 
 def test_a_read_that_loses_the_nand_to_the_ui_says_so_and_is_retryable():

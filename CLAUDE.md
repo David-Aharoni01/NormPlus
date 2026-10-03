@@ -440,6 +440,13 @@ watch, re-record with `test_golden.py --update` and read the diff it prints.
   rehearse the exact image against the emulated watch (`normtest ota_mcu -- --payload FILE`),
   and read the running firmware back over 0xEE to confirm the watch is running the image the
   patch was built from.
+- **A patch that changes when something is freed must be checked against every object on
+  that path**, not only the one it is about. The emulator cannot catch this: it runs minutes,
+  not hours, and nothing in it changes screens for an hour. Removing the storage teardown
+  (#70) left two creates unguarded where one was obvious, and the second leaked an allocation
+  per screen change until the watch's heap ran out -- twice, on the only watch we have, after
+  a clean emulator run. Audit the frees in the function being bypassed, each one's create, and
+  what calls it again.
 - **Never send a Telink image.** The vendor's public OTA server serves Norm 1 firmware for a
   Telink SoC (`KNLT` at +0x08); `OtaImage.parse` refuses it. Do not keep copies in the repo.
 - **A type-4 SET erases the live resource partition at once.** An interrupted update leaves

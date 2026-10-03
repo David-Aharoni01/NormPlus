@@ -135,6 +135,36 @@ READ_SLOT = 0x0C
 INSTANCE_LOCK = 0x10011CD4
 #: Top nibble of the address field that means "this is a NAND offset".
 NAND_TAG = 0xF
+#: The other tag: "give me a slice of the page already loaded", with no NAND work.
+#: Both nibbles name addresses the Apollo3 does not map, so neither changes the
+#: meaning of anything 0xEE could be asked for before.
+BUFFER_TAG = 0xE
+
+#: **The page buffer, and why this patch is shaped around it.** The driver's read
+#: issues a full PAGE READ (command 0x13, at 0x0003E416) on *every* call and
+#: then copies out the slice asked for -- so 128-byte reads cost sixteen page reads
+#: a page, which is why a chunk takes ~0.28 s on hardware where a CPU read takes
+#: 0.03 s. Its length argument is a word and it loops across pages, so one call can
+#: fetch a whole page; what it needs is somewhere to put it, and the 0x6F reply
+#: builder refuses frames of 255 bytes or more (0x000393B8), so the reply cannot
+#: carry one. The OTA's own page-assembly buffer is exactly the right size and sits
+#: idle whenever no update is in progress: 2048 bytes at 0x10010C64, and the length
+#: is the firmware's own, in three places -- the SET handler zeroes 0x800 of it
+#: (``bzero`` at 0x00021122, its length at 0x0003B808), the CRC runs over 0x800 of
+#: it (0x0003BD12), and the write descriptor is built as {it, 0x800} (0x0003BE36).
+#: The data handler fills it piece by piece (``memcpy`` at 0x0003BA7E), and every
+#: one of its five references is in the OTA handlers, which is why it is free
+#: whenever no update is running. So a 0xF read loads the page there and
+#: answers the slice, and 0xE reads answer later slices with no NAND work at all:
+#: one page read a page instead of sixteen.
+PAGE_BUFFER = 0x10010C64
+PAGE_SIZE = 0x800
+#: What a failed read answers with, in a one-byte reply (#70): the storage stack
+#: is not up...
+DRIVER_DOWN_CODE = 0xFE
+#: ...or the slice asked for runs past the end of the page the buffer holds, which
+#: only a caller asking wrongly can provoke. ``nanddump`` knows both by name.
+CROSSES_PAGE_CODE = 0xFD
 
 #: Where the image's payload starts in the file (4-byte OTA address + 44-byte header).
 PAYLOAD_OFFSET = image_tool.HEADER_LEN
@@ -156,22 +186,33 @@ def _bl(at: int, target: int, *, link: bool = True) -> bytes:
     return struct.pack("<HH", hw1, hw2)
 
 
-def build_routine(at: int) -> tuple[bytes, list[str]]:
+def build_routine(at: int) -> tuple[bytes, list[str], dict]:
     """The appended routine, assembled for *at*, with the source it assembles.
 
     Entered from the hook with the shipped handler's own arguments -- r0 the
     0x80-byte destination buffer, r1 the address from the payload, r2 the length --
-    and nothing else disturbed, so the memcpy path is indistinguishable from the
-    unpatched firmware. r4 is the only register it touches beyond the argument
-    registers, and it is saved.
+    so an untagged address tail-calls the same ``memcpy`` and is indistinguishable
+    from the unpatched firmware.
 
-    Two of its four instructions exist because of what the physical watch turned
-    out to do (#70); the module docstring explains both:
+    A tagged address does one of two things (:data:`PAGE_BUFFER` explains why):
 
-    * the instance argument is a literal 0, not the device object's first word,
-      which is 0xFF on an idle watch and trips ``assert(instance < ( 1 ))``;
-    * it gives up quietly unless the driver's lock object exists, because every
-      assert in this firmware ends in an infinite loop.
+    * ``0xF`` -- read the whole page containing it into the OTA's page buffer, one
+      PAGE READ, then answer the slice asked for;
+    * ``0xE`` -- answer a slice of whatever is in that buffer, touching no NAND.
+
+    So sixteen 128-byte reads of one page cost one page read rather than sixteen.
+
+    Everything the physical watch taught us is here too (#70): the instance
+    argument is a literal 0, because the device object's first word is 0xFF on an
+    idle watch and trips ``assert(instance < ( 1 ))``; the driver's lock is checked
+    before anything is called, because every assert in this firmware ends in an
+    infinite loop; and a read that cannot be done answers one byte with the reason
+    rather than a buffer of zeros, which is also what zero data looks like.
+
+    r5 is the caller's reply length, which is how that one byte is reported: the
+    handler stores r5 into the frame after this returns (0x000377DA) and never
+    reloads it. So r5 is deliberately *not* saved -- the failure paths set it -- and
+    every other register this touches is.
     """
     # Assembled twice: once to find where the labels land, once for real. Each
     # instruction's own position comes from what has been emitted before it rather
@@ -186,76 +227,126 @@ def build_routine(at: int) -> tuple[bytes, list[str]]:
             out.append((data, source) if label is None else (data, source, label))
             pos += len(data)
 
-        def literal(label: str) -> int:
-            """``ldr rX, [pc, #imm]``'s imm8, from where this instruction sits."""
-            return ((at + offsets[label] - ((at + pos + 4) & ~3)) >> 2) & 0xFF
+        def literal(label: str, rt: int = 4) -> bytes:
+            """``ldr rT, [pc, #imm]`` for a word in the routine's own pool."""
+            imm = ((at + offsets[label] - ((at + pos + 4) & ~3)) >> 2) & 0xFF
+            return struct.pack("<H", 0x4800 | (rt << 8) | imm)
 
         def branch(label: str) -> int:
             return (offsets[label] - (pos + 4)) >> 1
 
-        def cbz(label: str, rn: int = 4) -> bytes:
-            """``cbz rN, label``: imm5 holds bits 5:1 of the offset, i holds bit 6."""
+        def cbz(label: str, rn: int) -> bytes:
             offset = offsets[label] - (pos + 4)
             if offsets[label] and not 0 <= offset <= 126 or offset % 2:
                 raise AssertionError(f"cbz cannot reach {label} from +0x{pos:X}")
             return struct.pack("<H", 0xB100 | (((offset >> 6) & 1) << 9)
                                | (((offset >> 1) & 0x1F) << 3) | rn)
 
-        emit(b"\x0b\x0f", "lsrs r3, r1, #0x1c")             # the address's top nibble
-        emit(b"\x0f\x2b", "cmp r3, #0xf")                   # tagged as a NAND offset?
-        emit(struct.pack("<H", 0xD000 | (branch("nand") & 0xFF)), "beq #nand")
-        emit(_bl(at + pos, MEMCPY, link=False), "b.w #memcpy")      # no: as shipped
-        emit(b"\x10\xb5", "push {r4, lr}", "nand")
-        emit(b"\x6f\xf3\x1f\x71", "bfc r1, #0x1c, #4")      # r1 = the NAND byte offset
-        emit(b"\x13\x46", "mov r3, r2")                     # r3 = length
-        emit(b"\x02\x46", "mov r2, r0")                     # r2 = destination
-        # Is the driver even up? [[instance 0 + 4]] is the lock every access takes,
-        # and taking a NULL one asserts (0x00031B58) -- which never returns.
-        emit(struct.pack("<H", 0x4C00 | literal("lock")), "ldr r4, [pc, #lock]")
-        emit(b"\x24\x68", "ldr r4, [r4]")                   # -> 0x1000186C
-        emit(cbz("down"), "cbz r4, #down")
-        emit(b"\x24\x68", "ldr r4, [r4]")                   # the lock object itself
-        emit(cbz("down"), "cbz r4, #down")                  # not up: say so
-        emit(struct.pack("<H", 0x4C00 | literal("device")), "ldr r4, [pc, #device]")
-        emit(b"\x24\x68", "ldr r4, [r4]")                   # the device object
-        emit(cbz("down"), "cbz r4, #down")
-        emit(struct.pack("<H", 0x6800 | ((READ_SLOT >> 2) << 6) | (4 << 3) | 4),
-             "ldr r4, [r4, #0xc]")                          # ew_dev_spinand's read
-        emit(b"\x00\x20", "movs r0, #0")                    # instance 0, as it asserts
-        emit(b"\xa0\x47", "blx r4")                         # -> r0 = 0, or an error
-        emit(cbz("done", rn=0), "cbz r0, #done")            # 0: the answer is the data
-        emit(struct.pack("<H", 0xE000 | ((offsets["fail"] - (pos + 4)) >> 1) & 0x7FF),
-             "b #fail")
-        # The driver is not up at all: our own code rather than one of its.
-        emit(b"\xfe\x20", "movs r0, #0xfe", "down")
-        # Report the failure in the REPLY LENGTH, which is the one channel there is:
-        # the handler puts r5 in the frame after this returns (0x000377DA) and never
-        # reloads it, so one byte means "this read did not happen, here is why" and
-        # the asked-for length means "this is what the NAND holds". Without it a
-        # failed read is 128 zero bytes, which is also what zero data looks like --
-        # and telling those apart by re-reading is most of a dump (#69).
-        emit(b"\x10\x70", "strb r0, [r2]", "fail")
-        emit(b"\x01\x25", "movs r5, #1")
-        emit(b"\x10\xbd", "pop {r4, pc}", "done")
-        while (pos + 2) % 4:                                # the literals must be aligned
+        def b(label: str) -> bytes:
+            return struct.pack("<H", 0xE000 | (branch(label) & 0x7FF))
+
+        # -- which of the three is this? ------------------------------------
+        emit(b"\x0b\x0f", "lsrs r3, r1, #0x1c")            # the address's top nibble
+        emit(b"\x0f\x2b", "cmp r3, #0xf")
+        emit(struct.pack("<H", 0xD000 | (branch("load") & 0xFF)), "beq #load")
+        emit(b"\x0e\x2b", "cmp r3, #0xe")
+        emit(struct.pack("<H", 0xD000 | (branch("fetch") & 0xFF)), "beq #fetch")
+        emit(_bl(at + pos, MEMCPY, link=False), "b.w #memcpy")   # untagged: as shipped
+
+        # -- 0xF: load the page, then answer the slice ----------------------
+        # r6 keeps the destination and r7 the length across the driver call; r5 is
+        # left alone so a failure can report itself in the reply length.
+        emit(b"\xd0\xb5", "push {r4, r6, r7, lr}", "load")
+        emit(b"\x06\x46", "mov r6, r0")                    # the handler's buffer
+        emit(b"\x17\x46", "mov r7, r2")                    # the length asked for
+        emit(b"\x6f\xf3\x1f\x71", "bfc r1, #0x1c, #4")   # r1 = the NAND offset
+        # Does the slice fit in the one page this can hold? Asked before
+        # anything is done, so a slice that does not costs no page read and
+        # cannot be half-answered. (offset + len - 1) >> 11 is zero for
+        # exactly the slices that fit; r0 is free here, r6 holds the buffer.
+        emit(b"\xc1\xf3\x0a\x00", "ubfx r0, r1, #0, #0xb")
+        emit(b"\xc0\x19", "adds r0, r0, r7")
+        emit(b"\x01\x38", "subs r0, #1")
+        emit(b"\xc0\x0a", "lsrs r0, r0, #0xb")
+        emit(struct.pack("<H", 0xD100 | (branch("span") & 0xFF)), "bne #span")
+        # Is the driver up? Taking a NULL lock asserts (0x00031B58), and an assert
+        # never returns.
+        emit(literal("lock"), "ldr r4, [pc, #lock]")
+        emit(b"\x24\x68", "ldr r4, [r4]")                  # -> 0x1000186C
+        emit(cbz("down", 4), "cbz r4, #down")
+        emit(b"\x24\x68", "ldr r4, [r4]")                  # the lock object
+        emit(cbz("down", 4), "cbz r4, #down")
+        emit(b"\x0c\x46", "mov r4, r1")                    # the offset again
+        emit(b"\xcb\x0a", "lsrs r3, r1, #0xb")             # page-align the address
+        emit(b"\xd9\x02", "lsls r1, r3, #0xb")
+        emit(literal("buffer", 2), "ldr r2, [pc, #buffer]")  # where the page goes
+        emit(b"\x40\xf6\x00\x03", "movw r3, #0x800")      # a whole page
+        emit(literal("device", 0), "ldr r0, [pc, #device]")
+        emit(b"\x00\x68", "ldr r0, [r0]")                  # the device object
+        emit(cbz("down", 0), "cbz r0, #down")
+        emit(b"\xc0\x68", "ldr r0, [r0, #0xc]")            # ew_dev_spinand's read
+        emit(b"\x84\x46", "mov ip, r0")
+        emit(b"\x00\x20", "movs r0, #0")                   # instance 0, as it asserts
+        emit(b"\xe0\x47", "blx ip")
+        emit(cbz("copy", 0), "cbz r0, #copy")                # 0 = it read the page
+        emit(b("fail"), "b #fail")                          # anything else is its code
+
+        # -- 0xE: answer from the buffer, no NAND at all --------------------
+        emit(b"\xd0\xb5", "push {r4, r6, r7, lr}", "fetch")
+        emit(b"\x06\x46", "mov r6, r0")
+        emit(b"\x17\x46", "mov r7, r2")
+        emit(b"\x6f\xf3\x1f\x71", "bfc r1, #0x1c, #4")
+        # Does the slice fit in the one page this can hold? Asked before
+        # anything is done, so a slice that does not costs no page read and
+        # cannot be half-answered. (offset + len - 1) >> 11 is zero for
+        # exactly the slices that fit; r0 is free here, r6 holds the buffer.
+        emit(b"\xc1\xf3\x0a\x00", "ubfx r0, r1, #0, #0xb")
+        emit(b"\xc0\x19", "adds r0, r0, r7")
+        emit(b"\x01\x38", "subs r0, #1")
+        emit(b"\xc0\x0a", "lsrs r0, r0, #0xb")
+        emit(struct.pack("<H", 0xD100 | (branch("span") & 0xFF)), "bne #span")
+        emit(b"\x0c\x46", "mov r4, r1")
+
+        # -- the slice: memcpy(dst, buffer + offset % 0x800, len) -----------
+        emit(b"\xc4\xf3\x0a\x04", "ubfx r4, r4, #0, #0xb", "copy")
+        emit(literal("buffer", 1), "ldr r1, [pc, #buffer]")
+        emit(b"\x21\x44", "add r1, r4")                    # the slice's source
+        emit(b"\x30\x46", "mov r0, r6")                    # the handler's buffer
+        emit(b"\x3a\x46", "mov r2, r7")                    # the length asked for
+        emit(_bl(at + pos, MEMCPY), "bl #memcpy")
+        emit(b"\xd0\xbd", "pop {r4, r6, r7, pc}")
+
+        # -- it could not be done, and says which ---------------------------
+        emit(struct.pack("<BB", CROSSES_PAGE_CODE, 0x20),
+             f"movs r0, #0x{CROSSES_PAGE_CODE:x}", "span")   # it crosses a page
+        emit(b("fail"), "b #fail")
+        emit(struct.pack("<BB", DRIVER_DOWN_CODE, 0x20),
+             f"movs r0, #0x{DRIVER_DOWN_CODE:x}", "down")    # the stack is not up
+        emit(b"\x30\x70", "strb r0, [r6]", "fail")         # the reason, in the buffer
+        emit(b"\x01\x25", "movs r5, #1")                   # one byte = it failed
+        emit(b"\xd0\xbd", "pop {r4, r6, r7, pc}")
+
+        while (pos + 2) % 4:                                 # align the pool
             emit(b"\x00\xbf", "nop")
         emit(b"\x00\xbf", "nop")
         emit(struct.pack("<I", INSTANCE_LOCK), ".word 0x10011CD4", "lock")
         emit(struct.pack("<I", DEVICE_POINTER), ".word 0x10006BCC", "device")
+        emit(struct.pack("<I", PAGE_BUFFER), ".word 0x10010C64", "buffer")
         return out
 
     # The first pass only needs each instruction's WIDTH, so zeroed labels do; the
     # masks keep those dummy encodings in range, and check_routine verifies the
     # real ones against the addresses they have to resolve to.
+    labels = ("load", "fetch", "copy", "span", "down", "fail",
+              "lock", "device", "buffer")
     offsets, at_offset = {}, 0
-    labels = ("nand", "down", "fail", "done", "lock", "device")
     for entry in assemble(dict.fromkeys(labels, 0)):
-        if len(entry) == 3:          # this instruction carries a label
+        if len(entry) == 3:
             offsets[entry[2]] = at_offset
         at_offset += len(entry[0])
     code = assemble(offsets)
     blob = b"".join(entry[0] for entry in code)
-    if len(blob) % 4 or len(blob) != offsets["device"] + 4 or offsets["lock"] % 4:
+    if len(blob) % 4 or offsets["lock"] % 4 or len(blob) != offsets["buffer"] + 4:
         raise AssertionError(f"routine is {len(blob)} bytes, labels {offsets}")
     return blob, [entry[1] for entry in code], offsets
 
@@ -288,7 +379,7 @@ def check_routine(blob: bytes, at: int, sources: list[str], offsets: dict) -> No
         for label, offset in offsets.items():
             if f"#{label}" not in source:
                 continue
-            if label in ("lock", "device"):          # a literal, named pc-relatively
+            if offset >= len(code):                  # in the pool: named pc-relatively
                 source = source.replace(
                     f"#{label}", f"#0x{(at + offset) - ((here + 4) & ~3):x}")
             else:
@@ -300,9 +391,13 @@ def check_routine(blob: bytes, at: int, sources: list[str], offsets: dict) -> No
     if len(got) != len(want):
         raise AssertionError(f"disassembled {len(got)} instructions, wrote {len(want)}")
     # ...and the literals hold what they are supposed to.
-    held = [int.from_bytes(blob[-4 * words:][i * 4:i * 4 + 4], "little") for i in range(words)]
-    if held != [INSTANCE_LOCK, DEVICE_POINTER]:
-        raise AssertionError(f"the literals are {[hex(v) for v in held]}")
+    pool = {"lock": INSTANCE_LOCK, "device": DEVICE_POINTER, "buffer": PAGE_BUFFER}
+    held = {label: int.from_bytes(blob[offset:offset + 4], "little")
+            for label, offset in offsets.items() if offset >= len(code)}
+    if held != {label: pool[label] for label in held}:
+        raise AssertionError(f"the literals are {[(k, hex(v)) for k, v in held.items()]}")
+    if len(held) != words:
+        raise AssertionError(f"{words} words in the pool, {len(held)} of them named")
 
 
 def build_create_guard(at: int) -> tuple[bytes, list[str], dict]:
@@ -473,19 +568,24 @@ def main(argv=None) -> int:
               "idles, and a read then answers 0xFE")
     print(f"appended  {after['payload_len'] - before['payload_len']} bytes at "
           f"0x{routine_at:08X}")
-    routine, _, _ = build_routine(routine_at)
+    routine, routine_sources, _ = build_routine(routine_at)
     guard_at = routine_at + len(routine)
-    guard, _, _ = build_create_guard(guard_at)
-    shown = (("the read", routine, routine_at, (INSTANCE_LOCK, DEVICE_POINTER)),
-             ("the create guard", guard, guard_at, (DRIVER_LOCK,))) \
-        if args.keep_storage_up else \
-        (("the read", routine, routine_at, (INSTANCE_LOCK, DEVICE_POINTER)),)
-    for name, blob, start, words in shown:
+    guard, guard_sources, _ = build_create_guard(guard_at)
+    shown = [("the read", routine, routine_sources, routine_at)]
+    if args.keep_storage_up:
+        shown.append(("the create guard", guard, guard_sources, guard_at))
+    for name, blob, sources, start in shown:
+        # The pool is however many ``.word``s the builder put at the end;
+        # printing them as words rather than as the instructions a
+        # disassembler makes of them, and counting them from the source, so
+        # the two cannot disagree.
+        words = [source for source in sources if source.startswith(".")]
+        code = len(blob) - 4 * len(words)
         print(f"  -- {name}, {len(blob)} bytes at 0x{start:08X}")
-        for line in disassemble(blob[:-4 * len(words)], start):
+        for line in disassemble(blob[:code], start):
             print(f"    {line}")
-        for i, value in enumerate(words):
-            print(f"    {start + len(blob) - 4 * len(words) + i * 4:08X}  .word 0x{value:08X}")
+        for i, source in enumerate(words):
+            print(f"    {start + code + i * 4:08X}  {source}")
     print(f"length    {before['declared_len']} -> {after['declared_len']}")
     print(f"image CRC 0x{before['declared_crc']:08X} -> 0x{after['declared_crc']:08X}")
     print(f"transport CRC-16 is now 0x{after['transport_crc16']:04X}")

@@ -50,7 +50,9 @@ Verified on the emulated **and** the physical watch (#66): internal flash from `
 and SRAM read fine, the low ~32-48 KB of flash is read-protected, and **every address the CPU
 does not map faults** -- the handler never answers and the watch is left wedged. The SPI NAND
 is not memory-mapped, so no NAND offset can be read this way; that is what the patch in
-`docs/firmware.md` section 11 changes (#68).
+`docs/firmware.md` section 11 changes (#68) -- by giving the address field two tags the
+Apollo3 does not map anyway: `0xF` for "this is a NAND offset" and `0xE` for "a slice of the
+page you already hold". Everything else answers exactly as it does unpatched.
 
 ## Apollo DFU (Firmware Update)
 
