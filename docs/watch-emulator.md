@@ -213,11 +213,38 @@ running firmware back.
 flash, which is read-protected, so 0xEE cannot fetch it either. It is the one item here
 that cannot be closed by reading more off the watch.
 
-### 7. The factory resources were missing -- closed
+### 7. The factory resources were missing -- closed, with gaps
 
 Most screens drew LVGL's "No data" and the boot animation ran black, because the emulated
 NAND held only the app's 401 KB resource image. **Closed on 2026-10-03**: 40,089,600 bytes
 read off the watch (#70) and mounted by default (#65, #71).
+
+**The read-out has gaps (#82).** Each range ended at the page after the last image *start*
+a screen tour saw, so the last image in a range is cut short and draws white: the weather
+screen's second digit is one. Screens the tour never opened, such as the notification
+banner, use resources that are not in the dump at all. The live window's status line
+counts both kinds ("N images not in the NAND, M cut short"), and the boot report ends with
+the ranges to read off the watch. Reading them is #83.
+
+### 8. The clock starts from nothing at every run, and keeps watch time
+
+The physical watch's RTC sits in an always-on domain and keeps counting through a firmware
+reset. `rtc.c` only puts in its default when the year reads 0. The emulated RTC starts at 0
+every run (a battery pull), so a restarted emulated watch shows `12:00 SUN 01 JAN`
+(2017-01-01, 00:00:06) until a phone sets the time. A rebooted physical watch keeps its
+time. From then on the emulated clock counts **watch** time, 48,000,000 cycles to the
+second. Without `--realtime` (which `--phone` implies), a run that is slower or faster than
+real time drifts from the wall clock by exactly that much.
+
+Until #81 it did not count at all. The RTC was plain storage, so the face showed the last
+time a phone set, and the once-a-second alarm interrupt never fired.
+
+**Do not trust** the date on a freshly started emulated watch, or its seconds against the
+wall clock in a run that is not real time.
+
+**Can it be closed?** The first part could be, by saving the RTC with `--flash-state`, but
+that would be the emulator inventing persistence the file does not stand for (it is the
+flash). Not done.
 
 ### Written down as a difference, and wrong
 
@@ -456,11 +483,9 @@ are worth 1.95x rather than 2.5x. `--trace` and `machine.watch()` both need per-
 Python and switch the C hook off on their own.
 
 **Those figures are `--no-ble` figures** — they were all taken before the radio powered up,
-and they still hold with `--no-ble`. With the radio up the C hook is still bit-identical
-and the deadline quantum is off by the same <=0.4%, but `--idle-skip` is not quite: with
-the NZ8801 model answering it delivers exactly one STIMER interrupt fewer, lost once
-between 225M and 250M, everything else identical (#54, pinned in `tests/test_golden.py`).
-Radio off it is exact over a full boot. What changed is what they are worth, measured over the same 576M boot with the
+and they still hold with `--no-ble`. With the radio up the C hook and `--idle-skip` are
+still bit-identical (`--idle-skip` was one STIMER tick short until #54) and the deadline
+quantum is off by the same <=0.4%. What changed is what they are worth, measured over the same 576M boot with the
 radio on: C hook **4.89x**, `--idle-skip` **1.09x**, deadline quantum **1.31x**. Say which
 of the two you measured — quoting a `--no-ble` figure for a BLE-on run is the mistake this
 note exists to prevent.

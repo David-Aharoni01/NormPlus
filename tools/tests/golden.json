@@ -6,13 +6,14 @@
   },
   "workloads": {
     "boot": {
-      "instructions": 445000369,
+      "instructions": 445000370,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4624,
-        "GPIO": 72,
-        "MSPI": 3093,
-        "STIMER_CMPR0": 9244
+        "PendSV": 4679,
+        "RTC": 9,
+        "GPIO": 36,
+        "MSPI": 3091,
+        "STIMER_CMPR0": 9243
       },
       "frames": 136,
       "pixel_bytes": 35251200,
@@ -35,14 +36,15 @@
       "faults": 0
     },
     "radio": {
-      "instructions": 445000373,
+      "instructions": 445000375,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4638,
+        "PendSV": 4702,
+        "RTC": 9,
         "BLE": 15,
-        "GPIO": 72,
-        "MSPI": 3095,
-        "STIMER_CMPR0": 9242
+        "GPIO": 36,
+        "MSPI": 3091,
+        "STIMER_CMPR0": 9241
       },
       "frames": 136,
       "pixel_bytes": 35251200,
@@ -65,13 +67,14 @@
       "faults": 0
     },
     "language": {
-      "instructions": 460000002,
+      "instructions": 460000000,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4604,
-        "GPIO": 80,
-        "MSPI": 3531,
-        "STIMER_CMPR0": 9561
+        "PendSV": 4660,
+        "RTC": 9,
+        "GPIO": 40,
+        "MSPI": 3528,
+        "STIMER_CMPR0": 9560
       },
       "frames": 139,
       "pixel_bytes": 35818560,
@@ -97,10 +100,11 @@
       "instructions": 500000001,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 5213,
-        "GPIO": 132,
-        "MSPI": 3827,
-        "STIMER_CMPR0": 10416
+        "PendSV": 5270,
+        "RTC": 10,
+        "GPIO": 66,
+        "MSPI": 3824,
+        "STIMER_CMPR0": 10415
       },
       "frames": 137,
       "pixel_bytes": 35510400,

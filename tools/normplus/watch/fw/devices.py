@@ -24,6 +24,7 @@ outbound bytes as "a new command starts" and a subsequent read-only call as
 
 from __future__ import annotations
 
+import collections
 import hashlib
 from pathlib import Path
 from typing import Optional
@@ -170,6 +171,11 @@ class SpiNand(SpiDevice):
         self.command_count = 0
         self.pages_read = 0
         self.pages_written = 0
+        #: page -> how many times it was read holding nothing: never mounted, never
+        #: programmed. In the resource area that is a resource the emulated part does
+        #: not have, which an image header alone cannot show when the header was
+        #: dumped and the pixels were not (#82).
+        self.blank_reads: collections.Counter = collections.Counter()
         #: Pages programmed or erased (or put back by a saved flash state).
         #: What ``--flash-state`` keeps between runs; see flashstate.py.
         self.dirty: set[int] = set()
@@ -216,6 +222,23 @@ class SpiNand(SpiDevice):
             page = bytearray(b"\xff" * (self.page_size + self.spare_size))
             self.pages[number] = page
         return page
+
+    def holds(self, byte_address: int, length: int = 1) -> bool:
+        """Whether every page under these bytes holds something (mounted or programmed)."""
+        first = byte_address // self.page_size
+        last = (byte_address + max(length, 1) - 1) // self.page_size
+        return all(n in self.pages for n in range(first, last + 1))
+
+    def peek(self, byte_address: int, length: int) -> bytes:
+        """Data-area bytes as a read would return them (0xFF where nothing is held),
+        without reading: no counters move and nothing is allocated."""
+        out = bytearray()
+        while len(out) < length:
+            number, column = divmod(byte_address + len(out), self.page_size)
+            take = min(length - len(out), self.page_size - column)
+            page = self.pages.get(number)
+            out += page[column:column + take] if page is not None else b"\xff" * take
+        return bytes(out)
 
     # ── loading real content ─────────────────────────────────────────────────
 
@@ -361,7 +384,15 @@ class SpiNand(SpiDevice):
             # _row_to_page reads the wrong half of the part, which comes
             # back erased, so every image decode fails.
             row = int.from_bytes(args[:3].rjust(3, b"\x00"), "big")
-            self.cache = bytearray(self._page(self._row_to_page(row)))
+            number = self._row_to_page(row)
+            page = self.pages.get(number)
+            if page is None:
+                # Erased, as real flash reads -- and not stored, so that `pages`
+                # stays what was mounted or programmed.
+                self.cache = bytearray(b"\xff" * (self.page_size + self.spare_size))
+                self.blank_reads[number] += 1
+            else:
+                self.cache = bytearray(page)
             self.pages_read += 1
             # The operation completes instantly here, so status stays "ready" and
             # the driver's OIP poll exits on its first read.

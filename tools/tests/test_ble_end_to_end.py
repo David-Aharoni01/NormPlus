@@ -113,6 +113,8 @@ def ack(cmd: int, status: int = 0) -> bytes:
     return bytes([0x6F, 0x01, 0x81, 0x02, 0x00, cmd, status, 0x8F])
 #: The clock the bind sets, as a time rather than bytes.
 BIND_TIME = datetime(2026, 9, 16, 8, 3, 0, tzinfo=timezone(timedelta(hours=3)))
+#: Where the RTC model sits (fw/peripherals.py, Rtc).
+RTC_BASE = 0x40004200
 
 _result = None
 _restarted = None
@@ -219,7 +221,12 @@ async def first_run(phone, watch, outcome: dict) -> None:
     outcome["screen_before"] = fingerprint(watch.display)
     bind = {"init_before": await phone.exchange(CHECK_INIT)}
     bind.update(await phone.bind(clock=datetime_payload(BIND_TIME)))
+    # The RTC (#81), read the way the firmware reads it, right after setDateTime
+    # and again once the face has held for three seconds of watch time.
+    rtc = watch.machine.bus.by_base[RTC_BASE]
+    outcome["clock_at_bind"] = (rtc.reading(), watch_seconds(watch))
     bind["screen_after"] = await settled_screen(watch, unlike=outcome["screen_before"])
+    outcome["clock_later"] = (rtc.reading(), watch_seconds(watch))
     bind["init_after"] = await phone.exchange(CHECK_INIT)
     outcome["bind"] = bind
 
@@ -332,6 +339,23 @@ def test_the_bind_takes_the_watch_out_of_first_run_setup():
         (b.get("init_before") or b"").hex(" ")
     assert b.get("init_after") == bytes.fromhex("6f94800100018f"), \
         (b.get("init_after") or b"").hex(" ")
+
+
+def test_the_watch_keeps_the_time_the_bind_set():
+    """#81: setDateTime goes into the RTC, and the RTC keeps counting. It used
+    to read back what was written for as long as the watch ran."""
+    r = run_once()
+    assert "clock_at_bind" in r and "clock_later" in r, r.get("error")
+    (t0, s0), (t1, s1) = r["clock_at_bind"], r["clock_later"]
+    # The phone's local time, as the payload carries it; rtc.c stores the year
+    # as year - 1900.
+    assert (t0["year"] + 1900, t0["month"], t0["date"], t0["hour"], t0["minute"]) == \
+        (BIND_TIME.year, BIND_TIME.month, BIND_TIME.day, BIND_TIME.hour, BIND_TIME.minute), t0
+    seconds = lambda t: ((t["date"] * 24 + t["hour"]) * 60 + t["minute"]) * 60 + t["second"] \
+        + t["hundredths"] / 100
+    elapsed = seconds(t1) - seconds(t0)
+    assert elapsed >= 3, (t0, t1)
+    assert abs(elapsed - (s1 - s0)) < 0.5, (elapsed, s1 - s0)
 
 
 def test_the_watch_comes_back_bound_after_a_restart():

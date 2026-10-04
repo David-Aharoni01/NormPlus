@@ -22,7 +22,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import test_golden as g  # noqa: E402
-from normplus.watch.fw.resources import MissingResources  # noqa: E402
+from normplus.watch.fw.devices import TOUCH_I2C_ADDRESS, TOUCH_IOM_BASE, SpiNand  # noqa: E402
+from normplus.watch.fw.resources import MissingResources, image_extent  # noqa: E402
 
 M = 1_000_000
 PAGE = 2048
@@ -102,12 +103,15 @@ def with_resources():
 
 
 def mounted():
-    """...run, with the placeholder monitor watching."""
+    """...run to its face and swiped right to the weather screen, with the monitor
+    watching and the NAND to check headers against."""
     global _with_dump
     if _with_dump is None:
         m, devices = with_resources()
-        missing = MissingResources(m)
-        m.run(max_instructions=420 * M, slice_size=4 * M)
+        missing = MissingResources(m, devices["nand"])
+        touch = m.bus.by_base[TOUCH_IOM_BASE].devices[TOUCH_I2C_ADDRESS]
+        g.swipe(m, touch, 480 * M, (60, 180), (300, 180))
+        m.run(max_instructions=600 * M, slice_size=4 * M)
         _with_dump = (m, devices, missing)
     return _with_dump
 
@@ -150,6 +154,51 @@ def test_with_the_resources_mounted_the_placeholders_are_gone():
     assert missing.active
     assert not missing.missing,         f"still missing: {sorted(hex(a) for a in missing.missing)[:8]}"
 
+
+
+def test_the_first_read_out_cut_two_images_short():
+    """#82: each range of the first read-out ended at the page after the last image
+    *start* a screen tour saw, so the image starting there runs past it. Its header
+    is in the NAND and its pixels read 0xFF, which LVGL draws as white -- the
+    weather screen's second digit. The decode succeeds, so only the header says so.
+
+    When #83 reads the tails off the watch, this becomes: nothing cut short.
+    """
+    if not dumped():
+        print("   (skipped: NORM/_nand holds no dump on this machine)")
+        return
+    _, devices, missing = mounted()
+    assert missing.truncated == {
+        0x0496BDAB: (4, 360, 360, 259_204, 597),    # drawn at every boot
+        0x0902DDC9: (5, 42, 53, 6_682, 567),        # the weather screen's digit
+    }, {hex(a): v for a, v in missing.truncated.items()}
+    assert missing.wanted() == [(0x0496C000, 0x049AB800), (0x0902E000, 0x0902F800)], \
+        [f"{lo:08X}-{hi:08X}" for lo, hi in missing.wanted()]
+    assert "2 cut short" in missing.status(), missing.status()
+    assert "0496C000-049AB800 0902E000-0902F800" in missing.summary(), missing.summary()
+    # ...and the NAND saw the same thing from its side.
+    blank = devices["nand"].blank_reads
+    assert all(n in blank for n in range(0x0902E000 // PAGE, 0x0902F800 // PAGE)), sorted(blank)[:8]
+
+
+def test_an_lvgl_header_gives_the_images_extent():
+    assert image_extent(HEADER_360) == (4, 360, 360, 4 + 360 * 360 * 2)
+    digit = 5 | (42 << 10) | (53 << 21)        # TRUE_COLOR_ALPHA: three bytes a pixel
+    assert image_extent(digit.to_bytes(4, "little")) == (5, 42, 53, 4 + 42 * 53 * 3)
+    # A 1-bit indexed 10x2 image: a two-colour palette, then two rows of two bytes.
+    word = 7 | (10 << 10) | (2 << 21)
+    assert image_extent(word.to_bytes(4, "little")) == (7, 10, 2, 4 + 8 + 4)
+    assert image_extent(b"\xff" * 4) is None      # erased: not an image at all
+    assert image_extent(bytes(4)) is None
+
+
+def test_the_nand_tells_held_pages_from_blank_ones_without_reading():
+    nand = SpiNand(log=lambda *a, **k: None)
+    nand.load(b"\x11" * (PAGE + 10), 4 * PAGE)
+    assert nand.holds(4 * PAGE, PAGE + 10) and not nand.holds(4 * PAGE, 2 * PAGE + 1)
+    assert nand.peek(5 * PAGE + 8, 4) == b"\x11\x11\xff\xff"   # the load's tail page, padded
+    assert nand.peek(7 * PAGE - 2, 4) == b"\xff" * 4                # nothing there
+    assert nand.pages_read == 0 and 6 not in nand.pages
 
 
 # -- which blobs `normwatch boot` mounts (#71) ---------------------------------------

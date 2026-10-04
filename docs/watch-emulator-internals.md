@@ -1142,7 +1142,8 @@ later run without it would get the patch anyway. Stopping between an erase and i
 program loses that page, as pulling the battery at that instant would.
 
 What it does not keep is the clock: the RTC is not flash, so a restarted watch shows
-`12:00 SUN 01 JAN` until a phone sets the time.
+`12:00 SUN 01 JAN` until a phone sets the time. From then on it keeps time (#81, "The
+clock stood still").
 
 **The ninth gap: bumble never asked the watch for its key.** The first version of the
 restart test passed -- the phone's stored keys "encrypted" the restarted link without
@@ -1266,8 +1267,9 @@ whole difficulty:
   query. How often it is called is how fast the controller runs, which is how
   fast pixels reach the panel — at one poll per 16384 cycles a boot loses two
   frames and three NAND pages.
-- **`Gpio.pending_irqs` is level-sensitive**, so how often it is looked at is how
-  many times an asserting pin re-pends.
+- **`Gpio.pending_irqs` is level-sensitive**, so how often it is looked at was how
+  many times an asserting pin re-pended. It no longer is while the handler runs: a
+  level is pended only when its IRQ is not active (`CortexM.assert_irq`, #54).
 
 For both, the poll frequency *is* the model, so they keep the historical
 256-cycle interval while they have something to say and offer no deadline at all
@@ -1375,12 +1377,31 @@ accumulates whatever the boot ROM's delay helper reports burning, and the two
 runs enter that helper a different number of times — 0.012% over 100M, in a
 counter nothing in the emulator reads.
 
-**With the radio up it is one tick short.** All of the above was measured radio-off.
-With the NZ8801 model answering, a full 445M boot with `--idle-skip` delivers exactly one
-fewer STIMER interrupt than without it, and nothing else differs — not PendSV, not a
-frame, not a pixel. Bisected: identical through 225M, one short from 250M on, and still
-exactly one short at 450M, so it is one lost tick between ~4.7 and ~5.2s of watch time,
-not drift. Card #54; `tests/test_golden.py` pins it as it stands.
+**With the radio up it was one tick short (#54, fixed).** With the NZ8801 model
+answering, a full 445M boot with `--idle-skip` delivered exactly one fewer STIMER
+interrupt than without it, and nothing else differed. Adding the RTC (#81), a fourth
+deadline source, moved the same kind of one-tick difference into the radio-off boot.
+Bisected there, it was one STIMER compare taken *twice* by the skipping run. There
+were two causes:
+
+- **The skip stepped over deadlines.** `_skip_idle_spin` moved the clock 500 cycles at a
+  time whatever was due, so an interrupt fell pending up to 499 cycles after its
+  deadline, where the plain run's quantum stops exactly on it. Each step is now capped at
+  `_next_quantum()`, so the skip lands where the plain run would.
+- **A level was pended while its own handler ran.** That is the hazard in "the poll
+  that followed re-armed the interrupt" above. A skip that stops next to another
+  deadline puts a poll a few instructions into a handler, before the handler clears its
+  source, and the source was pended again. The NVIC does not do that: it pends a
+  level-sensitive interrupt only "when the interrupt signal is HIGH and the interrupt is
+  not active", and samples the line again when the handler returns (Cortex-M4 Devices
+  Generic User Guide, 4.2.9-4.2.10). `CortexM.assert_irq` follows that rule, and
+  `exception_return` re-samples the returning IRQ through `Apollo3Machine.resample_irq`.
+
+With both fixed, `--idle-skip` reproduces all four golden workloads exactly (instructions
+aside), radio on and off. The second fix also halved the GPIO count on every workload
+(72 to 36 in the boot): every GPIO interrupt had been taken twice, the second time on a
+status the handler had already read. A handful of MSPI interrupts went the same way
+(3,093 to 3,091). Frames, pixels, NAND reads, touch reports and the screen are unchanged.
 
 ### Rehearsing an OTA
 
@@ -1833,6 +1854,53 @@ pointer sits at `0x0005235C`), and nothing has been seen to call it; pulsing eac
 of the interrupt-capable GPIOs in turn does not either. That is the next thing to
 find.
 
+### The clock stood still: the RTC was storage (#81)
+
+After a phone set the time the face showed it, and kept showing it. The firmware keeps the
+time of day in the Apollo3's own RTC and nowhere else, through the AmbiqSuite HAL, and the
+emulator had no RTC: its registers were `Clkgen`'s plain storage, so a read returned what
+the last write left.
+
+```
+am_hal_rtc_time_get   0x0008D614  reads CTRLOW (0x40004240) and CTRUP (0x40004244), BCD
+am_hal_rtc_time_set   0x0008D6A8  RTCCTL.WRTC on, CTRLOW, CTRUP, WRTC off
+am_hal_rtc_alarm_set  0x0008D504  RPT into RTCCTL, ALMUP, ALMLOW
+rtc.c init            0x000B3CE0  year 0? -> 2017-01-01 00:00:06, a Sunday;
+                                  alarm every second (RPT 7), INTEN.ALM, RSTOP off,
+                                  IRQ 2 enabled at priority 0x60
+RTC ISR               0x0008DFE8  INTCLR.ALM, then the callback at [0x100005A4]
+```
+
+The face shows midnight as `12:00`, which is why the default looked like noon. The
+callback (`0x00057EF8` on this boot) is the firmware's once-a-second work. If the RTOS tick
+count has not moved since the last second and the STIMER compare is behind its counter, it
+re-arms the tick (`am_hal_stimer_compare_delta_set(0, 0x20)`): a watchdog for the very
+failure "Interrupt latency" describes. It also runs a ten-second counter and posts message
+5 to a queue. None of that had ever run in the emulator.
+
+`Rtc` (`fw/peripherals.py`, at `0x40004200`, where `Clkgen`'s block now ends) models it
+from the HAL's own shifts and masks. The counter is hundredths, seconds, minutes, hours,
+date, month, year and weekday, run on the watch's clock (480,000 cycles a hundredth), with
+the calendar carrying through month ends, leap years and New Year. WRTC write-protects the
+counter and RSTOP stops it. The alarm matches on the fields RPT selects, latches
+INTSTAT.ALM, and raises IRQ 2; its next match is a deadline, so the quantum stops on it.
+The HAL caps RPT at 7 and asks for every tenth or hundredth through ALM100's high nibble
+(`0xF0`, `0xFF`), and so does the model.
+
+Two details are the firmware's own. `rtc.c` stores the year as year - 1900, so 2026 goes in
+as 126 and lands in CTRUP as `0xC6`, which is not BCD. The HAL's decode gives 126 back, so
+the model holds the firmware's number rather than "correcting" it. And nothing in the image
+sets HR1224, so the model is 24-hour only.
+
+What it changed: the golden workloads take 9-10 RTC interrupts, plus 55-64 PendSV for
+the task the callback wakes, and nothing else moved. `tests/test_rtc.py` drives the model
+through the HAL's register sequences, every RPT interval included, and boots the firmware
+to see its default go in and the alarm taken once a second. `test_ble_end_to_end` checks
+that the bind's setDateTime lands in the RTC and that the RTC keeps counting.
+
+Adding it as a deadline source is what exposed #54's mechanism; see "Speed: 70% of a boot
+is the idle task spinning".
+
 ### The resource path
 
 Worth writing down, because almost none of it is guessable and it took a long time to
@@ -1899,6 +1967,30 @@ ranges. `tests/test_resources.py` pins that every placeholder is a blank resourc
 change that really breaks drawing shows up as a placeholder for an image the NAND *does*
 have. Getting the resources themselves -- off the physical watch, or from the vendor's
 update channel -- is #65.
+
+**Cut short: a white box is the same problem, and the placeholder count could not see it
+(#82).** The first read-out made each of its five ranges from the *start* addresses this
+tour saw, and ended each at the page after the last one. So the image that starts last in
+a range runs past its end. Its header is in the NAND, the decode succeeds, the pixels read
+0xFF, and LVGL draws an opaque white rectangle. The weather screen's second digit is
+`0x0902DDC9`, a 42x53 TRUE_COLOR_ALPHA glyph, and only 567 of its 6,682 bytes were dumped.
+Every boot also draws `0x0496BDAB`, a 360x360 image with 597 of its 259,204 bytes there.
+
+Given the NAND, `MissingResources` reads each drawn image's header from the model
+(`SpiNand.peek`, which reads without reading) and checks that every page under it is held
+(`SpiNand.holds`). The emulated part no longer invents a blank page when one is read, so
+`pages` is what was mounted or programmed, and `SpiNand.blank_reads` counts what was not.
+The status line adds "N cut short". The boot report lists each such image, and ends with
+the page-aligned ranges a follow-up read-out needs (`MissingResources.wanted`, in
+`normwatch dump --range` form). A cut-short image's extent is exact. A missing one's is an
+upper bound, because its header is what is missing: a full screen at three bytes a pixel,
+never past the next resource drawn. LVGL hands a failed image a 2047x2047 area at
+(-1, -1), so the area says nothing, and the placeholder is clipped out of sight.
+
+Pushing a notification of every type (0x76) finds five more resources missing outright.
+The banner draws them on every frame of its animation: three between `0x05988557` and
+`0x05A4B83E`, and two at `0x0915F89D` and `0x09169091`. Reading those, the two tails and
+everything else a session reports is #83.
 
 ### The NAND sees every command bit-expanded
 
@@ -2079,8 +2171,9 @@ In the order to do them. All are GitHub issues on the NormPlus board (`normboard
    firmware's own pedometer records steps.
 7. **#52 — script the AVD's stale-bond removal** for `normphone start --watch`.
 8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
-9. **#54 — `--idle-skip` loses one STIMER tick with the radio up**, once, between 225M
-   and 250M.
+9. ~~**#54 — `--idle-skip` loses one STIMER tick with the radio up**~~ -- done: the skip
+   now stops on deadlines and a level is not pended while its handler runs; see
+   "Speed: 70% of a boot is the idle task spinning".
 
 Not emulator work, but produced by it: **#48** — check the Database Hash park on the
 physical watch; if it holds, `BleManager`'s cold-connect story is describing that stall

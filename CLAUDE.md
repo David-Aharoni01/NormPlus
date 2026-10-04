@@ -422,11 +422,13 @@ disagree about what was said.
 
 ### Working on it
 
-- **"No data" on the screen is missing NAND data, not broken drawing.** It is LVGL's
-  placeholder for an image it could not decode, and the emulated NAND has only the 401 KB
-  resource image -- not the watch's factory resources (tens of MB from `0x026DA430`), where
-  most screens' images and all 134 boot-animation frames live. The boot report's `images:`
-  line and the live window's status line count them (`fw/resources.py`, #64, #65).
+- **"No data" on the screen, or a solid white box where an image belongs, is missing NAND
+  data, not broken drawing.** "No data" is LVGL's placeholder for an image it could not
+  decode. A white box is an image whose header is in the NAND and whose pixels are not:
+  they read 0xFF. The watch's factory resources (`NORM/_nand`, #65) are mounted by
+  default, but the first read-out missed some (#82, #83). The live window's status line
+  counts both kinds, and the boot report ends with the NAND ranges to read off the watch to
+  complete them (`fw/resources.py`).
 
 **An emulator-only result is not a result about the watch.** The places the two are known
 to differ are listed in `docs/watch-emulator.md` ("Where the emulated watch and the real

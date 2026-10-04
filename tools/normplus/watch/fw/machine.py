@@ -316,6 +316,8 @@ class Apollo3Machine:
         self.ctimer: CtimerBlock = self.bus.by_base[0x40008000]
         self.gpio = self.bus.by_base[0x40010000]
         self._irq_sources = [p for p in self.bus.peripherals if hasattr(p, "pending_irqs")]
+        #: irq -> the source seen asserting it while it was active (resample_irq).
+        self._held_lines: dict = {}
         self._rebuild_deadlines()
 
     def add_timer(self, source) -> None:
@@ -985,8 +987,9 @@ class Apollo3Machine:
                 break
             if self._instructions >= self._instruction_budget or self.stop_requested:
                 break
-            self._advance_time(step)
-            self._instructions += step
+            advance = min(step, self._next_quantum())
+            self._advance_time(advance)
+            self._instructions += advance
             self._fire_due_events(self._instructions)
         skipped = self._instructions - start
         self.idle_skips += 1
@@ -1065,7 +1068,20 @@ class Apollo3Machine:
             timer.advance(cycles)
         for source in self._irq_sources:
             for irq in source.pending_irqs():
-                self.cortexm.set_pending_irq(irq)
+                if not self.cortexm.assert_irq(irq):
+                    self._held_lines[irq] = source
+
+    def resample_irq(self, irq: int) -> None:
+        """At its handler's return: pend *irq* again if the source seen holding it
+        high while the handler ran still does.
+
+        Only that source is asked, and only then: ``pending_irqs`` is not a pure
+        query everywhere (the MSPI's walks its command queue), so asking more
+        often would change more than the answer.
+        """
+        source = self._held_lines.pop(irq, None)
+        if source is not None and irq in source.pending_irqs():
+            self.cortexm.assert_irq(irq)
 
     # ── reporting ────────────────────────────────────────────────────────────
 
