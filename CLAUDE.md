@@ -29,22 +29,28 @@ board this replaced (2026-10-02), so every `#N` in the docs and in commit messag
 uv run normboard                          # what is open: In Progress, then Todo, by priority
 uv run normboard show 56                  # one issue with its comments
 uv run normboard new "Title" -a emulator -p high -f body.md [--start]
-uv run normboard area 56 firmware         # file it under another area
+uv run normboard area 56 firmware         # move it to another area (its milestone)
 uv run normboard start 56                 # -> In Progress, when work begins
 uv run normboard note 56 -f finding.md    # a finding, a result, a commit hash
 uv run normboard done 56 -m "Done in <sha>: ..."   # closes it; the board says Done
 ```
 
-- **Before starting any non-trivial work, there must be an issue for it**, In Progress on the
-  board. Create it first (`normboard new ... --start`).
-- **Discovering follow-up work means filing an issue**, not appending to a list here.
+- **Before starting any non-trivial new work, there must be an issue for it**, In Progress on
+  the board. Create it first (`normboard new ... --start`).
+- **Continuing or changing work that already has an issue is not new work.** A follow-up
+  request, a correction, or a change of approach to something started under an issue goes on
+  that issue -- a comment with what changed and the commit -- and its commits name it. File a
+  new issue only for work that would stand on its own.
+- **Discovering separate follow-up work means filing an issue**, not appending to a list here.
 - **Findings and results go on the issue as comments**, with the commit hashes. A commit
   message saying `Fixes #56` closes the issue when it reaches `main`.
 - **Dependencies** go on the first line of the body: `Depends on: #N`.
-- **Labels:** every issue, open or closed, has exactly one area (#78) -- `area: app`,
-  `protocol`, `firmware`, `emulator` or `tooling`; `normboard areas` says what each covers,
-  and an issue goes where it is *done* -- and one `priority: high|medium|low`.
-  `normboard new` refuses an issue without `-a AREA`. Anything else (`ble`, `ota`,
+- **Areas are milestones** (#78, #79): every issue, open or closed, is in exactly one --
+  App, Protocol, Firmware, Emulator or Tooling -- so the board can be grouped and sliced by
+  them. `normboard areas` says what each covers; an issue goes where it is *done*.
+  `normboard new` refuses an issue without `-a AREA`, and `normboard sync` makes any of the
+  milestones that is missing.
+- **Labels:** one `priority: high|medium|low` on every issue. Anything else (`ble`, `ota`,
   `verification`, ...) is an optional tag, `-l TAG`.
 - **Split an issue** if it exceeds ~1h, spans two layers, is hard to roll back, or is uncertain.
 - **The repository is public, so the issues are.** Findings, not vendor code excerpts or
