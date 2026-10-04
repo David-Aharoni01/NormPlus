@@ -97,6 +97,8 @@ APOLLO3_IRQ_NAMES = [
     "STIMER_CMPR6", "STIMER_CMPR7", "CLKGEN",
 ]
 
+#: IRQ number of the RTC (its alarm; the firmware's ISR is at 0x0008DFE8).
+IRQ_RTC = 2
 #: IRQ number of the BLE controller interrupt.
 IRQ_BLE = 12
 #: IRQ number of the GPIO block (every button and sensor line shares it).

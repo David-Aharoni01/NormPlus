@@ -219,6 +219,26 @@ Most screens drew LVGL's "No data" and the boot animation ran black, because the
 NAND held only the app's 401 KB resource image. **Closed on 2026-10-03**: 40,089,600 bytes
 read off the watch (#70) and mounted by default (#65, #71).
 
+### 8. The clock starts from nothing at every run, and keeps watch time
+
+The physical watch's RTC sits in an always-on domain and keeps counting through a firmware
+reset. `rtc.c` only puts in its default when the year reads 0. The emulated RTC starts at 0
+every run (a battery pull), so a restarted emulated watch shows `12:00 SUN 01 JAN`
+(2017-01-01, 00:00:06) until a phone sets the time. A rebooted physical watch keeps its
+time. From then on the emulated clock counts **watch** time, 48,000,000 cycles to the
+second. Without `--realtime` (which `--phone` implies), a run that is slower or faster than
+real time drifts from the wall clock by exactly that much.
+
+Until #81 it did not count at all. The RTC was plain storage, so the face showed the last
+time a phone set, and the once-a-second alarm interrupt never fired.
+
+**Do not trust** the date on a freshly started emulated watch, or its seconds against the
+wall clock in a run that is not real time.
+
+**Can it be closed?** The first part could be, by saving the RTC with `--flash-state`, but
+that would be the emulator inventing persistence the file does not stand for (it is the
+flash). Not done.
+
 ### Written down as a difference, and wrong
 
 The physical watch sends generic `6F 01 81` acknowledgements "which the emulated one never

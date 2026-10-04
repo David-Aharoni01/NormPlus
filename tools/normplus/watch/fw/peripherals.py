@@ -1,7 +1,7 @@
 """Apollo3 Blue peripheral register models.
 
 Scope is set by what the firmware actually touches: scanning the image for
-peripheral base addresses finds RSTGEN, CLKGEN, CTIMER/STIMER, GPIO, CACHECTRL,
+peripheral base addresses finds RSTGEN, CLKGEN, RTC, CTIMER/STIMER, GPIO, CACHECTRL,
 UART0, MCUCTRL, PWRCTRL, WDT, IOM0, BLEIF and MSPI, and nothing else.
 
 Two rules keep this honest:
@@ -20,7 +20,7 @@ from __future__ import annotations
 import collections
 from typing import Optional
 
-from .cortexm import IRQ_BLE, IRQ_GPIO, IRQ_MSPI, IRQ_STIMER_CMPR0
+from .cortexm import IRQ_BLE, IRQ_GPIO, IRQ_MSPI, IRQ_RTC, IRQ_STIMER_CMPR0
 
 
 class Peripheral:
@@ -102,7 +102,10 @@ class Mcuctrl(Peripheral):
 
 
 class Clkgen(Peripheral):
-    """Clock generator. CLKKEY/CCTRL are written during startup."""
+    """Clock generator. CLKKEY/CCTRL are written during startup.
+
+    Its block ends at +0x200, where the RTC's begins (:class:`Rtc`).
+    """
 
     name = "CLKGEN"
     REGS = {
@@ -111,7 +114,6 @@ class Clkgen(Peripheral):
         0x020: "HFADJ", 0x028: "CLOCKENSTAT", 0x02C: "CLOCKEN2STAT",
         0x030: "CLOCKEN3STAT", 0x034: "BLEBUCKSTATUS", 0x100: "FREQCTRL",
         0x1FC: "BLEBUCKTONADJ",
-        0x200: "INTEN", 0x204: "INTSTAT", 0x208: "INTCLR", 0x20C: "INTSET",
     }
 
     CONSTANT_REGS = {
@@ -133,6 +135,280 @@ class Clkgen(Peripheral):
         self.reads[offset] += 1
         value = self.CONSTANT_REGS.get(offset)
         return self.storage.get(offset, 0) if value is None else value
+
+
+def _bcd(value: int) -> int:
+    """The HAL's dec_to_bcd (0x00094F04): tens in the high nibble, unchecked."""
+    return (((value // 10) << 4) | (value % 10)) & 0xFF
+
+
+def _dec(value: int) -> int:
+    """The HAL's bcd_to_dec (0x00092DC0): high nibble x 10 + low nibble."""
+    return (value >> 4) * 10 + (value & 0xF)
+
+
+class Rtc(Peripheral):
+    """The real-time clock: the watch's time of day, and its once-a-second alarm.
+
+    The firmware keeps the time in this counter and nowhere else, through the
+    AmbiqSuite HAL: ``am_hal_rtc_time_get`` (0x0008D614) reads CTRLOW and CTRUP
+    and BCD-decodes them, ``am_hal_rtc_time_set`` (0x0008D6A8) writes both with
+    RTCCTL.WRTC set. A model that only stores those registers gives back the
+    last time written, which is the face standing still after a phone sets the
+    time (#81).
+
+    ``..\\Board\\rtc.c``'s init (0x000B3CE0) also arms the alarm to repeat every
+    second (``am_hal_rtc_alarm_set(t, 7)`` at 0x000B3D86), enables ALM, and
+    enables IRQ 2; the ISR (0x0008DFE8) clears ALM and calls the callback
+    registered at [0x100005A4]. So the alarm is modelled too, for every RPT
+    interval the HAL can set.
+
+    Field layout, from the HAL's own shifts and masks:
+
+    ``CTRLOW``  100ths [7:0], seconds [14:8], minutes [22:16], hours [29:24]
+    ``CTRUP``   date [5:0], month [12:8], year [23:16], weekday [26:24],
+                CB [27], CEB [28], CTERR [31]
+    ``ALMLOW``  as CTRLOW; ``ALMUP`` date [5:0], month [12:8], weekday [18:16]
+    ``RTCCTL``  WRTC [0], RPT [3:1], RSTOP [4], HR1224 [5]
+
+    The year is whatever the firmware writes: ``rtc.c`` stores year - 1900, so
+    2026 is 126 and goes in as ``0xC6`` -- not BCD, but the HAL's decode gives
+    126 back, so the field is held as the firmware's number. Leap years are
+    every fourth, which is the same answer for 1900 + year as for a two-digit
+    year in 2000-2099. 24-hour only: nothing in the image sets HR1224.
+
+    The counter runs on the watch's clock, not the host's: a hundredth is
+    480,000 cycles. It starts at zero, as after a power-on, so the firmware
+    puts in its 2017-01-01 12:00 default until a phone sets the time.
+    """
+
+    name = "RTC"
+
+    CTRLOW = 0x040
+    CTRUP = 0x044
+    ALMLOW = 0x048
+    ALMUP = 0x04C
+    RTCCTL = 0x050
+    INTEN = 0x100
+    INTSTAT = 0x104
+    INTCLR = 0x108
+    INTSET = 0x10C
+
+    REGS = {
+        0x040: "CTRLOW", 0x044: "CTRUP", 0x048: "ALMLOW", 0x04C: "ALMUP",
+        0x050: "RTCCTL", 0x100: "INTEN", 0x104: "INTSTAT", 0x108: "INTCLR",
+        0x10C: "INTSET",
+    }
+
+    #: 48 MHz / 100.
+    CYCLES_PER_HUNDREDTH = 480_000
+    DAY = 8_640_000  # hundredths
+    #: Alarm repeat interval (RTCCTL.RPT) -> its period in hundredths, for the
+    #: ones with a fixed period: 4 day, 5 hour, 6 minute, 7 second. 1 (year),
+    #: 2 (month) and 3 (week) depend on the calendar. There is no 8 or 9 in the
+    #: field: the HAL caps RPT at 7 and asks for every tenth or every hundredth
+    #: with ALM100's high nibble, 0xF0 or 0xFF (0x0008D512-0x0008D534).
+    _PERIOD = {4: DAY, 5: 360_000, 6: 6_000, 7: 100}
+
+    def __init__(self, base: int, size: int, machine=None) -> None:
+        super().__init__(base, size, machine)
+        #: hundredths, seconds, minutes, hours, date, month, year, weekday,
+        #: century, century enable -- as of the last :meth:`_now`.
+        self.counter = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        #: Hundredths elapsed since then, and cycles into the next one.
+        self.ticks = 0
+        self._acc = 0
+        self.int_enable = 0
+        self.int_status = 0
+        #: Hundredths until the alarm next matches, or None when it cannot.
+        self._alarm_in: Optional[int] = None
+        self.alarms = 0
+
+    # ── the counter ──────────────────────────────────────────────────────────
+
+    @property
+    def running(self) -> bool:
+        return not self.storage.get(self.RTCCTL, 0) & 0x10  # RSTOP
+
+    @staticmethod
+    def _days_in(month: int, year: int) -> int:
+        if month == 2:
+            return 29 if year % 4 == 0 else 28
+        return 30 if month in (4, 6, 9, 11) else 31
+
+    @classmethod
+    def _fold(cls, counter: list, ticks: int) -> list:
+        """*counter* after *ticks* more hundredths."""
+        h, s, mi, hr, date, month, year, wday, cb, ceb = counter
+        total = h + 100 * (s + 60 * (mi + 60 * hr)) + ticks
+        days, tod = divmod(total, cls.DAY)
+        hr, tod = divmod(tod, 360_000)
+        mi, tod = divmod(tod, 6_000)
+        s, h = divmod(tod, 100)
+        wday = (wday + days) % 7
+        for _ in range(days):
+            date += 1
+            if date > cls._days_in(month, year):
+                date, month = 1, month + 1
+                if month > 12:
+                    month, year = 1, year + 1
+                    if year == 100:  # 99 -> 00: the century bit flips, if enabled
+                        year = 0
+                        cb ^= ceb
+        return [h, s, mi, hr, date, month, year, wday, cb, ceb]
+
+    def _now(self) -> list:
+        """The counter as it reads now; folds the elapsed hundredths into it."""
+        if self.ticks:
+            self.counter = self._fold(self.counter, self.ticks)
+            self.ticks = 0
+        return self.counter
+
+    def reading(self) -> dict:
+        """The time as the firmware would read it, without touching the model --
+        safe from another thread while the CPU runs (``EmulatedWatch``)."""
+        while True:
+            counter, ticks = list(self.counter), self.ticks
+            if counter == self.counter:
+                break
+        h, s, mi, hr, date, month, year, wday, cb, ceb = self._fold(counter, ticks)
+        return dict(year=year, month=month, date=date, hour=hr, minute=mi, second=s,
+                    hundredths=h, weekday=wday)
+
+    def _low(self) -> int:
+        h, s, mi, hr = self._now()[:4]
+        return (_bcd(hr) & 0x3F) << 24 | (_bcd(mi) & 0x7F) << 16 | (_bcd(s) & 0x7F) << 8 | _bcd(h)
+
+    def _up(self) -> int:
+        date, month, year, wday, cb, ceb = self._now()[4:]
+        return (ceb << 28 | cb << 27 | (wday & 7) << 24 | _bcd(year) << 16
+                | (_bcd(month) & 0x1F) << 8 | (_bcd(date) & 0x3F))
+
+    # ── the alarm ────────────────────────────────────────────────────────────
+
+    def _schedule_alarm(self) -> None:
+        """Hundredths from now until the counter next equals the alarm in every
+        field RPT selects -- strictly after now, because a match at this very
+        hundredth has already been latched on the way in."""
+        rpt = (self.storage.get(self.RTCCTL, 0) >> 1) & 7
+        if rpt == 0 or not self.running:
+            self._alarm_in = None
+            return
+        h, s, mi, hr, date, month, _year, wday = self._now()[:8]
+        low = self.storage.get(self.ALMLOW, 0)
+        up = self.storage.get(self.ALMUP, 0)
+        a_h = _dec(low & 0xFF)
+        tod_alarm = (a_h + 100 * (_dec((low >> 8) & 0x7F) + 60 * (_dec((low >> 16) & 0x7F)
+                     + 60 * _dec((low >> 24) & 0x3F))))
+        tod = h + 100 * (s + 60 * (mi + 60 * hr))
+        if rpt == 7 and low & 0xF0 == 0xF0:
+            if low & 0xFF == 0xFF:  # every hundredth
+                self._alarm_in = 1
+            else:  # every tenth, on ALM100's low digit
+                self._alarm_in = (((low & 0xF) - h) % 10) or 10
+            return
+        period = self._PERIOD.get(rpt)
+        if period is not None:
+            self._alarm_in = ((tod_alarm - tod) % period) or period
+            return
+        if rpt == 3:  # every week: weekday and time of day
+            week = 7 * self.DAY
+            here = wday * self.DAY + tod
+            there = ((up >> 16) & 7) * self.DAY + tod_alarm
+            self._alarm_in = ((there - here) % week) or week
+            return
+        # 2 every month (date), 1 every year (month and date): walk the calendar.
+        a_date, a_month = _dec(up & 0x3F), _dec((up >> 8) & 0x1F)
+        year = _year
+        ahead = tod_alarm - tod
+        for _ in range(8 * 366):
+            if ahead > 0 and date == a_date and (rpt == 2 or month == a_month):
+                self._alarm_in = ahead
+                return
+            ahead += self.DAY
+            date += 1
+            if date > self._days_in(month, year):
+                date, month = 1, month + 1
+                if month > 12:
+                    month, year = 1, year + 1
+        self._alarm_in = None  # a date that never comes (Feb 30)
+
+    def next_deadline(self) -> Optional[int]:
+        """Cycles until the alarm next matches. The counter itself needs no
+        deadline: nothing in the firmware spins on it, so reading it as of the
+        last slice is exact enough."""
+        if self._alarm_in is None or not self.running:
+            return None
+        return max(1, self._alarm_in * self.CYCLES_PER_HUNDREDTH - self._acc)
+
+    def advance(self, cycles: int) -> None:
+        if not self.running:
+            return
+        self._acc += cycles
+        ticks, self._acc = divmod(self._acc, self.CYCLES_PER_HUNDREDTH)
+        if not ticks:
+            return
+        self.ticks += ticks
+        if self._alarm_in is not None:
+            self._alarm_in -= ticks
+            if self._alarm_in <= 0:
+                self.int_status |= 1  # ALM
+                self.alarms += 1
+                self._schedule_alarm()
+
+    def pending_irqs(self) -> list[int]:
+        return [IRQ_RTC] if self.int_status & self.int_enable else []
+
+    # ── registers ────────────────────────────────────────────────────────────
+
+    def read(self, offset: int, size: int) -> int:
+        self.reads[offset] += 1
+        if offset == self.CTRLOW:
+            return self._low()
+        if offset == self.CTRUP:
+            return self._up()  # CTERR stays 0: the two reads are never split by a tick
+        if offset == self.INTEN:
+            return self.int_enable
+        if offset == self.INTSTAT:
+            return self.int_status
+        return self.storage.get(offset, 0)
+
+    def write(self, offset: int, size: int, value: int) -> None:
+        self.writes[offset] += 1
+        if offset in (self.CTRLOW, self.CTRUP):
+            if not self.storage.get(self.RTCCTL, 0) & 1:
+                return  # WRTC clear: the counter is write-protected
+            c = self._now()
+            if offset == self.CTRLOW:
+                c[0:4] = [_dec(value & 0xFF), _dec((value >> 8) & 0x7F),
+                          _dec((value >> 16) & 0x7F), _dec((value >> 24) & 0x3F)]
+                self._acc = 0
+            else:
+                c[4:10] = [_dec(value & 0x3F), _dec((value >> 8) & 0x1F),
+                           _dec((value >> 16) & 0xFF), (value >> 24) & 7,
+                           (value >> 27) & 1, (value >> 28) & 1]
+            self._schedule_alarm()
+            return
+        if offset == self.INTEN:
+            # Enabling over an already-latched status makes an interrupt
+            # deliverable now, which no deadline could have predicted.
+            self.int_enable = value
+            if self.machine is not None:
+                self.machine.cut_slice()
+            return
+        if offset == self.INTCLR:
+            self.int_status &= ~value & 0xFFFFFFFF
+            return
+        if offset == self.INTSET:
+            self.int_status |= value
+            if self.machine is not None:
+                self.machine.cut_slice()
+            return
+        self.storage[offset] = value
+        if offset in (self.ALMLOW, self.ALMUP, self.RTCCTL):
+            self._schedule_alarm()
+            if self.machine is not None:
+                self.machine.cut_slice()  # the deadline it was running to has moved
 
 
 class Pwrctrl(Peripheral):
@@ -1838,7 +2114,8 @@ def build_apollo3_bus(machine) -> Bus:
     """The peripheral set this firmware actually references."""
     bus = Bus(machine)
     bus.add(Rstgen(0x40000000, 0x1000, machine))
-    bus.add(Clkgen(0x40004000, 0x1000, machine))
+    bus.add(Clkgen(0x40004000, 0x200, machine))
+    bus.add(Rtc(0x40004200, 0xE00, machine))  # the rest of the page, as before
     bus.add(CtimerBlock(0x40008000, 0x1000, machine))
     bus.add(Peripheral(0x4000C000, 0x1000, machine))  # VCOMP
     bus.add(Gpio(0x40010000, 0x1000, machine))

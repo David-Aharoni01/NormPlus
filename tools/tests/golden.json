@@ -9,7 +9,8 @@
       "instructions": 445000370,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4624,
+        "PendSV": 4679,
+        "RTC": 9,
         "GPIO": 36,
         "MSPI": 3091,
         "STIMER_CMPR0": 9243
@@ -38,7 +39,8 @@
       "instructions": 445000375,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4638,
+        "PendSV": 4702,
+        "RTC": 9,
         "BLE": 15,
         "GPIO": 36,
         "MSPI": 3091,
@@ -68,7 +70,8 @@
       "instructions": 460000000,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 4604,
+        "PendSV": 4660,
+        "RTC": 9,
         "GPIO": 40,
         "MSPI": 3528,
         "STIMER_CMPR0": 9560
@@ -97,7 +100,8 @@
       "instructions": 500000001,
       "exceptions": {
         "SVCall": 1,
-        "PendSV": 5213,
+        "PendSV": 5270,
+        "RTC": 10,
         "GPIO": 66,
         "MSPI": 3824,
         "STIMER_CMPR0": 10415

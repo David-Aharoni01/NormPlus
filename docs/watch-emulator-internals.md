@@ -1142,7 +1142,8 @@ later run without it would get the patch anyway. Stopping between an erase and i
 program loses that page, as pulling the battery at that instant would.
 
 What it does not keep is the clock: the RTC is not flash, so a restarted watch shows
-`12:00 SUN 01 JAN` until a phone sets the time.
+`12:00 SUN 01 JAN` until a phone sets the time. From then on it keeps time (#81, "The
+clock stood still").
 
 **The ninth gap: bumble never asked the watch for its key.** The first version of the
 restart test passed -- the phone's stored keys "encrypted" the restarted link without
@@ -1852,6 +1853,53 @@ it**. The sample reader at `0x00051F78` is reached only through a vtable (its
 pointer sits at `0x0005235C`), and nothing has been seen to call it; pulsing each
 of the interrupt-capable GPIOs in turn does not either. That is the next thing to
 find.
+
+### The clock stood still: the RTC was storage (#81)
+
+After a phone set the time the face showed it, and kept showing it. The firmware keeps the
+time of day in the Apollo3's own RTC and nowhere else, through the AmbiqSuite HAL, and the
+emulator had no RTC: its registers were `Clkgen`'s plain storage, so a read returned what
+the last write left.
+
+```
+am_hal_rtc_time_get   0x0008D614  reads CTRLOW (0x40004240) and CTRUP (0x40004244), BCD
+am_hal_rtc_time_set   0x0008D6A8  RTCCTL.WRTC on, CTRLOW, CTRUP, WRTC off
+am_hal_rtc_alarm_set  0x0008D504  RPT into RTCCTL, ALMUP, ALMLOW
+rtc.c init            0x000B3CE0  year 0? -> 2017-01-01 00:00:06, a Sunday;
+                                  alarm every second (RPT 7), INTEN.ALM, RSTOP off,
+                                  IRQ 2 enabled at priority 0x60
+RTC ISR               0x0008DFE8  INTCLR.ALM, then the callback at [0x100005A4]
+```
+
+The face shows midnight as `12:00`, which is why the default looked like noon. The
+callback (`0x00057EF8` on this boot) is the firmware's once-a-second work. If the RTOS tick
+count has not moved since the last second and the STIMER compare is behind its counter, it
+re-arms the tick (`am_hal_stimer_compare_delta_set(0, 0x20)`): a watchdog for the very
+failure "Interrupt latency" describes. It also runs a ten-second counter and posts message
+5 to a queue. None of that had ever run in the emulator.
+
+`Rtc` (`fw/peripherals.py`, at `0x40004200`, where `Clkgen`'s block now ends) models it
+from the HAL's own shifts and masks. The counter is hundredths, seconds, minutes, hours,
+date, month, year and weekday, run on the watch's clock (480,000 cycles a hundredth), with
+the calendar carrying through month ends, leap years and New Year. WRTC write-protects the
+counter and RSTOP stops it. The alarm matches on the fields RPT selects, latches
+INTSTAT.ALM, and raises IRQ 2; its next match is a deadline, so the quantum stops on it.
+The HAL caps RPT at 7 and asks for every tenth or hundredth through ALM100's high nibble
+(`0xF0`, `0xFF`), and so does the model.
+
+Two details are the firmware's own. `rtc.c` stores the year as year - 1900, so 2026 goes in
+as 126 and lands in CTRUP as `0xC6`, which is not BCD. The HAL's decode gives 126 back, so
+the model holds the firmware's number rather than "correcting" it. And nothing in the image
+sets HR1224, so the model is 24-hour only.
+
+What it changed: the golden workloads take 9-10 RTC interrupts, plus 55-64 PendSV for
+the task the callback wakes, and nothing else moved. `tests/test_rtc.py` drives the model
+through the HAL's register sequences, every RPT interval included, and boots the firmware
+to see its default go in and the alarm taken once a second. `test_ble_end_to_end` checks
+that the bind's setDateTime lands in the RTC and that the RTC keeps counting.
+
+Adding it as a deadline source is what exposed #54's mechanism; see "Speed: 70% of a boot
+is the idle task spinning".
 
 ### The resource path
 
