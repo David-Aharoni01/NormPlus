@@ -460,6 +460,24 @@ class CortexM:
         if 0 <= irq < NUM_IRQ:
             self.irq_pending |= 1 << irq
 
+    def assert_irq(self, irq: int) -> bool:
+        """A peripheral holding its interrupt line high; False if it was not pended.
+
+        Every source here is level-sensitive (status AND enable), and the NVIC
+        pends a level only "when the interrupt signal is HIGH and the interrupt
+        is not active"; a line still high when its handler returns is pended
+        again then (Cortex-M4 Devices Generic User Guide, 4.2.9 and 4.2.10,
+        and :meth:`exception_return`). Pending it while its own handler runs,
+        before the handler has cleared the source, takes the interrupt twice
+        -- which is what a clock poll a few instructions into a handler did.
+        """
+        if not 0 <= irq < NUM_IRQ:
+            return False
+        if (self.irq_active >> irq) & 1:
+            return False
+        self.irq_pending |= 1 << irq
+        return True
+
     def clear_pending_irq(self, irq: int) -> None:
         self.irq_pending &= ~(1 << irq)
 
@@ -669,6 +687,9 @@ class CortexM:
             exc = self.active_stack.pop()
             if exc >= EXC_IRQ0:
                 self.irq_active &= ~(1 << (exc - EXC_IRQ0))
+                # Its line was not sampled while it was active (assert_irq):
+                # a source the handler left asserted pends it again now.
+                self.machine.resample_irq(exc - EXC_IRQ0)
             self._active_priority = (
                 min(self._priority_of(e) for e in self.active_stack) if self.active_stack else 256
             )

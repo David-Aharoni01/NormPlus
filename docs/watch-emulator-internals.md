@@ -1266,8 +1266,9 @@ whole difficulty:
   query. How often it is called is how fast the controller runs, which is how
   fast pixels reach the panel — at one poll per 16384 cycles a boot loses two
   frames and three NAND pages.
-- **`Gpio.pending_irqs` is level-sensitive**, so how often it is looked at is how
-  many times an asserting pin re-pends.
+- **`Gpio.pending_irqs` is level-sensitive**, so how often it is looked at was how
+  many times an asserting pin re-pended. It no longer is while the handler runs: a
+  level is pended only when its IRQ is not active (`CortexM.assert_irq`, #54).
 
 For both, the poll frequency *is* the model, so they keep the historical
 256-cycle interval while they have something to say and offer no deadline at all
@@ -1375,12 +1376,31 @@ accumulates whatever the boot ROM's delay helper reports burning, and the two
 runs enter that helper a different number of times — 0.012% over 100M, in a
 counter nothing in the emulator reads.
 
-**With the radio up it is one tick short.** All of the above was measured radio-off.
-With the NZ8801 model answering, a full 445M boot with `--idle-skip` delivers exactly one
-fewer STIMER interrupt than without it, and nothing else differs — not PendSV, not a
-frame, not a pixel. Bisected: identical through 225M, one short from 250M on, and still
-exactly one short at 450M, so it is one lost tick between ~4.7 and ~5.2s of watch time,
-not drift. Card #54; `tests/test_golden.py` pins it as it stands.
+**With the radio up it was one tick short (#54, fixed).** With the NZ8801 model
+answering, a full 445M boot with `--idle-skip` delivered exactly one fewer STIMER
+interrupt than without it, and nothing else differed. Adding the RTC (#81), a fourth
+deadline source, moved the same kind of one-tick difference into the radio-off boot.
+Bisected there, it was one STIMER compare taken *twice* by the skipping run. There
+were two causes:
+
+- **The skip stepped over deadlines.** `_skip_idle_spin` moved the clock 500 cycles at a
+  time whatever was due, so an interrupt fell pending up to 499 cycles after its
+  deadline, where the plain run's quantum stops exactly on it. Each step is now capped at
+  `_next_quantum()`, so the skip lands where the plain run would.
+- **A level was pended while its own handler ran.** That is the hazard in "the poll
+  that followed re-armed the interrupt" above. A skip that stops next to another
+  deadline puts a poll a few instructions into a handler, before the handler clears its
+  source, and the source was pended again. The NVIC does not do that: it pends a
+  level-sensitive interrupt only "when the interrupt signal is HIGH and the interrupt is
+  not active", and samples the line again when the handler returns (Cortex-M4 Devices
+  Generic User Guide, 4.2.9-4.2.10). `CortexM.assert_irq` follows that rule, and
+  `exception_return` re-samples the returning IRQ through `Apollo3Machine.resample_irq`.
+
+With both fixed, `--idle-skip` reproduces all four golden workloads exactly (instructions
+aside), radio on and off. The second fix also halved the GPIO count on every workload
+(72 to 36 in the boot): every GPIO interrupt had been taken twice, the second time on a
+status the handler had already read. A handful of MSPI interrupts went the same way
+(3,093 to 3,091). Frames, pixels, NAND reads, touch reports and the screen are unchanged.
 
 ### Rehearsing an OTA
 
@@ -2079,8 +2099,9 @@ In the order to do them. All are GitHub issues on the NormPlus board (`normboard
    firmware's own pedometer records steps.
 7. **#52 — script the AVD's stale-bond removal** for `normphone start --watch`.
 8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
-9. **#54 — `--idle-skip` loses one STIMER tick with the radio up**, once, between 225M
-   and 250M.
+9. ~~**#54 — `--idle-skip` loses one STIMER tick with the radio up**~~ -- done: the skip
+   now stops on deadlines and a level is not pended while its handler runs; see
+   "Speed: 70% of a boot is the idle task spinning".
 
 Not emulator work, but produced by it: **#48** — check the Database Hash park on the
 physical watch; if it holds, `BleManager`'s cold-connect story is describing that stall

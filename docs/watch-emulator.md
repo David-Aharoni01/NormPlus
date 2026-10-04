@@ -456,11 +456,9 @@ are worth 1.95x rather than 2.5x. `--trace` and `machine.watch()` both need per-
 Python and switch the C hook off on their own.
 
 **Those figures are `--no-ble` figures** — they were all taken before the radio powered up,
-and they still hold with `--no-ble`. With the radio up the C hook is still bit-identical
-and the deadline quantum is off by the same <=0.4%, but `--idle-skip` is not quite: with
-the NZ8801 model answering it delivers exactly one STIMER interrupt fewer, lost once
-between 225M and 250M, everything else identical (#54, pinned in `tests/test_golden.py`).
-Radio off it is exact over a full boot. What changed is what they are worth, measured over the same 576M boot with the
+and they still hold with `--no-ble`. With the radio up the C hook and `--idle-skip` are
+still bit-identical (`--idle-skip` was one STIMER tick short until #54) and the deadline
+quantum is off by the same <=0.4%. What changed is what they are worth, measured over the same 576M boot with the
 radio on: C hook **4.89x**, `--idle-skip` **1.09x**, deadline quantum **1.31x**. Say which
 of the two you measured — quoting a `--no-ble` figure for a BLE-on run is the mistake this
 note exists to prevent.

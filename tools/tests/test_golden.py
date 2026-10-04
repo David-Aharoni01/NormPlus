@@ -26,10 +26,9 @@ same fingerprint to the instruction):
                 be, reaches no further than the GPIO count.)
 
 And the one switch that claims to change nothing but speed, held to it at full
-length: ``--idle-skip`` must reproduce ``boot`` exactly. With the radio up it
-does not quite -- it is exactly one STIMER tick short from somewhere between
-225M and 250M on, everything else identical (#54). That is pinned as it is, so
-a fix shows up here and a bigger drift fails.
+length: ``--idle-skip`` must reproduce ``boot`` and ``radio`` exactly. With the
+radio up it used to be one STIMER tick short (#54): the skip stepped over
+deadlines, and a clock poll inside a handler took its interrupt twice.
 
 Regenerate after a change that is *meant* to move the watch, and read the diff:
 
@@ -223,13 +222,12 @@ def test_idle_skip_reproduces_the_boot_exactly():
     assert not diff, diff
 
 
-def test_idle_skip_with_the_radio_is_one_tick_short_and_nothing_else():
-    """#54: one STIMER interrupt goes missing between 225M and 250M, and the two
-    runs are in lockstep before and after. If this now matches exactly, the tick
-    has been found: drop the offset here and the note in the README."""
-    expected = json.loads(json.dumps(golden()["workloads"]["radio"]))
-    expected["exceptions"]["STIMER_CMPR0"] -= 1
-    diff = differences(expected, run("radio", idle_skip=True), ignore={"instructions"})
+def test_idle_skip_reproduces_the_radio_exactly():
+    """#54: this was one STIMER interrupt short. The skip stepped past deadlines
+    500 cycles at a time, and a level polled inside its own handler was pended
+    again (CortexM.assert_irq); with both fixed the two runs are identical."""
+    diff = differences(golden()["workloads"]["radio"], run("radio", idle_skip=True),
+                       ignore={"instructions"})
     assert not diff, diff
 
 
