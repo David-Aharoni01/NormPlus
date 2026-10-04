@@ -213,11 +213,18 @@ running firmware back.
 flash, which is read-protected, so 0xEE cannot fetch it either. It is the one item here
 that cannot be closed by reading more off the watch.
 
-### 7. The factory resources were missing -- closed
+### 7. The factory resources were missing -- closed, with gaps
 
 Most screens drew LVGL's "No data" and the boot animation ran black, because the emulated
 NAND held only the app's 401 KB resource image. **Closed on 2026-10-03**: 40,089,600 bytes
 read off the watch (#70) and mounted by default (#65, #71).
+
+**The read-out has gaps (#82).** Each range ended at the page after the last image *start*
+a screen tour saw, so the last image in a range is cut short and draws white: the weather
+screen's second digit is one. Screens the tour never opened, such as the notification
+banner, use resources that are not in the dump at all. The live window's status line
+counts both kinds ("N images not in the NAND, M cut short"), and the boot report ends with
+the ranges to read off the watch. Reading them is #83.
 
 ### 8. The clock starts from nothing at every run, and keeps watch time
 

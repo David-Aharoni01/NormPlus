@@ -1968,6 +1968,30 @@ change that really breaks drawing shows up as a placeholder for an image the NAN
 have. Getting the resources themselves -- off the physical watch, or from the vendor's
 update channel -- is #65.
 
+**Cut short: a white box is the same problem, and the placeholder count could not see it
+(#82).** The first read-out made each of its five ranges from the *start* addresses this
+tour saw, and ended each at the page after the last one. So the image that starts last in
+a range runs past its end. Its header is in the NAND, the decode succeeds, the pixels read
+0xFF, and LVGL draws an opaque white rectangle. The weather screen's second digit is
+`0x0902DDC9`, a 42x53 TRUE_COLOR_ALPHA glyph, and only 567 of its 6,682 bytes were dumped.
+Every boot also draws `0x0496BDAB`, a 360x360 image with 597 of its 259,204 bytes there.
+
+Given the NAND, `MissingResources` reads each drawn image's header from the model
+(`SpiNand.peek`, which reads without reading) and checks that every page under it is held
+(`SpiNand.holds`). The emulated part no longer invents a blank page when one is read, so
+`pages` is what was mounted or programmed, and `SpiNand.blank_reads` counts what was not.
+The status line adds "N cut short". The boot report lists each such image, and ends with
+the page-aligned ranges a follow-up read-out needs (`MissingResources.wanted`, in
+`normwatch dump --range` form). A cut-short image's extent is exact. A missing one's is an
+upper bound, because its header is what is missing: a full screen at three bytes a pixel,
+never past the next resource drawn. LVGL hands a failed image a 2047x2047 area at
+(-1, -1), so the area says nothing, and the placeholder is clipped out of sight.
+
+Pushing a notification of every type (0x76) finds five more resources missing outright.
+The banner draws them on every frame of its animation: three between `0x05988557` and
+`0x05A4B83E`, and two at `0x0915F89D` and `0x09169091`. Reading those, the two tails and
+everything else a session reports is #83.
+
 ### The NAND sees every command bit-expanded
 
 The storage driver keeps the MSPI configured for four lanes, so it cannot clock an

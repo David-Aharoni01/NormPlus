@@ -755,7 +755,7 @@ def cmd_boot(args) -> int:
             "--no-factory-resources is ~22s faster on a full boot")
     # Kept off the machine (a snapshot walks the machine): which images the firmware drew
     # as "No data" because the NAND does not have them (fw/resources.py, #64).
-    missing_images = MissingResources(machine)
+    missing_images = MissingResources(machine, devices["nand"])
     # Before anything runs and before any patch: the restored flash is the
     # watch as it was left, and a patch goes on top of it, never into it.
     flash_state = Path(args.flash_state) if args.flash_state else None
