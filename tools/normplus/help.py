@@ -103,7 +103,9 @@ def _resolve(word: str) -> str | None:
 
 
 def overview() -> str:
-    out = ["NormPlus tools. Every command takes --help; `normhelp <command>` shows it.", ""]
+    out = ["NormPlus tools. Every command takes --help; `normhelp <command>` shows it. There,",
+           "\"options\" are for you, and \"developer options\" for the AI developer working on them.",
+           ""]
     for name, _, what, examples in TOOLS:
         out.append(f"{name:<10} {what}")
         out += [f"    {line}" for line in examples]

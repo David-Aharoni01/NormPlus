@@ -165,6 +165,12 @@ uv for everything: no pip, no `py -3.11`, no `PYTHONPATH`. In Claude's Bash, use
 `uv run <command>` (the `.venv` is not on that PATH). The commands find the repository from
 their own (editable) location, so they work from any directory.
 
+**Every `--help` has two readers** (#76). `options` are the owner's: what the README's and
+`normhelp`'s recipes use, troubleshooting the docs tell a person to do, and decisions that are
+the owner's to make (`ota --allow-mcu`). `developer options` (`normplus.developer_options(parser)`)
+are Claude's: diagnosis, measurement, tuning, overriding a default that is right for normal
+use. A new flag goes in one of the two; when in doubt, developer.
+
 ### Gradle (`:app`, `:protocol`)
 
 ```bash

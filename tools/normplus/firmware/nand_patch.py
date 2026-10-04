@@ -92,6 +92,7 @@ import struct
 import sys
 from pathlib import Path
 
+from .. import developer_options
 from . import image_tool
 
 #: The ``bl memcpy`` at the end of the 0xEE handler -- the call we redirect.
@@ -539,13 +540,14 @@ def main(argv=None) -> int:
         epilog="The patched image is vendor-derived: never commit it.")
     ap.add_argument("image", help="the stock Apollo image (NORM/assets/Apollo3_*.bin)")
     ap.add_argument("-o", "--output", help="where to write the patched image")
-    ap.add_argument("--print", action="store_true", dest="print_only",
-                    help="disassemble the routine and stop, writing nothing")
-    ap.add_argument("--keep-storage-up", action="store_true",
-                    help="also stop the storage stack being torn down (two more hooks). "
-                         "THIS CRASHED THE WATCH -- the teardown frees a second object "
-                         "(0x10001868) whose create is not guarded, so every cycle leaks "
-                         "it until the heap runs out. Do not use it until that is fixed")
+    dev = developer_options(ap)
+    dev.add_argument("--print", action="store_true", dest="print_only",
+                     help="disassemble the routine and stop, writing nothing")
+    dev.add_argument("--keep-storage-up", action="store_true",
+                     help="also stop the storage stack being torn down (two more hooks). "
+                          "THIS CRASHED THE WATCH -- the teardown frees a second object "
+                          "(0x10001868) whose create is not guarded, so every cycle leaks "
+                          "it until the heap runs out. Do not use it until that is fixed")
     args = ap.parse_args(argv)
 
     image = Path(args.image).read_bytes()
