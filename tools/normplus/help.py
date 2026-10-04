@@ -16,14 +16,14 @@ TOOLS = [
     ("normwatch", "normplus.watch.__main__:main",
      "The watch emulator: runs the watch's own firmware on this PC.",
      ["normwatch boot --live                       the watch's screen in a window; click to touch",
-      "normwatch boot --seconds 14 --no-ble        boot to the UI and print a report",
-      "normwatch boot --netsim --live --flash-state watch.zip   on the air, for the Android emulator",
+      "normwatch boot --no-ble                     boot to the UI and print a report",
+      "normwatch boot --phone --live --flash-state watch.zip   on the air, for the Android emulator",
       "normwatch info                              the firmware image's header",
       "normwatch dump -o DIR --range 026DA430-0496C000   read the NAND out (needs a patched image)"]),
     ("normcmd", "normplus.watch.__main__:cmd_main",
      "Asks a watch one command and decodes the reply: the emulated one, or the real one with --mac.",
-     ["normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   the real watch",
-      "normcmd 08 70 --payload 00                  the emulated watch (boots it first)"]),
+     ["normcmd BATTERY_POWER CHECK --mac           the real watch",
+      "normcmd 08 70                               the emulated watch (boots it first)"]),
     ("normphone", "normplus.phone.cli:main",
      "The Android emulator that runs the app, and its Bluetooth.",
      ["normphone setup                             once: SDK packages, accelerator, the Pixel 8",
@@ -46,7 +46,7 @@ TOOLS = [
      "The task board: GitHub issues on the NormPlus project.",
      ["normboard                                   what is open, In Progress first",
       "normboard show 13                           one issue with its comments",
-      "normboard new \"Title\" -p high --start       a new issue, straight into In Progress",
+      "normboard new \"Title\" -a app --start        a new issue in an area, into In Progress",
       "normboard done 13 -m \"what was done\"        close it"]),
     ("normhelp", "normplus.help:main",
      "This overview.",
@@ -62,7 +62,7 @@ RECIPES = [
     ("After pulling new code", [
         "uv tool install --editable . --reinstall  (only when a new command appeared)"]),
     ("Run the app against the emulated watch -- no hardware", [
-        "normwatch boot --netsim --live --flash-state watch.zip   (terminal 1, keep it running)",
+        "normwatch boot --phone --live --flash-state watch.zip   (terminal 1, keep it running)",
         "normphone start --watch                                  (terminal 2)",
         "normphone install                                        (terminal 3)",
         "If Android asks \"Pair with Norm2#00000?\", tap Pair within 30 seconds."]),
@@ -70,7 +70,7 @@ RECIPES = [
         "normphone start            (the USB dongle bound to WinUSB; see docs/android-emulator.md)",
         "normphone install"]),
     ("Check something on the real watch, quickly", [
-        "normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1",
+        "normcmd BATTERY_POWER CHECK --mac",
         "(the watch must not be connected to a phone at the time)"]),
     ("Read the watch's NAND out (the missing resources, #65)", [
         "normfw patch-nand NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin",
@@ -103,7 +103,9 @@ def _resolve(word: str) -> str | None:
 
 
 def overview() -> str:
-    out = ["NormPlus tools. Every command takes --help; `normhelp <command>` shows it.", ""]
+    out = ["NormPlus tools. Every command takes --help; `normhelp <command>` shows it. There,",
+           "\"options\" are for you, and \"developer options\" for the AI developer working on them.",
+           ""]
     for name, _, what, examples in TOOLS:
         out.append(f"{name:<10} {what}")
         out += [f"    {line}" for line in examples]

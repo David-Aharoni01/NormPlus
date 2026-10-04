@@ -32,24 +32,25 @@ data](#no-i2c-write-carried-any-data), which is the defect that hid it. The
 battery gauge answers too, on a bus the firmware clocks by hand on two GPIOs;
 that is what stopped the low-power dialog churning sixteen times a second.
 
-**The watch navigates.** With `--force-gestures` a drag on the window is recognised as
-a swipe, the page changes, and the next screen draws — the goal ring to the left, the
-"How to bind to APP" pairing help to the right. The flag is needed because every swipe is
-cancelled by the low-power notification dialog being built and torn down once per UI
-cycle; [Touch reaches the firmware, swipes do not reach the
-UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) traces the input path and
-[The swipe killer is the low-power dialog, not the watch
+**The watch navigates.** A drag on the window is recognised as a swipe, the page
+changes, and the next screen draws — the goal ring to the left, the "How to bind to APP"
+pairing help to the right. It used to take `--force-gestures`, a patch that suppressed the
+firmware's gesture cancel, because every swipe was cancelled by the low-power notification
+dialog being built and torn down once per UI cycle; [Touch reaches the firmware, swipes do
+not reach the UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) traces the input
+path and [The swipe killer is the low-power dialog, not the watch
 face](#the-swipe-killer-is-the-low-power-dialog-not-the-watch-face) identifies the cause.
-Why that dialog is raised at all is the one thing still open — the prime suspect is the
-missing battery/PMU model.
+The suspect was right: once the battery gauge answered, the dialog stopped churning and the
+patch changed nothing -- the golden swipe's fingerprint is identical with and without it,
+radio on or off -- so it was removed (#77).
 
-Throughput is roughly 4.4M instructions/second with `--no-trace` and 3.4M with tracing
+Throughput is roughly 4.4M instructions/second without `--trace` and 3.4M with tracing
 on (~1/10th of real time). Every MMIO access is a Python callback, so tracing, heavy GPIO
 polling and bus traffic all cost. The live window itself is cheap — about 8%.
 
 **The watch is on the air, and a phone can set it up.** With `--radio` the firmware's own
 BLE stack comes all the way up behind a bumble controller and advertises as `Norm2#00000`;
-with `--netsim` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
+with `--phone` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
 emulated watch, *binds* it the way the companion app does after a QR scan -- bindStart,
 setDateTime, bindEnd -- and the watch leaves first-run setup for its watch face, showing
 the time the phone set. A bumble host does the same in `tests/test_ble_end_to_end.py`.
@@ -67,7 +68,7 @@ real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and 
 puts them in a window as they arrive, with the mouse acting as a finger:
 
 ```bash
-normwatch boot --live --no-trace
+normwatch boot --live
 ```
 
 Click and drag on the window to touch the panel. `--screenshot out.png` still captures
@@ -169,9 +170,9 @@ normwatch modules
 | `cmd` | Boots the watch, connects a phone the way the app does, sends one 0x6F command, prints every reply |
 
 Two switches put a radio behind the firmware's BLE stack: `--radio` (a bumble controller,
-alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's netsim
+alone on the air) and `--phone [PORT]` (the same, plus the Android emulator's netsim
 endpoint on PORT — default 8877 — so `normphone start --watch` gives the AVD the
-emulated watch as its Bluetooth peer). `--netsim` paces the watch against the wall clock;
+emulated watch as its Bluetooth peer). `--phone` paces the watch against the wall clock;
 `--hci-trace` logs every packet across the seam. See "A real stack behind the seam".
 
 `--flash-state PATH` keeps the watch's flash between runs: restored at start if the file
@@ -179,7 +180,7 @@ exists, saved at exit -- a closed window and Ctrl-C included. Bind the watch onc
 later run with the same file starts on the watch face, bonded:
 
 ```bash
-normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --phone --live --flash-state watch.zip
 ```
 
 `cmd` asks the firmware one question. It boots the watch, puts a bumble host on the same
@@ -240,7 +241,7 @@ second. See "Snapshots".
 ### The live window
 
 ```bash
-normwatch boot --live --scale 2 --no-trace
+normwatch boot --live --scale 2
 ```
 
 The emulator runs on a worker thread and Tk owns the main one; only the framebuffer and
@@ -277,9 +278,9 @@ It needs no symbols: task names live inside their control blocks, so searching R
 them (each candidate validated against its priority and stack pointers), and
 `pxCurrentTCB` is read from the literal that `vPortSVCHandler` loads.
 
-Useful `boot` flags: `--max-instructions N`, `--stall N` (instructions without new code
-before declaring a hang), `--chiprev 0x12` (force a silicon revision), `--no-trace` (faster,
-no coverage), `--force-gestures` (see below), `--json`.
+Useful `boot` flags: `--max-instructions N`, `--trace` (coverage and the stall detector,
+for about 28% of the run rate), `--stall N` (with `--trace`: instructions without new code
+before declaring a hang), `--chiprev 0x12` (force a silicon revision), `--json`.
 
 ## How it is put together
 
@@ -460,8 +461,10 @@ coordinates (below) and the missing TE line was stretching the UI cycle to 153 m
 (below). Neither changes the outcome: with a 61 ms cycle the cancel simply lands more
 often. Suppressing that one `bic` is the only thing that does, and then all four
 directions work and open four different pages, so everything else on the path is sound.
-That is what `--force-gestures` does (`normplus/watch/fw/patches.py`), and it is off by
-default because it is **not** what the shipped firmware does.
+That is what `--force-gestures` did (`normplus/watch/fw/patches.py`), off by default
+because it is **not** what the shipped firmware does. It is gone since #77: the next
+section found what was destroying objects, the battery gauge stopped it, and nothing has
+cancelled a swipe since.
 
 ### The swipe killer is the low-power dialog, not the watch face
 
@@ -926,7 +929,7 @@ watch's address, a phone connects to it, pairs with it, discovers its GATT table
 (`6006` with `8001`-`8004`, the `1530` DFU service, `FEE7`) and gets its 0x6F protocol
 answered by the firmware -- a battery CHECK comes back `6f 08 80 01 00 4d 8f`. The phone
 can be a bumble host (`tests/test_ble_end_to_end.py`, about ten seconds, no hardware) or
-the Pixel 8 AVD with `:app` in it (`--netsim`, below). The seam's rule is unchanged: the
+the Pixel 8 AVD with `:app` in it (`--phone`, below). The seam's rule is unchanged: the
 download phase and the OGF 0x3F vendor opcodes are answered locally, because neither means
 anything to bumble, and the rest is forwarded.
 
@@ -993,11 +996,11 @@ imported from `normplus.phone.netsim_transport`, which owns the fix for emulator
 the watch in the emulator are two controllers on one piece of air.
 
 ```bash
-normwatch boot --netsim --live     # the watch, on port 8877
+normwatch boot --phone --live     # the watch, on port 8877
 normphone start --watch                                # the phone, pointed at it
 ```
 
-`--netsim` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
+`--phone` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
 ahead of the wall clock (1.25x at CLI defaults; `--idle-skip` and the deadline quantum
 fast-forward it further) times out on a peer that is answering promptly. The machine
 sleeps whenever it is ahead and never tries to catch up. `--hci-trace` logs every packet
@@ -1134,8 +1137,8 @@ zip (`manifest.json`, `flash/0x000FA000.bin`, `nand/<page>.bin`; `unzip -l` show
 puts them back over a fresh machine before anything runs. A page restored and never
 touched again is saved again, an erased page stays erased, the save is atomic, and a file
 saved against another image or resource blob is refused rather than half-applied. A patch
-is not the watch writing its flash: `--force-gestures` writes with `persist=False`, or a
-later run without the flag would get the patch anyway. Stopping between an erase and its
+is not the watch writing its flash: it goes in with `write_flash(persist=False)`, or a
+later run without it would get the patch anyway. Stopping between an erase and its
 program loses that page, as pulling the battery at that instant would.
 
 What it does not keep is the clock: the RTC is not flash, so a restarted watch shows
@@ -1494,7 +1497,7 @@ process's blank context and this one's, keeps the target's own value: the genera
 special and FPU registers come across (checked across processes), the pointers do not.
 Unicorn's MPU is never configured anyway -- the PPB is CortexM's, in Python.
 
-What a snapshot cannot hold: a bumble radio (`--radio`, `--netsim`, `normwatch cmd`) --
+What a snapshot cannot hold: a bumble radio (`--radio`, `--phone`, `normwatch cmd`) --
 its link state lives in bumble, outside the machine; the NZ8801 model alone is fine. For
 BLE work `--flash-state` is the fast path. And stimulus still pending when it is saved.
 A snapshot is a pickle: load only ones you made.
@@ -1512,7 +1515,7 @@ boot animation's frame, LVGL's active screen (`0x10001710`), the gesture flags
 | `boot` | radio off, 445M, to "Select a Language" |
 | `radio` | the same with the NZ8801 model answering: BLEIF, the download, HCI init |
 | `language` | a tap on the first language row: touch into setup's navigation |
-| `face_swipe` | from `tests/fixtures/bound-watch.zip`, so it boots to the face; a swipe with `--force-gestures` opens the activity page |
+| `face_swipe` | from `tests/fixtures/bound-watch.zip`, so it boots to the face; a swipe opens the activity page, on the stock firmware |
 
 It also holds `--idle-skip` to the `boot` fingerprint exactly, and to `radio` minus the
 one tick above. Two runs of each workload on one tree agree to the instruction, and
@@ -1583,8 +1586,9 @@ behind it:
 ```
 
 A frame takes about 2.95M instructions, so the animation runs for roughly 400M —
-**8.3 seconds of watch time**. The default budget is 30M, which is 0.6s, and
-every investigation of "the black screen" had been looking at frame 8 of 134.
+**8.3 seconds of watch time**. The default budget was 30M, which is 0.6s, and
+every investigation of "the black screen" had been looking at frame 8 of 134. Since #77 a
+`boot` given no budget runs until the animation is over and the UI is drawn.
 
 Run it for long enough and the watch simply boots:
 
@@ -2092,7 +2096,7 @@ lead with), and BLEIF → HCI through first-run setup (#25 and the bind).
 ## Relationship to the rest of the repo
 
 - `normphone` (`tools/normplus/phone/`) runs the **phone** side (Pixel 8 AVD) and bridges a real BT dongle to a
-  real watch. `watchemu` is the other end: no watch. They meet at `--netsim` /
+  real watch. `watchemu` is the other end: no watch. They meet at `--phone` /
   `normphone start --watch`, where the AVD's Bluetooth is the emulated watch's radio.
 - `normfw` (`tools/normplus/firmware/image_tool.py`) verifies and re-seals images; `watchemu`'s `image.py` is the
   loader's view of the same format and independently implements both CRCs.

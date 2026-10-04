@@ -2,7 +2,7 @@
 
     normphone setup                 one-time: SDK packages, the accelerator, the Pixel 8 AVD
     normphone start                 the AVD, Bluetooth through the USB dongle (starts the bridge)
-    normphone start --watch         the AVD, Bluetooth to the emulated watch (normwatch boot --netsim)
+    normphone start --watch         the AVD, Bluetooth to the emulated watch (normwatch boot --phone)
     normphone start --no-bridge     the AVD with no Bluetooth
     normphone install               build :app and install it on the running AVD
     normphone clear-bond            forget the watch's pairing on the AVD (after switching watches)
@@ -24,12 +24,12 @@ import sys
 import time
 from pathlib import Path
 
-from .. import paths
+from .. import developer_options, paths
 
 AVD = "Pixel_8_API35"
 SYSTEM_IMAGE = "system-images;android-35;google_apis;x86_64"
 #: The port the AVD's packet streamer connects to: the dongle bridge, or the watch
-#: emulator (``normwatch boot --netsim``).
+#: emulator (``normwatch boot --phone``).
 PORT = 8877
 #: The CSR8510 dongle, bound to WinUSB with Zadig.
 USB = "usb:0A12:0001"
@@ -161,7 +161,7 @@ def cmd_start(args) -> int:
         if args.watch:
             if not listening(args.port):
                 raise SystemExit(f"normphone: nothing is listening on port {args.port}. Start the "
-                                 f"emulated watch first:\n  normwatch boot --netsim --live")
+                                 f"emulated watch first:\n  normwatch boot --phone --live")
             print(f"Bluetooth to the emulated watch on port {args.port}")
         elif listening(args.port):
             print(f"Reusing the bridge already listening on port {args.port}")
@@ -238,35 +238,46 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="normphone", description=__doc__.split("\n\n")[0].replace("``", ""),
                                  epilog=__doc__.split("\n\n", 1)[1].replace("``", ""),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--sdk", help="the Android SDK (default: ANDROID_HOME, local.properties)")
+    developer_options(ap).add_argument(
+        "--sdk", help="the Android SDK (default: ANDROID_HOME, local.properties)")
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("setup", help="one-time setup of the SDK packages, accelerator and AVD")
-    p.add_argument("--skip-aehd", action="store_true", help="skip the (elevated) accelerator install")
+    developer_options(p).add_argument("--skip-aehd", action="store_true",
+                                      help="skip the (elevated) accelerator install")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("start", help="start the AVD (and the dongle bridge)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--watch", action="store_true",
-                      help="Bluetooth to the emulated watch: start `normwatch boot --netsim` first")
+                      help="Bluetooth to the emulated watch: start `normwatch boot --phone` first")
     mode.add_argument("--no-bridge", action="store_true", help="no Bluetooth at all")
-    p.add_argument("--cold-boot", action="store_true", help="no snapshot, wipe data (after config changes)")
-    p.add_argument("--gpu", default="auto", choices=["auto", "host", "swiftshader_indirect"])
-    p.add_argument("--avd", default=AVD)
-    p.add_argument("--port", type=int, default=PORT)
-    p.add_argument("--usb", default=USB, help=f"the dongle (default {USB})")
+    p.add_argument("--cold-boot", action="store_true",
+                   help="no snapshot, wipe data (after config changes, or when the guest's "
+                        "Bluetooth will not turn on)")
+    p.add_argument("--gpu", default="auto", choices=["auto", "host", "swiftshader_indirect"],
+                   help="how the AVD renders (default auto); swiftshader_indirect is software, "
+                        "for when the GPU path glitches")
+    dev = developer_options(p)
+    dev.add_argument("--avd", default=AVD, help=f"the AVD to start (default {AVD})")
+    dev.add_argument("--port", type=int, default=PORT,
+                     help=f"the port the AVD's Bluetooth connects to: the dongle bridge, or "
+                          f"the watch emulator with --watch (default {PORT})")
+    dev.add_argument("--usb", default=USB, help=f"the dongle (default {USB})")
     p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("install", help="build :app (debug) and install it on the running AVD")
     p.set_defaults(func=cmd_install)
 
     p = sub.add_parser("clear-bond", help="forget the watch's pairing on the AVD")
-    p.add_argument("--mac", default=WATCH, help=f"the watch's address (default {WATCH})")
+    developer_options(p).add_argument("--mac", default=WATCH,
+                                      help=f"the watch's address (default {WATCH})")
     p.set_defaults(func=cmd_clear_bond)
 
     p = sub.add_parser("bridge", help="run the dongle bridge on its own")
-    p.add_argument("--port", type=int, default=PORT)
-    p.add_argument("--usb", default=USB)
+    dev = developer_options(p)
+    dev.add_argument("--port", type=int, default=PORT, help=f"the port to serve (default {PORT})")
+    dev.add_argument("--usb", default=USB, help=f"the dongle (default {USB})")
     p.set_defaults(func=cmd_bridge)
 
     args = ap.parse_args(argv)

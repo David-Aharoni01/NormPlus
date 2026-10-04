@@ -7,8 +7,14 @@
     normboard todo 56               move it back to Todo
     normboard done 56 [-m TEXT]     close it as completed (with a comment); the board says Done
     normboard note 56 -m TEXT       add a comment: a finding, a result, a commit
-    normboard new "Title" [-p high|medium|low] [-l LABEL ...] [-m BODY | -f BODY.md] [--start]
+    normboard new "Title" -a AREA [-p high|medium|low] [-l TAG ...] [-m BODY | -f BODY.md] [--start]
+    normboard area 56 emulator      move an issue to another area
+    normboard areas                 what each area covers
     normboard sync                  put every issue on the board, Done for closed ones
+
+Every issue is in exactly one area, which is its milestone -- App, Protocol, Firmware,
+Emulator or Tooling -- so the board can be grouped and sliced by them. Its priority is a
+label, and any other label (``ble``, ``ota``, ...) is a tag.
 
 It drives the GitHub CLI (``gh``), signed in with the ``project`` scope
 (``gh auth refresh -s project``). The repository is public, so issues are too.
@@ -29,6 +35,26 @@ OWNER = "David-Aharoni01"
 REPO = f"{OWNER}/NormPlus"
 PROJECT = 1
 PRIORITIES = ("high", "medium", "low")
+#: The category every issue is filed under, and what it covers: the four goals in CLAUDE.md
+#: and the tooling around them (#78). An issue goes where it is done. Each is a milestone
+#: (#79): a project board can be grouped and sliced by milestone, not by one label of several.
+AREAS = {
+    "app": "The Android app (:app): BLE connection, sync, notifications, calls, UI, "
+           "on-device checks",
+    "protocol": "The watch's 0x6F protocol and :protocol: finding, decoding and building "
+                "commands",
+    "firmware": "The watch's own firmware and hardware: reverse-engineering, patches, "
+                "updating it",
+    "emulator": "The emulators: the watch's firmware on the PC (normwatch), the Android one "
+                "(normphone)",
+    "tooling": "The rest on the PC: normcmd, normfw, normtest, normboard, the repo, the docs, "
+               "the board",
+}
+
+
+def milestone(area: str) -> str:
+    """The milestone an area is: ``emulator`` -> ``Emulator``."""
+    return area.capitalize()
 
 
 def _gh_path() -> str:
@@ -83,13 +109,17 @@ def _priority(labels) -> str:
     return "-"
 
 
+def _area(issue) -> str:
+    return ((issue.get("milestone") or {}).get("title") or "-").lower()
+
+
 def cmd_list(args) -> int:
     board = Board()
     items = gh_json("project", "item-list", str(PROJECT), "--owner", OWNER, "--format", "json",
                     "--limit", "1000")["items"]
     on_board = {i["content"]["number"]: i for i in items if i.get("content", {}).get("number")}
     issues = gh_json("issue", "list", "--repo", REPO, "--state", "all" if args.all else "open",
-                     "--limit", "1000", "--json", "number,title,labels,state")
+                     "--limit", "1000", "--json", "number,title,labels,milestone,state")
     order = {"In Progress": 0, "Todo": 1, "Done": 2}
     rows = []
     for issue in issues:
@@ -97,13 +127,13 @@ def cmd_list(args) -> int:
             "Done" if issue["state"] == "CLOSED" else "(not on board)")
         rows.append((order.get(status, 3), PRIORITIES.index(_priority(issue["labels"]))
                      if _priority(issue["labels"]) in PRIORITIES else 3, issue["number"],
-                     status, _priority(issue["labels"]), issue["title"]))
+                     status, _priority(issue["labels"]), _area(issue), issue["title"]))
     current = None
-    for _, _, number, status, priority, title in sorted(rows):
+    for _, _, number, status, priority, area, title in sorted(rows):
         if status != current:
             print(f"\n{status}")
             current = status
-        print(f"  #{number:<4} {priority:<7} {title}")
+        print(f"  #{number:<4} {priority:<7} {area:<9} {title}")
     print(f"\n{board.url}")
     return 0
 
@@ -113,12 +143,13 @@ def cmd_show(args) -> int:
     # only the comments -- no title, state, labels or body -- so an issue without comments
     # came out empty. Ask for the fields and lay them out here.
     issue = gh_json("issue", "view", str(args.number), "--repo", REPO, "--json",
-                    "number,title,state,labels,body,comments,projectItems,url")
+                    "number,title,state,labels,milestone,body,comments,projectItems,url")
     status = next((p["status"]["name"] for p in issue.get("projectItems") or []
                    if (p.get("status") or {}).get("name")), "not on the board")
     labels = ", ".join(label["name"] for label in issue["labels"]) or "no labels"
     print(f"#{issue['number']}  {issue['title']}")
-    print(f"{issue['state']}, {status}  |  {labels}")
+    area = (issue.get("milestone") or {}).get("title") or "no area"
+    print(f"{issue['state']}, {status}  |  {area}  |  {labels}")
     print(issue["url"])
     print(f"\n{issue['body'].strip() or '(no body)'}")
     for comment in issue["comments"]:
@@ -174,6 +205,7 @@ def cmd_note(args) -> int:
 def cmd_new(args) -> int:
     labels = [f"priority: {args.priority}", *args.label]
     command = ["issue", "create", "--repo", REPO, "--title", args.title,
+               "--milestone", milestone(args.area),
                "--body-file", _body(args) or _body(argparse.Namespace(message=" "))]
     for label in labels:
         command += ["--label", label]
@@ -184,7 +216,35 @@ def cmd_new(args) -> int:
     return 0
 
 
+def cmd_area(args) -> int:
+    """Move an issue to *area*: an issue has one milestone, so this is the whole of it."""
+    gh("issue", "edit", str(args.number), "--repo", REPO, "--milestone", milestone(args.area))
+    print(f"#{args.number}: {milestone(args.area)}")
+    return 0
+
+
+def cmd_areas(args) -> int:
+    for name, description in AREAS.items():
+        print(f"  {name:<9} {description}")
+    return 0
+
+
+def ensure_milestones() -> list[str]:
+    """Make the areas' milestones that do not exist yet; the ones it made."""
+    have = {m["title"] for m in gh_json("api", f"repos/{REPO}/milestones?state=all&per_page=100")}
+    made = []
+    for area, description in AREAS.items():
+        if milestone(area) not in have:
+            gh("api", f"repos/{REPO}/milestones", "-f", f"title={milestone(area)}",
+               "-f", f"description={description}")
+            made.append(milestone(area))
+    return made
+
+
 def cmd_sync(args) -> int:
+    made = ensure_milestones()
+    if made:
+        print(f"made the milestones {', '.join(made)}")
     board = Board()
     issues = gh_json("issue", "list", "--repo", REPO, "--state", "all", "--limit", "1000",
                      "--json", "number,state")
@@ -228,12 +288,20 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_note)
     p = sub.add_parser("new", help="create an issue on the board")
     p.add_argument("title")
+    p.add_argument("-a", "--area", choices=AREAS, required=True,
+                   help="what it is about (normboard areas); every issue has one")
     p.add_argument("-p", "--priority", choices=PRIORITIES, default="medium")
-    p.add_argument("-l", "--label", action="append", default=[])
+    p.add_argument("-l", "--label", action="append", default=[], metavar="TAG",
+                   help="a tag besides the area and the priority (ble, ota, ...); repeatable")
     p.add_argument("-m", "--message", help="the body")
     p.add_argument("-f", "--body-file", help="the body, from a file")
     p.add_argument("--start", action="store_true", help="put it straight into In Progress")
     p.set_defaults(func=cmd_new)
+    p = sub.add_parser("area", help="move an issue to another area")
+    p.add_argument("number", type=int)
+    p.add_argument("area", choices=AREAS)
+    p.set_defaults(func=cmd_area)
+    sub.add_parser("areas", help="what each area covers").set_defaults(func=cmd_areas)
     sub.add_parser("sync", help="put every issue on the board").set_defaults(func=cmd_sync)
     args = ap.parse_args(argv)
     if not getattr(args, "func", None):

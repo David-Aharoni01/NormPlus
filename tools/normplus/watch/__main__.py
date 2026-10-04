@@ -3,8 +3,8 @@
     normwatch info
     normwatch boot --seconds 14 --no-ble
     normwatch modules
-    normcmd 08 70 --payload 00                       (the same as: normwatch cmd ...)
-    normcmd 08 70 --payload 00 --mac 4C:59:80:12:44:F1
+    normcmd 08 70                                    (the same as: normwatch cmd ...)
+    normcmd BATTERY_POWER CHECK --mac                the physical watch
 
 Installed by `uv tool install --editable .` at the repository root, or run in place
 with `uv run normwatch ...`.
@@ -18,15 +18,14 @@ import json
 import sys
 from pathlib import Path
 
-from .. import paths
+from .. import developer_options, paths
 from .fw import flashstate, snapshot
 from .fw.bootrom import BootRom
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
 from .fw.devices import (attach_ble_controller, attach_mspi_devices,
                          attach_motion_sensor, attach_pmu, attach_touch_panel)
-from .fw.machine import Apollo3Machine
-from .fw.patches import force_gestures
+from .fw.machine import Apollo3Machine, StopReason
 from .fw.resources import MissingResources
 from .fw.rtos import format_tasks
 from .fw.symbols import SymbolMap
@@ -38,6 +37,12 @@ FIXTURES = (paths.TESTS / "fixtures").resolve()
 DEFAULT_RESOURCES = paths.RESOURCES
 #: The watch's own factory resources, mounted by `boot` when they are there (#71).
 DEFAULT_FACTORY_NAND = paths.FACTORY_NAND
+#: The physical watch: what --mac means without an address, and the emulated watch's own
+#: address. The same as fw.phone.WATCH, which is not imported here -- it brings bumble.
+WATCH = "4C:59:80:12:44:F1"
+#: Instructions per emu_start. Only a safety cap: the block hook stops emulation the
+#: moment an interrupt is deliverable, and the deadline quantum before the next one.
+SLICE = 25_000
 
 
 def _load(path: str | Path) -> image_mod.FirmwareImage:
@@ -94,14 +99,15 @@ def cmd_command(args) -> int:
     import asyncio
     import time
 
-    from .fw.phone import (BIND_END, BIND_START, DATETIME, Deframer, EmulatedWatch,
+    from .fw.phone import (BIND_END, BIND_START, CHECK, DATETIME, Deframer, EmulatedWatch,
                            ack, action_byte, command_byte, describe, frame)
     from .physical import PhysicalPhone, mac_address
 
     try:
         code = command_byte(args.cmd_code)
         action = action_byte(args.action)
-        payload = bytes.fromhex(args.payload) if args.payload else b""
+        payload = (bytes.fromhex(args.payload) if args.payload is not None
+                   else bytes([0x00]) if action == CHECK else b"")
         mac = mac_address(args.mac) if args.mac else None
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -253,7 +259,7 @@ def _run_live(machine, devices, args, *, log=print, missing_images=None):
     def worker() -> None:
         try:
             result["stats"] = machine.run(
-                max_instructions=args.max_instructions, slice_size=args.slice,
+                max_instructions=args.max_instructions, slice_size=SLICE,
                 resume=args.load_state is not None,
             )
         except BaseException as exc:  # surfaced after the window closes
@@ -299,15 +305,59 @@ def _run_live(machine, devices, args, *, log=print, missing_images=None):
 BOOT_ANIMATION_STATE = 0x10000114
 
 
-def boot_animation_note(machine) -> str:
+def boot_animation(machine) -> tuple[int, int] | None:
+    """(frame reached, frames) of the boot animation; None before the firmware sets it up."""
     try:
         total = machine.uc.mem_read(BOOT_ANIMATION_STATE + 0x04, 1)[0]
         frame = int.from_bytes(
             machine.uc.mem_read(BOOT_ANIMATION_STATE + 0x10, 4), "little")
     except Exception:
-        return ""
+        return None
     if not total or frame > total:
+        return None
+    return frame, total
+
+
+#: `boot` with no budget (#77) looks at the animation this often, gives the UI this long
+#: to draw once it is over (a UI cycle is ~61 ms), and gives up after UNTIL_UI_AT_MOST.
+UNTIL_UI_POLL = 12_000_000          # 0.25 s of watch time
+UNTIL_UI_SETTLE = 48_000_000        # 1 s
+UNTIL_UI_AT_MOST = 30               # seconds of watch time
+
+
+class UntilTheUi:
+    """Stop the run once the boot animation is over and the UI has drawn: what `boot`
+    does when it is given no budget. A fixed default could not be right -- the UI comes
+    up at ~14s of watch time with --no-ble and ~18s with the radio -- and the one it
+    replaced, 30M instructions, was 0.6s, inside the animation (#77)."""
+
+    def __init__(self, machine, start: int) -> None:
+        self.machine, self.up = machine, False
+        machine.schedule(start + UNTIL_UI_POLL, self._look)
+
+    def _look(self) -> None:
+        state = boot_animation(self.machine)
+        if state is not None and state[0] >= state[1]:
+            self.machine.schedule(self.machine._instructions + UNTIL_UI_SETTLE, self._stop)
+        else:
+            self.machine.schedule(self.machine._instructions + UNTIL_UI_POLL, self._look)
+
+    def _stop(self) -> None:
+        self.up = True
+        self.machine.stop_requested = True
+
+    def withdraw(self) -> None:
+        """Take a look still pending off the queue: --save-state refuses a machine with
+        stimulus pending, and the cap can end the run before the UI comes up."""
+        self.machine._events[:] = [e for e in self.machine._events
+                                   if getattr(e[1], "__self__", None) is not self]
+
+
+def boot_animation_note(machine) -> str:
+    state = boot_animation(machine)
+    if state is None:
         return ""
+    frame, total = state
     if frame >= total:
         return f"  boot animation: finished ({total} frames)"
     per_frame = 2_950_000
@@ -530,7 +580,7 @@ def cmd_dump(args) -> int:
     say(f"dump: {total:,} bytes in {len(ranges)} range(s) -> {args.output}")
     dump = Dump(args.output, log=say)
     dumper = Dumper(tries=args.tries, skip_blank=not args.no_skip,
-                    trigger=not args.no_trigger, page_pause=args.page_pause,
+                    trigger=not args.no_trigger,
                     retry_pause=args.retry_pause, refusals=args.refusals,
                     keep_awake=0.0 if args.no_wake else args.keep_awake,
                     wait_for_driver=args.wait_for_driver, log=say)
@@ -681,13 +731,12 @@ def cmd_boot(args) -> int:
     # In a live session the stall heuristic must not stop the CPU: the window
     # would go on showing the last frame and ignoring every touch, which reads
     # as "the emulator is slow and unresponsive" rather than "it ended".
-    tracing = args.trace and not args.no_trace
     tracer = Tracer(
         symbols, stall_window=args.stall, watch_for_stall=not args.live, log=log
-    ) if tracing else None
+    ) if args.trace else None
     # A phone on the other end of the radio keeps real time, so the watch
-    # must too; --netsim implies it.
-    realtime = args.realtime or args.netsim is not None
+    # must too; --phone implies it.
+    realtime = args.realtime or args.phone is not None
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
                              idle_skip=args.idle_skip,
                              fast_hook=not args.no_fast_hook,
@@ -732,7 +781,7 @@ def cmd_boot(args) -> int:
         charger_status=getattr(args, "charger_status", None), log=log)
     controller = None
     android = None
-    if (args.radio or args.netsim is not None) and not args.no_ble:
+    if (args.radio or args.phone is not None) and not args.no_ble:
         # Imported here: bumble costs a third of a second to load and only
         # these two switches need it.
         from .fw.blelink import AndroidLink, BumbleController, Radio
@@ -741,11 +790,11 @@ def cmd_boot(args) -> int:
         controller = attach_ble_controller(
             machine, BumbleController(args.address, radio=radio, log=log), log=log)
         controller.trace = args.hci_trace
-        if args.netsim is not None:
-            android = AndroidLink(radio, args.netsim, log=log)
+        if args.phone is not None:
+            android = AndroidLink(radio, args.phone, log=log)
             if not quiet:
                 print(f"  Android emulator: normphone start --watch "
-                      f"(-BridgePort {args.netsim} if not the default)")
+                      f"(--port {args.phone} if not the default)")
     elif args.ble_controller and not args.no_ble:
         controller = attach_ble_controller(machine, log=log)
     # After every device is attached -- the snapshot names each by where it
@@ -758,8 +807,6 @@ def cmd_boot(args) -> int:
             return 2
         # The budget and --press times count from where the snapshot was taken.
         args.max_instructions += machine._instructions
-    if args.force_gestures:
-        force_gestures(machine, log=print if quiet else log)
 
     console = None
     site = find_formatter(img.payload, img.link_address)
@@ -776,15 +823,22 @@ def cmd_boot(args) -> int:
               else start + (args.max_instructions - start) // 4)
         hold = int(parts[2], 0) if len(parts) > 2 and parts[2] else None
         machine.press_button(pin, at, hold)
+    until_ui = (UntilTheUi(machine, machine._instructions if args.load_state else 0)
+                if args.until_ui else None)
 
     try:
         if args.live:
             stats = _run_live(machine, devices, args, log=log, missing_images=missing_images)
         else:
-            stats = machine.run(max_instructions=args.max_instructions, slice_size=args.slice,
+            stats = machine.run(max_instructions=args.max_instructions, slice_size=SLICE,
                                 resume=args.load_state is not None)
+            if until_ui is not None:
+                until_ui.withdraw()
+                if until_ui.up:
+                    stats.stop = StopReason("budget", "the boot animation is over and the "
+                                            "UI is up", stats.stop.pc)
     finally:
-        # Also on Ctrl-C and a closed window: that is how --netsim sessions
+        # Also on Ctrl-C and a closed window: that is how --phone sessions
         # end. Stopping between an erase and its program loses that page,
         # as pulling the battery at that instant would on the watch.
         if flash_state is not None and flash_state.resolve().is_relative_to(FIXTURES):
@@ -911,133 +965,27 @@ def main(argv=None) -> int:
 
     p_boot = sub.add_parser("boot", help="run the firmware and print a boot triage report")
     add_image(p_boot)
-    p_boot.add_argument("--max-instructions", type=int, default=30_000_000,
-                        help="instruction budget (default: 30M, which is 0.6s of "
-                             "watch time — see --seconds)")
     p_boot.add_argument("--seconds", type=float, default=None, metavar="N",
-                        help="run for N seconds of watch time instead "
-                             "(48M instructions each). The watch plays a 134-frame "
-                             "boot animation lasting about 8s, so anything shorter "
-                             "than that never gets to the UI.")
-    p_boot.add_argument("--slice", type=int, default=25_000,
-                        help="instructions between timer/interrupt checks (default: 25000)")
-    p_boot.add_argument("--stall", type=int, default=3_000_000,
-                        help="instructions without new code before declaring a stall")
-    p_boot.add_argument("--chiprev", type=lambda s: int(s, 0), default=None,
-                        help="override MCUCTRL.CHIPREV (e.g. 0x12)")
-    p_boot.add_argument("--resources", default=str(DEFAULT_RESOURCES),
-                        help=f"resource blob to mount in the SPI NAND "
-                             f"(default: {DEFAULT_RESOURCES})")
-    p_boot.add_argument("--nand", action="append", metavar="PATH",
-                        help="a dumped NAND blob to mount, or a `dump -o` directory of "
-                             "them (#69). Each goes at the address in its first four "
-                             "bytes. Repeatable, and giving any replaces the factory "
-                             "resources that would be mounted by default")
-    p_boot.add_argument("--no-factory-resources", action="store_true",
-                        help=f"do not mount the watch's own factory resources from "
-                             f"{DEFAULT_FACTORY_NAND} (they are mounted when they are "
-                             f"there, and a boot that plays the whole animation is ~22s "
-                             f"faster without them: 134 full-screen images are really "
-                             f"decoded with them, and drawn as \"No data\" without)")
-    p_boot.add_argument("--no-resources", action="store_true",
-                        help="leave the SPI NAND erased: no app resource image and no "
-                             "factory resources either")
-    p_boot.add_argument("--press", action="append", metavar="PIN[:AT[:HOLD]]",
-                        help="inject a button/sensor edge on a GPIO pin, optionally at a "
-                             "given instruction count and held for HOLD instructions "
-                             "(~48M = 1s of watch time; default hold 3s). Repeatable.")
-    p_boot.add_argument("--screenshot", metavar="PATH",
-                        help="write the watch's screen to a PNG when the run ends")
+                        help="run for N seconds of watch time (48M instructions each). "
+                             "Without it, boot runs until the boot animation is over and "
+                             f"the UI is drawn (at most {UNTIL_UI_AT_MOST}s), and a "
+                             "--live or --phone session until it is closed. The "
+                             "animation lasts about 8s, so a run shorter than that never "
+                             "gets to the UI.")
     p_boot.add_argument("--live", action="store_true",
                         help="show the watch's screen in a window while it runs, and "
                              "drive the touch panel from the mouse (click and drag)")
     p_boot.add_argument("--scale", type=int, default=1,
                         help="magnify the live window by this factor (default: 1)")
-    p_boot.add_argument("--battery", type=float, default=80.0, metavar="PERCENT",
-                        help="battery charge the gauge reports (default: 80). "
-                             "Below the firmware's threshold the watch raises its "
-                             "own low-battery screens.")
-    p_boot.add_argument("--charging", action="store_true",
-                        help="report the watch as sitting on the charger")
-    p_boot.add_argument("--charger-status", type=lambda s: int(s, 0), default=None,
-                        metavar="BYTE",
-                        help="override the charger's status register (0x09 reg 3) "
-                             "instead of deriving it from --charging. Bit 5 is what "
-                             "the driver's steady query tests, bit 7 raises its "
-                             "one-shot code, bit 4 reads as a fault.")
-    p_boot.add_argument("--force-gestures", action="store_true",
-                        help="suppress the firmware's own gesture cancel so swipes reach "
-                             "the UI. A deliberate deviation from the shipped image — see "
-                             "normplus/watch/fw/patches.py")
-    p_boot.add_argument("--trace", action="store_true",
-                        help="collect coverage and watch for stalls. Costs about "
-                             "27%% of the run rate, so it is off by default.")
-    p_boot.add_argument("--no-trace", action="store_true",
-                        help=argparse.SUPPRESS)      # now the default; kept working
-    p_boot.add_argument("--no-fast-hook", action="store_true",
-                        help="run the per-block timing hook in Python. The C one "
-                             "is the default and is about 2.5x faster; it builds "
-                             "itself on first use and falls back to Python if "
-                             "there is no compiler. --trace and watchpoints need "
-                             "per-block Python and switch back on their own.")
-    p_boot.add_argument("--idle-skip", action="store_true",
-                        help="fast-forward through the FreeRTOS idle task's "
-                             "busy-wait instead of emulating it. About 70%% of a "
-                             "boot is spent there and this build never sleeps, so "
-                             "this is most of the run time. The emulated clock is "
-                             "unaffected — every skipped cycle is still counted, "
-                             "and exception counts match exactly with it on and "
-                             "off — but it is off by default because it reasons "
-                             "about when the core has nothing to do rather than "
-                             "executing it.")
-    p_boot.add_argument("--fixed-quantum", action="store_true",
-                        help="advance the clocks on a fixed 256-cycle grid "
-                             "instead of running to the next deadline. The "
-                             "deadline is the default and is about 1.7x faster; "
-                             "this is here to reproduce a measurement taken "
-                             "before it, or to check one against it.")
-    p_boot.add_argument("--no-ble", action="store_true",
-                        help="stop the BLE controller from answering its "
-                             "power-up, the way this emulator behaved before the "
-                             "PWRCTRL.DEVPWRSTATUS mapping was fixed. Nothing is "
-                             "yet behind the BLEIF FIFO, so with the radio on the "
-                             "firmware's HCI transport spins in an "
-                             "interrupt-masked retry for ~100M instructions and a "
-                             "boot costs about 2.1x. That is faithful and it is "
-                             "the default; this is for when the run is not about "
-                             "the radio. It also restores idle time, so anything "
-                             "measuring --idle-skip wants it.")
-    p_boot.add_argument("--ble-controller", action="store_true",
-                        help="put the NZ8801 stand-in on the other side of the "
-                             "BLEIF FIFO: it takes the firmware download, answers "
-                             "the vendor init and every HCI command with a bare "
-                             "Command Complete, and captures the packets. Enough "
-                             "for the firmware's stack to finish starting; it is "
-                             "not a radio. --radio is.")
-    p_boot.add_argument("--radio", action="store_true",
-                        help="put a real (virtual) radio behind the BLEIF: a bumble "
-                             "controller on a local link, so the firmware's own BLE "
-                             "stack comes all the way up and advertises as the "
-                             "watch. Alone on the air unless --netsim is given.")
-    p_boot.add_argument("--netsim", type=int, nargs="?", const=8877, default=None,
+    p_boot.add_argument("--screenshot", metavar="PATH",
+                        help="write the watch's screen to a PNG when the run ends")
+    p_boot.add_argument("--phone", type=int, nargs="?", const=8877, default=None,
                         metavar="PORT",
-                        help="also serve the Android emulator's netsim endpoint on "
-                             "PORT (default 8877), with the phone's virtual controller "
-                             "on the same air as the watch's -- launch the AVD with "
-                             "normphone start --watch and :app can pair with the "
-                             "emulated watch. Implies --radio and --realtime.")
-    p_boot.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
-                        help="the BD address the radio reports (default: the physical "
-                             "watch's, so the emulated one looks the same to the app)")
-    p_boot.add_argument("--hci-trace", action="store_true",
-                        help="with --radio/--netsim, log every HCI packet across the "
-                             "seam once the link is up (commands, events, ACL data "
-                             "both ways). The first thing to turn on when the phone "
-                             "and the watch disagree about what was said.")
-    p_boot.add_argument("--realtime", action="store_true",
-                        help="never let watch time run ahead of wall time. Needed "
-                             "whenever something outside keeps real time -- a phone on "
-                             "the radio -- and on by default with --netsim.")
+                        help="put the Android emulator's phone on the same air as the "
+                             "watch: start the AVD with normphone start --watch, and "
+                             ":app in it pairs with the emulated watch. Serves the "
+                             "emulator's netsim endpoint on PORT (default 8877). "
+                             "Implies --radio and --realtime.")
     p_boot.add_argument("--flash-state", metavar="PATH", default=None,
                         help="keep the watch's flash in PATH between runs: restored "
                              "at start if the file exists, saved at exit (Ctrl-C and "
@@ -1046,13 +994,116 @@ def main(argv=None) -> int:
                              "Refuses a file saved against another image.")
     p_boot.add_argument("--save-state", metavar="PATH", default=None,
                         help="at the end of the run, save the whole machine -- memory, "
-                             "CPU, every device -- to PATH. Not with --radio/--netsim: "
+                             "CPU, every device -- to PATH. Not with --radio/--phone: "
                              "a bumble radio's state lives outside the machine")
     p_boot.add_argument("--load-state", metavar="PATH", default=None,
                         help="start from a machine saved with --save-state instead of "
                              "booting; build it with the same switches. --seconds, "
                              "--max-instructions and --press times then count from there")
-    p_boot.add_argument("--json", action="store_true", help="machine-readable output")
+    p_boot.add_argument("--nand", action="append", metavar="PATH",
+                        help="a dumped NAND blob to mount, or a `dump -o` directory of "
+                             "them (#69). Each goes at the address in its first four "
+                             "bytes. Repeatable, and giving any replaces the factory "
+                             "resources that would be mounted by default")
+    p_boot.add_argument("--no-ble", action="store_true",
+                        help="boot without Bluetooth: much faster, for a run that "
+                             "is not about the radio. The BLE controller never "
+                             "answers its power-up, as before the "
+                             "PWRCTRL.DEVPWRSTATUS mapping was fixed. With nothing "
+                             "behind the BLEIF FIFO the firmware's HCI transport "
+                             "spins in an interrupt-masked retry for ~100M "
+                             "instructions and a boot costs about 2.1x; that is "
+                             "faithful, so it is the default. It also restores "
+                             "idle time, so anything measuring --idle-skip wants it.")
+    p_boot.add_argument("--battery", type=float, default=80.0, metavar="PERCENT",
+                        help="battery charge the gauge reports (default: 80). "
+                             "Below the firmware's threshold the watch raises its "
+                             "own low-battery screens.")
+    p_boot.add_argument("--charging", action="store_true",
+                        help="report the watch as sitting on the charger")
+    dev = developer_options(p_boot)
+    dev.add_argument("--netsim", dest="phone", type=int, nargs="?", const=8877, default=None,
+                     help=argparse.SUPPRESS)          # --phone's old name (#80)
+    dev.add_argument("--max-instructions", type=int, default=None, metavar="N",
+                     help="the budget in instructions instead of --seconds (48M to a "
+                          "second of watch time); it also bounds a --live session")
+    dev.add_argument("--stall", type=int, default=3_000_000,
+                     help="with --trace: instructions without new code before declaring "
+                          "a stall (default 3M)")
+    dev.add_argument("--chiprev", type=lambda s: int(s, 0), default=None,
+                     help="override MCUCTRL.CHIPREV (e.g. 0x12)")
+    dev.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                     help=f"resource blob to mount in the SPI NAND "
+                          f"(default: {DEFAULT_RESOURCES})")
+    dev.add_argument("--no-factory-resources", action="store_true",
+                     help=f"do not mount the watch's own factory resources from "
+                          f"{DEFAULT_FACTORY_NAND} (they are mounted when they are "
+                          f"there, and a boot that plays the whole animation is ~22s "
+                          f"faster without them: 134 full-screen images are really "
+                          f"decoded with them, and drawn as \"No data\" without)")
+    dev.add_argument("--no-resources", action="store_true",
+                     help="leave the SPI NAND erased: no app resource image and no "
+                          "factory resources either")
+    dev.add_argument("--press", action="append", metavar="PIN[:AT[:HOLD]]",
+                     help="inject a button/sensor edge on a GPIO pin, optionally at a "
+                          "given instruction count and held for HOLD instructions "
+                          "(~48M = 1s of watch time; default hold 3s). Repeatable.")
+    dev.add_argument("--charger-status", type=lambda s: int(s, 0), default=None,
+                     metavar="BYTE",
+                     help="override the charger's status register (0x09 reg 3) "
+                          "instead of deriving it from --charging. Bit 5 is what "
+                          "the driver's steady query tests, bit 7 raises its "
+                          "one-shot code, bit 4 reads as a fault.")
+    dev.add_argument("--trace", action="store_true",
+                     help="collect coverage and watch for stalls. Costs about "
+                          "27%% of the run rate, so it is off by default.")
+    dev.add_argument("--no-fast-hook", action="store_true",
+                     help="run the per-block timing hook in Python. The C one "
+                          "is the default and is about 2.5x faster; it builds "
+                          "itself on first use and falls back to Python if "
+                          "there is no compiler. --trace and watchpoints need "
+                          "per-block Python and switch back on their own.")
+    dev.add_argument("--idle-skip", action="store_true",
+                     help="fast-forward through the FreeRTOS idle task's "
+                          "busy-wait instead of emulating it. About 70%% of a "
+                          "boot is spent there and this build never sleeps, so "
+                          "this is most of the run time. The emulated clock is "
+                          "unaffected — every skipped cycle is still counted, "
+                          "and exception counts match exactly with it on and "
+                          "off — but it is off by default because it reasons "
+                          "about when the core has nothing to do rather than "
+                          "executing it.")
+    dev.add_argument("--fixed-quantum", action="store_true",
+                     help="advance the clocks on a fixed 256-cycle grid "
+                          "instead of running to the next deadline. The "
+                          "deadline is the default and is about 1.7x faster; "
+                          "this is here to reproduce a measurement taken "
+                          "before it, or to check one against it.")
+    dev.add_argument("--ble-controller", action="store_true",
+                     help="put the NZ8801 stand-in on the other side of the "
+                          "BLEIF FIFO: it takes the firmware download, answers "
+                          "the vendor init and every HCI command with a bare "
+                          "Command Complete, and captures the packets. Enough "
+                          "for the firmware's stack to finish starting; it is "
+                          "not a radio. --radio is.")
+    dev.add_argument("--radio", action="store_true",
+                     help="put a real (virtual) radio behind the BLEIF: a bumble "
+                          "controller on a local link, so the firmware's own BLE "
+                          "stack comes all the way up and advertises as the "
+                          "watch. Alone on the air unless --phone is given.")
+    dev.add_argument("--address", default=WATCH, metavar="MAC",
+                     help="the BD address the radio reports (default: the physical "
+                          "watch's, so the emulated one looks the same to the app)")
+    dev.add_argument("--hci-trace", action="store_true",
+                     help="with --radio/--phone, log every HCI packet across the "
+                          "seam once the link is up (commands, events, ACL data "
+                          "both ways). The first thing to turn on when the phone "
+                          "and the watch disagree about what was said.")
+    dev.add_argument("--realtime", action="store_true",
+                     help="never let watch time run ahead of wall time. Needed "
+                          "whenever something outside keeps real time -- a phone on "
+                          "the radio -- and on by default with --phone.")
+    dev.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 
     p_cmd = sub.add_parser(
@@ -1062,38 +1113,40 @@ def main(argv=None) -> int:
                        help="command byte in hex (08) or a CommandCode name (BATTERY_POWER)")
     p_cmd.add_argument("action", metavar="ACTION",
                        help="action byte in hex (70, 71) or an Action name (CHECK, SET)")
-    p_cmd.add_argument("--payload", default="", metavar="HEX",
-                       help="payload in hex, e.g. 00 or '0a 0b'. A CHECK needs its one "
-                            "byte: the watch ignores one without it")
-    p_cmd.add_argument("--char", choices=["8001", "8003"], default="8001",
-                       help="the characteristic to write: 8001 is what the companion app "
-                            "and :app use (SETs are acknowledged); on 8003 a SET never "
-                            "is. Default 8001")
-    p_cmd.add_argument("--no-trigger", action="store_true",
-                       help="do not write [03] to 8002 after the frame")
-    p_cmd.add_argument("--no-bind", action="store_true",
-                       help="skip checkInit and the bind: ask the watch as first-run "
-                            "setup leaves it")
-    p_cmd.add_argument("--timeout", type=float, default=5.0, metavar="S",
-                       help="seconds to wait for replies (default 5)")
+    p_cmd.add_argument("--payload", default=None, metavar="HEX",
+                       help="payload in hex, e.g. 06 or '0a 0b'. Default 00 for a CHECK, "
+                            "which needs its one byte -- the watch ignores a CHECK without "
+                            "it (docs/protocol.md) -- and nothing for anything else")
+    p_cmd.add_argument("--mac", metavar="MAC", nargs="?", const=WATCH, default=None,
+                       help=f"ask the PHYSICAL watch over this PC's Bluetooth adapter "
+                            f"instead of booting the emulated one: {WATCH}, or the one at "
+                            f"MAC. Needs bleak; on Windows it bonds the watch once (Just "
+                            f"Works). The watch must not be connected to a phone")
     p_cmd.add_argument("--flash-state", metavar="PATH", default=None,
                        help="start from this saved flash (see boot --flash-state). Read "
                             "only: probing never rewrites it unless --save is given")
     p_cmd.add_argument("--save", action="store_true",
                        help="write the flash back to --flash-state at exit, creating it -- "
                             "the bind, this phone's bond, and whatever the command changed")
-    p_cmd.add_argument("--mac", metavar="MAC", default=None,
-                       help="ask the PHYSICAL watch at MAC (4C:59:80:12:44:F1) over this "
-                            "PC's Bluetooth adapter instead of booting the emulated one. "
-                            "Needs bleak; on Windows it bonds the watch once (Just Works). "
-                            "The watch must not be connected to a phone")
-    p_cmd.add_argument("--image", default=str(DEFAULT_IMAGE),
-                       help=f"firmware .bin (default: {DEFAULT_IMAGE})")
-    p_cmd.add_argument("--resources", default=str(DEFAULT_RESOURCES),
-                       help="resource blob loaded into the emulated NAND")
-    p_cmd.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
-                       help="the emulated watch's BD address (default: the physical "
-                            "watch's)")
+    dev = developer_options(p_cmd)
+    dev.add_argument("--char", choices=["8001", "8003"], default="8001",
+                     help="the characteristic to write: 8001 is what the companion app "
+                          "and :app use (SETs are acknowledged); on 8003 a SET never "
+                          "is. Default 8001")
+    dev.add_argument("--no-trigger", action="store_true",
+                     help="do not write [03] to 8002 after the frame")
+    dev.add_argument("--no-bind", action="store_true",
+                     help="skip checkInit and the bind: ask the watch as first-run "
+                          "setup leaves it")
+    dev.add_argument("--timeout", type=float, default=5.0, metavar="S",
+                     help="seconds to wait for replies (default 5)")
+    dev.add_argument("--image", default=str(DEFAULT_IMAGE),
+                     help=f"firmware .bin (default: {DEFAULT_IMAGE})")
+    dev.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                     help="resource blob loaded into the emulated NAND")
+    dev.add_argument("--address", default=WATCH, metavar="MAC",
+                     help="the emulated watch's BD address (default: the physical "
+                          "watch's)")
     p_cmd.set_defaults(func=cmd_command)
 
     p_dump = sub.add_parser(
@@ -1108,69 +1161,64 @@ def main(argv=None) -> int:
                              "whole 2 KB pages). Repeatable. The missing resources are "
                              "026DA430-0496BDAC, 04E1152B-04E1C618, 08CBF981-0902DDCA, "
                              "0AA58ACE-0AA6E974 and 0C53D84A-0C55619B (docs/firmware.md)")
-    p_dump.add_argument("--pages", type=int, default=None, metavar="N",
-                        help="stop after N pages (a sample, or a measurement)")
-    p_dump.add_argument("--tries", type=int, default=4, metavar="N",
-                        help="attempts for a read that gets no reply at all (default 4). "
-                             "Silence means the link has gone and each attempt costs a "
-                             "timeout, so it is better to end the session and reconnect")
-    p_dump.add_argument("--refusals", type=int, default=12, metavar="N",
-                        help="attempts for a read the watch answered to say it could not "
-                             "do it (default 12). That is the UI holding the driver's "
-                             "lock, it arrives in runs -- four in a row ended a session "
-                             "at 4 -- and an attempt costs one read, so it is cheap (#70)")
-    p_dump.add_argument("--retry-pause", type=float, default=0.05, metavar="S",
-                        help="seconds before asking again for a read the watch said it "
-                             "could not do (default 0.05), so the retry lands in a "
-                             "different frame than the redraw that lost it")
-    p_dump.add_argument("--no-skip", action="store_true",
-                        help="read every chunk instead of skipping a page whose first and "
-                             "last chunk are both erased")
-    p_dump.add_argument("--page-pause", type=float, default=0.0, metavar="S",
-                        help="seconds to leave the watch alone after each page (default "
-                             "0: pacing was measured and does not stop the drops -- the "
-                             "link went at 13-25s of reading at every pause tried, 0 "
-                             "included, and a pause is 40%% of the run with the page "
-                             "buffer in (#70). Kept for tuning)")
-    p_dump.add_argument("--keep-awake", type=float, default=10.0, metavar="S",
-                        help="seconds between nudges that keep the watch awake (default "
-                             "10). It drops the link when it thinks it is idle, and "
-                             "reading its NAND does not count as activity (#70)")
-    p_dump.add_argument("--no-wake", action="store_true",
-                        help="do not push a message count to bring the storage stack up "
-                             "when a read says it is down (#70). Without it, a stall waits "
-                             "for the watch to be used by hand")
-    p_dump.add_argument("--reconnect-wait", type=float, default=30.0, metavar="S",
-                        help="seconds to leave the link alone before reconnecting "
-                             "(default 30). Reconnecting faster than this leaves stale "
-                             "links on this PC and the watch stops advertising at all")
-    p_dump.add_argument("--sessions", type=int, default=400, metavar="N",
-                        help="how many times to reconnect and go on after the link drops "
-                             "(default 400). Each session continues from the manifest; this "
-                             "PC's Bluetooth stack drops a long dump fairly often")
-    p_dump.add_argument("--wait-for-driver", type=float, default=600.0, metavar="S",
-                        help="seconds to wait for the storage stack when it is found down, "
-                             "before giving up (default 600). It is up while the watch is "
-                             "being used and goes down when it idles (#70)")
-    p_dump.add_argument("--no-trigger", action="store_true",
-                        help="do not write [03] to 8002 after each request. The emulated "
-                             "watch answers 0xEE without it, saving a write a read; the "
-                             "physical one has only been asked with it")
-    p_dump.add_argument("--timeout", type=float, default=36000.0, metavar="S",
-                        help="seconds the emulated watch may run (default 10 h)")
+    p_dump.add_argument("--mac", metavar="MAC", nargs="?", const=WATCH, default=None,
+                        help=f"dump the PHYSICAL watch instead -- {WATCH}, or the one at "
+                             f"MAC -- over this PC's Bluetooth adapter. It must already be "
+                             f"running a patched image, which is #70 -- untried")
     p_dump.add_argument("--flash-state", metavar="PATH", default=None,
                         help="start the emulated watch from this saved flash, read only")
-    p_dump.add_argument("--mac", metavar="MAC", default=None,
-                        help="dump the PHYSICAL watch at MAC instead, over this PC's "
-                             "Bluetooth adapter. It must already be running a patched "
-                             "image, which is #70 -- untried")
     p_dump.add_argument("--image", default=str(DEFAULT_IMAGE),
                         help="firmware .bin for the emulated watch: a PATCHED one "
                              "(normfw patch-nand), or nothing will answer")
-    p_dump.add_argument("--resources", default=str(DEFAULT_RESOURCES),
-                        help="resource blob loaded into the emulated NAND")
-    p_dump.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
-                        help="the emulated watch's BD address")
+    dev = developer_options(p_dump)
+    dev.add_argument("--pages", type=int, default=None, metavar="N",
+                     help="stop after N pages (a sample, or a measurement)")
+    dev.add_argument("--tries", type=int, default=4, metavar="N",
+                     help="attempts for a read that gets no reply at all (default 4). "
+                          "Silence means the link has gone and each attempt costs a "
+                          "timeout, so it is better to end the session and reconnect")
+    dev.add_argument("--refusals", type=int, default=12, metavar="N",
+                     help="attempts for a read the watch answered to say it could not "
+                          "do it (default 12). That is the UI holding the driver's "
+                          "lock, it arrives in runs -- four in a row ended a session "
+                          "at 4 -- and an attempt costs one read, so it is cheap (#70)")
+    dev.add_argument("--retry-pause", type=float, default=0.05, metavar="S",
+                     help="seconds before asking again for a read the watch said it "
+                          "could not do (default 0.05), so the retry lands in a "
+                          "different frame than the redraw that lost it")
+    dev.add_argument("--no-skip", action="store_true",
+                     help="read every chunk instead of skipping a page whose first and "
+                          "last chunk are both erased")
+    dev.add_argument("--keep-awake", type=float, default=10.0, metavar="S",
+                     help="seconds between nudges that keep the watch awake (default "
+                          "10). It drops the link when it thinks it is idle, and "
+                          "reading its NAND does not count as activity (#70)")
+    dev.add_argument("--no-wake", action="store_true",
+                     help="do not push a message count to bring the storage stack up "
+                          "when a read says it is down (#70). Without it, a stall waits "
+                          "for the watch to be used by hand")
+    dev.add_argument("--reconnect-wait", type=float, default=30.0, metavar="S",
+                     help="seconds to leave the link alone before reconnecting "
+                          "(default 30). Reconnecting faster than this leaves stale "
+                          "links on this PC and the watch stops advertising at all")
+    dev.add_argument("--sessions", type=int, default=400, metavar="N",
+                     help="how many times to reconnect and go on after the link drops "
+                          "(default 400). Each session continues from the manifest; this "
+                          "PC's Bluetooth stack drops a long dump fairly often")
+    dev.add_argument("--wait-for-driver", type=float, default=600.0, metavar="S",
+                     help="seconds to wait for the storage stack when it is found down, "
+                          "before giving up (default 600). It is up while the watch is "
+                          "being used and goes down when it idles (#70)")
+    dev.add_argument("--no-trigger", action="store_true",
+                     help="do not write [03] to 8002 after each request. The emulated "
+                          "watch answers 0xEE without it, saving a write a read; the "
+                          "physical one has only been asked with it")
+    dev.add_argument("--timeout", type=float, default=36000.0, metavar="S",
+                     help="seconds the emulated watch may run (default 10 h)")
+    dev.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                     help="resource blob loaded into the emulated NAND")
+    dev.add_argument("--address", default=WATCH, metavar="MAC",
+                     help="the emulated watch's BD address")
     p_dump.set_defaults(func=cmd_dump)
 
     p_ota = sub.add_parser(
@@ -1182,34 +1230,47 @@ def main(argv=None) -> int:
                        help="update type: 4 the resource partition (default), 1 the main "
                             "MCU, 2 the touch panel, 3 the heart-rate sensor")
     p_ota.add_argument("--allow-mcu", action="store_true",
-                       help="permit a type-1 (main MCU) update. It replaces the code that "
-                            "receives updates, so an image that does not boot leaves no "
-                            "way back without SWD (#14)")
-    p_ota.add_argument("--progress-every", type=int, default=200, metavar="N",
-                       help="print progress every N pieces (default 200)")
-    p_ota.add_argument("--timeout", type=float, default=3600.0, metavar="S",
-                       help="seconds the emulated watch may run (default 1 h)")
+                       help="permit a type-1 (main MCU) update -- only with the owner's "
+                            "go-ahead for that flash. It replaces the code that receives "
+                            "updates, so an image that does not boot leaves no way back "
+                            "without SWD (#14)")
+    p_ota.add_argument("--mac", metavar="MAC", nargs="?", const=WATCH, default=None,
+                       help=f"send to the PHYSICAL watch -- {WATCH}, or the one at MAC -- "
+                            f"over this PC's Bluetooth adapter. It must not be connected "
+                            f"to a phone")
     p_ota.add_argument("--flash-state", metavar="PATH", default=None,
                        help="start the emulated watch from this saved flash")
     p_ota.add_argument("--save", action="store_true",
                        help="write the emulated watch's flash back to --flash-state")
-    p_ota.add_argument("--mac", metavar="MAC", default=None,
-                       help="send to the PHYSICAL watch at MAC over this PC's Bluetooth "
-                            "adapter. It must not be connected to a phone")
-    p_ota.add_argument("--image", default=str(DEFAULT_IMAGE),
-                       help="firmware the EMULATED watch runs (not the update)")
-    p_ota.add_argument("--resources", default=str(DEFAULT_RESOURCES),
-                       help="resource blob loaded into the emulated NAND")
-    p_ota.add_argument("--address", default="4C:59:80:12:44:F1", metavar="MAC",
-                       help="the emulated watch's BD address")
+    dev = developer_options(p_ota)
+    dev.add_argument("--progress-every", type=int, default=200, metavar="N",
+                     help="print progress every N pieces (default 200)")
+    dev.add_argument("--timeout", type=float, default=3600.0, metavar="S",
+                     help="seconds the emulated watch may run (default 1 h)")
+    dev.add_argument("--image", default=str(DEFAULT_IMAGE),
+                     help="firmware the EMULATED watch runs (not the update)")
+    dev.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                     help="resource blob loaded into the emulated NAND")
+    dev.add_argument("--address", default=WATCH, metavar="MAC",
+                     help="the emulated watch's BD address")
     p_ota.set_defaults(func=cmd_ota)
 
     args = parser.parse_args(argv)
-    if getattr(args, "seconds", None):
-        args.max_instructions = int(args.seconds * Apollo3Machine.CYCLES_PER_SECOND)
-    if getattr(args, "live", False) and "--max-instructions" not in (argv or sys.argv[1:]):
-        # A live session runs until the window is closed, not for a fixed budget.
-        args.max_instructions = 1 << 62
+    if args.command == "boot":
+        args.until_ui = False
+        if args.max_instructions is not None:
+            pass
+        elif args.live:
+            # A live session runs until the window is closed, not for a fixed budget.
+            args.max_instructions = 1 << 62
+        elif args.seconds:
+            args.max_instructions = int(args.seconds * Apollo3Machine.CYCLES_PER_SECOND)
+        elif args.phone is not None:
+            # Nor does one with a phone on the other end: it ends with Ctrl-C.
+            args.max_instructions = 1 << 62
+        else:
+            args.until_ui = True
+            args.max_instructions = UNTIL_UI_AT_MOST * Apollo3Machine.CYCLES_PER_SECOND
     return args.func(args)
 
 

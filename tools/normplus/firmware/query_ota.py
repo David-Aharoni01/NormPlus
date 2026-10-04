@@ -48,6 +48,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .. import developer_options
+
 API_URL = "https://api.normdenmarkupdate.com/api/firmware_version"
 
 # Where file_name points, as of the 2024-03-28 build. Azure blob containers are
@@ -184,19 +186,21 @@ def describe_bin(path: str) -> list[str]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--device-type", "-d", nargs="+", default=["s21"],
-                    help="model code(s) to query (default: s21, what the app sends)")
-    ap.add_argument("--enumerate", "-e", action="store_true",
-                    help=f"query the full candidate list: {' '.join(DEVICE_TYPES)}")
-    ap.add_argument("--list-blobs", action="store_true",
-                    help="try an anonymous listing of the Azure firmware container "
-                         "(only works if it allows public container listing)")
     ap.add_argument("--download", metavar="DIR",
                     help="download each returned file_name into DIR")
-    ap.add_argument("--json", action="store_true", help="machine-readable output")
-    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
-    ap.add_argument("--insecure", action="store_true",
-                    help="skip TLS verification (only if the server's chain is broken)")
+    dev = developer_options(ap)
+    dev.add_argument("--device-type", "-d", nargs="+", default=["s21"],
+                     help="model code(s) to query (default: s21, what the app sends)")
+    dev.add_argument("--enumerate", "-e", action="store_true",
+                     help=f"query the full candidate list: {' '.join(DEVICE_TYPES)}")
+    dev.add_argument("--list-blobs", action="store_true",
+                     help="try an anonymous listing of the Azure firmware container "
+                          "(only works if it allows public container listing)")
+    dev.add_argument("--json", action="store_true", help="machine-readable output")
+    dev.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                     help=f"seconds to wait for the server (default {DEFAULT_TIMEOUT:g})")
+    dev.add_argument("--insecure", action="store_true",
+                     help="skip TLS verification (only if the server's chain is broken)")
     args = ap.parse_args(argv)
 
     if args.list_blobs:

@@ -52,7 +52,7 @@ normphone start --no-bridge
 
 # Bluetooth to the EMULATED watch (normwatch) instead of the physical one: no
 # dongle. Start the watch emulator first; it serves the netsim endpoint itself.
-#   normwatch boot --netsim --live
+#   normwatch boot --phone --live
 normphone start --watch
 
 # Cold boot after editing config.ini
@@ -132,7 +132,7 @@ to be worked around (both in the script's header):
 
 ### The emulated watch as the peer (`--watch`)
 
-The watch emulator (`normwatch`) runs the watch's own firmware, and `normwatch boot --netsim` serves this
+The watch emulator (`normwatch`) runs the watch's own firmware, and `normwatch boot --phone` serves this
 same netsim endpoint from inside it with a Bumble virtual controller on the same virtual
 link as the watch's radio. `normphone start --watch` starts no bridge and no dongle; it
 just points the AVD at that port (and refuses to boot if nothing is listening there).

@@ -9,7 +9,7 @@ Bumble HCI bridge for the Norm+ emulator, with two fixes the stock
    with "Unexpected request type: packet". `netsim_transport.py` (next to this
    file) is the controller-mode netsim transport with both fields accepted,
    monkeypatched in (no site-packages edit). The watch emulator serves the same
-   endpoint through it (`normwatch boot --netsim`).
+   endpoint through it (`normwatch boot --phone`).
 
 2. **Google vendor HCI short-circuit** — Android's BT stack sends
    `LE_GET_VENDOR_CAPABILITIES` (0xFD53) and friends during init. Cheap/older

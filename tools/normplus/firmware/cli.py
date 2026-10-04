@@ -3,7 +3,7 @@
     normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin
     normfw seal patched.bin --in-place
     normfw patch-nand NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin
-    normfw query-ota [--json] [--enumerate] [--download DIR]
+    normfw query-ota [--download DIR]
 """
 
 from __future__ import annotations

@@ -262,6 +262,25 @@ def test_cmd_mac_setup_failures_are_status_2():
     assert status == 2 and f"connecting to {WATCH} timed out after 30s" in out, out
 
 
+def test_cmd_mac_alone_is_the_physical_watch_and_a_check_gets_its_byte():
+    # There is one physical watch, so --mac needs no address; and every CHECK needs its
+    # [00] -- the watch ignores one without it (docs/protocol.md) -- so that is the
+    # default (#77).
+    with fake_watch():
+        status, out = cmd("BATTERY_POWER", "CHECK", "--mac")
+    assert status == 0, out
+    assert f"watch: the physical one at {WATCH}" in out, out
+    assert "-> 8001  6f 08 70 01 00 00 8f" in out, out
+
+
+def test_only_a_check_gets_a_default_payload():
+    with fake_watch():
+        _, out = cmd("08", "70", "--payload", "", "--mac", "--timeout", "0.3")
+        assert "-> 8001  6f 08 70 00 00 8f" in out, out        # asked for: sent empty
+        _, out = cmd("07", "71", "--mac", "--timeout", "0.3")
+        assert "-> 8001  6f 07 71 00 00 8f" in out, out        # a SET: nothing assumed
+
+
 def test_cmd_mac_refuses_the_emulated_watchs_options():
     status, out = cmd("08", "70", "--mac", WATCH, "--flash-state", "x.zip")
     assert status == 2 and "--flash-state and --save" in out, out

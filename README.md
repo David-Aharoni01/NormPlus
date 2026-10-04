@@ -57,7 +57,7 @@ uv tool install --editable .
 | Command | What it does | Try |
 |---|---|---|
 | `normwatch` | Runs the watch's own firmware on the PC | `normwatch boot --live` (a window with the watch's screen) |
-| `normcmd` | Asks a watch one command and decodes the reply | `normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1` |
+| `normcmd` | Asks a watch one command and decodes the reply | `normcmd BATTERY_POWER CHECK --mac` |
 | `normphone` | The Android emulator that runs the app | `normphone start`, `normphone start --watch`, `normphone install` |
 | `normfw` | Checks, re-seals and patches firmware images | `normfw verify NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin` |
 | `normtest` | Runs the Python tests | `normtest`, or `normtest ota` |
@@ -70,7 +70,7 @@ repository.
 **Run the app against the emulated watch, no hardware at all:**
 
 ```powershell
-normwatch boot --netsim --live --flash-state watch.zip   # 1. the watch (keep it running)
+normwatch boot --phone --live --flash-state watch.zip   # 1. the watch (keep it running)
 normphone start --watch                                  # 2. the phone, in a second terminal
 normphone install                                        # 3. the app, in a third
 ```
@@ -87,13 +87,15 @@ PC's own Bluetooth adapter. Same flow, same decoder, so where the answers differ
 watches that differ.
 
 ```powershell
-normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1   # the real watch
-normcmd BATTERY_POWER CHECK --payload 00 --flash-state bound.zip   # the emulated one
-normcmd 07 71 --payload 3c --mac 4C:59:80:12:44:F1                 # a SET, in hex
+normcmd BATTERY_POWER CHECK --mac                    # the real watch
+normcmd BATTERY_POWER CHECK --flash-state bound.zip  # the emulated one
+normcmd 07 71 --payload 3c --mac                     # a SET, in hex
 ```
 
 - Commands and actions by `:protocol` name (`DEVICE_VERSION`, `CHECK`) or in hex. A CHECK
-  needs its one payload byte (`--payload 00`); the watch ignores one without it.
+  needs its one payload byte -- the watch ignores one without it -- so it sends `00` unless
+  given another (`--payload 06`).
+- `--mac` alone is the physical watch, `4C:59:80:12:44:F1`; `--mac ADDRESS` is another one.
 - It pairs, reads checkInit, and binds only a watch that says it is still in first-run
   setup — as `BindWatchUseCase` does. `--no-bind` skips both.
 - **The physical watch:** the first run bonds it with Windows (Just Works, no PIN; keep it
@@ -167,7 +169,7 @@ normhelp                          # what each of them is for, and the common rec
 normphone start                   # the Android emulator
 normphone install                 # build + install the Android app
 normwatch boot --live             # the watch's own firmware, in a window
-normcmd 08 70 --payload 00 --mac 4C:59:80:12:44:F1   # ask the physical watch its battery level
+normcmd 08 70 --mac               # ask the physical watch its battery level
 normtest                          # the Python tests
 .\gradlew :protocol:test          # the protocol tests
 ```

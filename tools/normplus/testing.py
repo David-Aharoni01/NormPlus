@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from . import paths
+from . import developer_options, paths
 
 
 def main(argv=None) -> int:
@@ -35,7 +35,8 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("names", nargs="*", help="run only test files whose name contains one of these")
     ap.add_argument("--list", action="store_true", help="list the test files and stop")
-    ap.add_argument("-v", "--verbose", action="store_true", help="show every test's output")
+    developer_options(ap).add_argument("-v", "--verbose", action="store_true",
+                                       help="show every test's output, passing ones too")
     args = ap.parse_args(argv)
 
     tests = sorted(paths.TESTS.glob("test_*.py"))

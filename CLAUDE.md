@@ -28,20 +28,30 @@ board this replaced (2026-10-02), so every `#N` in the docs and in commit messag
 ```bash
 uv run normboard                          # what is open: In Progress, then Todo, by priority
 uv run normboard show 56                  # one issue with its comments
-uv run normboard new "Title" -p high -l emulator -f body.md [--start]
+uv run normboard new "Title" -a emulator -p high -f body.md [--start]
+uv run normboard area 56 firmware         # move it to another area (its milestone)
 uv run normboard start 56                 # -> In Progress, when work begins
 uv run normboard note 56 -f finding.md    # a finding, a result, a commit hash
 uv run normboard done 56 -m "Done in <sha>: ..."   # closes it; the board says Done
 ```
 
-- **Before starting any non-trivial work, there must be an issue for it**, In Progress on the
-  board. Create it first (`normboard new ... --start`).
-- **Discovering follow-up work means filing an issue**, not appending to a list here.
+- **Before starting any non-trivial new work, there must be an issue for it**, In Progress on
+  the board. Create it first (`normboard new ... --start`).
+- **Continuing or changing work that already has an issue is not new work.** A follow-up
+  request, a correction, or a change of approach to something started under an issue goes on
+  that issue -- a comment with what changed and the commit -- and its commits name it. File a
+  new issue only for work that would stand on its own.
+- **Discovering separate follow-up work means filing an issue**, not appending to a list here.
 - **Findings and results go on the issue as comments**, with the commit hashes. A commit
   message saying `Fixes #56` closes the issue when it reaches `main`.
 - **Dependencies** go on the first line of the body: `Depends on: #N`.
-- **Labels:** `priority: high|medium|low`, plus areas (`emulator`, `firmware`, `ota`, `ble`,
-  `protocol`, `app`, `tooling`, ...).
+- **Areas are milestones** (#78, #79): every issue, open or closed, is in exactly one --
+  App, Protocol, Firmware, Emulator or Tooling -- so the board can be grouped and sliced by
+  them. `normboard areas` says what each covers; an issue goes where it is *done*.
+  `normboard new` refuses an issue without `-a AREA`, and `normboard sync` makes any of the
+  milestones that is missing.
+- **Labels:** one `priority: high|medium|low` on every issue. Anything else (`ble`, `ota`,
+  `verification`, ...) is an optional tag, `-l TAG`.
 - **Split an issue** if it exceeds ~1h, spans two layers, is hard to roll back, or is uncertain.
 - **The repository is public, so the issues are.** Findings, not vendor code excerpts or
   personal data.
@@ -95,7 +105,7 @@ docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.
 ```
 
 Note the two "emulators": `normphone` (`tools/normplus/phone/`) runs the **phone**,
-`normwatch` (`tools/normplus/watch/`) runs the **watch**. They meet at `normwatch boot --netsim` / `normphone start --watch`.
+`normwatch` (`tools/normplus/watch/`) runs the **watch**. They meet at `normwatch boot --phone` / `normphone start --watch`.
 
 ### This repository is public; the vendor's material is not
 
@@ -165,6 +175,12 @@ uv for everything: no pip, no `py -3.11`, no `PYTHONPATH`. In Claude's Bash, use
 `uv run <command>` (the `.venv` is not on that PATH). The commands find the repository from
 their own (editable) location, so they work from any directory.
 
+**Every `--help` has two readers** (#76). `options` are the owner's: what the README's and
+`normhelp`'s recipes use, troubleshooting the docs tell a person to do, and decisions that are
+the owner's to make (`ota --allow-mcu`). `developer options` (`normplus.developer_options(parser)`)
+are Claude's: diagnosis, measurement, tuning, overriding a default that is right for normal
+use. A new flag goes in one of the two; when in doubt, developer.
+
 ### Gradle (`:app`, `:protocol`)
 
 ```bash
@@ -183,7 +199,7 @@ normphone start --no-bridge
 
 # Ask the PHYSICAL watch one 0x6F question from the PC (bleak, this PC's own adapter).
 # See "Asking the physical watch from the PC". Exit 0 a reply / 1 none / 2 setup failed.
-normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
+normcmd BATTERY_POWER CHECK --mac
 
 # Run protocol unit tests (no BLE/Android needed)
 ./gradlew :protocol:test
@@ -198,42 +214,43 @@ normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
 ### Watch emulator (`normwatch`, `normcmd`, `normtest`)
 
 ```bash
-# Boot the watch firmware and print a triage report. --seconds is watch time;
-# the default 30M-instruction budget is 0.6s, which is still inside the 8.3s
-# boot animation, so pass --seconds 18 to reach the UI.
-normwatch boot --seconds 18
-# --no-ble is ~2.9x faster and reaches the same screen in --seconds 14; use it
-# whenever the run is not about the radio. See "The BLE controller" below.
-normwatch boot --seconds 14 --no-ble
+# Boot the watch firmware and print a triage report. Given no budget it runs until the
+# boot animation is over and the UI is drawn (#77): 51s with the radio, 37s without.
+# --seconds N runs N seconds of watch time instead (the animation alone is 8.3s).
+normwatch boot
+# --no-ble reaches the same screen faster; use it whenever the run is not about the
+# radio. See "The BLE controller" below.
+normwatch boot --no-ble
 # The watch's own factory resources (NORM/_nand, #65) are mounted by default, so the
 # screens and the boot animation are the real ones. That is ~22s of BOOT and nothing
 # after it: idling, swiping and changing screen cost the same with them as without
 # (#72). So for a live session skip the boot, not the artwork -- --load-state gives a
 # usable window with every image in 3.6s. --no-factory-resources is for cold runs that
 # are not about what is on the screen (#71).
-normwatch boot --seconds 14 --no-ble --no-factory-resources
+normwatch boot --no-ble --no-factory-resources
 normwatch boot --live        # window + mouse touch
 normwatch boot --screenshot out.png
 # A radio behind the firmware's BLE stack (a bumble controller): the watch advertises.
-normwatch boot --radio --seconds 18
+normwatch boot --radio
 # ...and the Android emulator's netsim endpoint on the same virtual air, so the
 # Pixel 8 AVD (normphone start --watch) pairs with the EMULATED watch.
 # Implies --realtime. --hci-trace logs every packet across the seam.
-normwatch boot --netsim --live
+normwatch boot --phone --live
 # Keep the watch's flash between runs: bind it once, and every later run with the same
 # file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
-normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --phone --live --flash-state watch.zip
 
 # Skip the boot: save the machine once past the boot animation, start there next time
-# (0.47s instead of 11s). Same switches on both; not with --radio/--netsim.
-normwatch boot --seconds 9 --no-ble --save-state ui.snap
+# (0.47s instead of 11s). Same switches on both; not with --radio/--phone.
+normwatch boot --no-ble --save-state ui.snap
 normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
 # prints every reply decoded. ~4s from a bound state file, ~14s binding a fresh watch.
-# Hex or :protocol names; --char 8003 writes to the other write characteristic (a SET there
-# is never acknowledged); --no-bind skips the bind. --mac MAC asks the physical watch instead.
-normcmd BIND_END CHECK --payload 00 --flash-state bound.zip --save
-normcmd 08 70 --payload 00 --flash-state bound.zip
+# Hex or :protocol names; a CHECK's payload defaults to the [00] every CHECK needs (#77).
+# --char 8003 writes to the other write characteristic (a SET there is never acknowledged);
+# --no-bind skips the bind. --mac asks the physical watch instead (--mac MAC another one).
+normcmd BIND_END CHECK --flash-state bound.zip --save
+normcmd 08 70 --flash-state bound.zip
 
 # Parse the image header / list source modules recovered from assert() strings
 normwatch info
@@ -293,7 +310,7 @@ tooling is `normphone` (`tools/normplus/phone/`; `docs/android-emulator.md` has 
   the Zadig WinUSB swap is the one manual step.
 - **The emulated watch instead of the real one:** `normphone start --watch` skips the dongle
   and points the AVD at the watch emulator, which serves the same netsim endpoint itself
-  (`normwatch boot --netsim --live`, start it first). `:app` bonds with it, binds it (the
+  (`normwatch boot --phone --live`, start it first). `:app` bonds with it, binds it (the
   pairing screen's first-run handshake) and lands on the dashboard while the watch goes to
   its face; nothing physical involved. Verified on this AVD. Run the watch with
   `--flash-state FILE` and it keeps the bind and the bond: restart it with the same file and
@@ -325,8 +342,8 @@ Where the two answers differ, the watches differ — this is how an emulator fin
 checked on hardware.
 
 ```bash
-normcmd BATTERY_POWER CHECK --payload 00 --mac 4C:59:80:12:44:F1
-normcmd 03 70 --payload 06 --mac 4C:59:80:12:44:F1
+normcmd BATTERY_POWER CHECK --mac              # --mac alone: the watch at 4C:59:80:12:44:F1
+normcmd 03 70 --payload 06 --mac               # a CHECK sends [00] unless told otherwise
 ```
 ```
    2.2s  phone: connected, paired, encryption not reported
@@ -394,7 +411,7 @@ the protocol. `docs/watch-emulator.md` summarises it; `docs/watch-emulator-inter
 **Two rules when touching the seam.** Everything on the bumble side lives on one loop
 (`Radio`): `LocalLink` dispatches on the *sender's* running loop, so controllers on
 different loops cannot hear each other. And a phone keeps real time, so the watch must
-too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead of the
+too: `--phone` implies `--realtime`, which sleeps whenever watch time is ahead of the
 wall clock and never tries to catch up; when the watch falls *behind* (drawing the pairing
 animation does it), `Apollo3Machine.realtime_lag` says by how much, and `Air` delivers
 data into the watch on the watch's clock so the firmware's timing windows stay the width
