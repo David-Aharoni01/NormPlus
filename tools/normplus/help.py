@@ -17,7 +17,7 @@ TOOLS = [
      "The watch emulator: runs the watch's own firmware on this PC.",
      ["normwatch boot --live                       the watch's screen in a window; click to touch",
       "normwatch boot --no-ble                     boot to the UI and print a report",
-      "normwatch boot --netsim --live --flash-state watch.zip   on the air, for the Android emulator",
+      "normwatch boot --phone --live --flash-state watch.zip   on the air, for the Android emulator",
       "normwatch info                              the firmware image's header",
       "normwatch dump -o DIR --range 026DA430-0496C000   read the NAND out (needs a patched image)"]),
     ("normcmd", "normplus.watch.__main__:cmd_main",
@@ -62,7 +62,7 @@ RECIPES = [
     ("After pulling new code", [
         "uv tool install --editable . --reinstall  (only when a new command appeared)"]),
     ("Run the app against the emulated watch -- no hardware", [
-        "normwatch boot --netsim --live --flash-state watch.zip   (terminal 1, keep it running)",
+        "normwatch boot --phone --live --flash-state watch.zip   (terminal 1, keep it running)",
         "normphone start --watch                                  (terminal 2)",
         "normphone install                                        (terminal 3)",
         "If Android asks \"Pair with Norm2#00000?\", tap Pair within 30 seconds."]),

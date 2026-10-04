@@ -2,7 +2,7 @@
 
     normphone setup                 one-time: SDK packages, the accelerator, the Pixel 8 AVD
     normphone start                 the AVD, Bluetooth through the USB dongle (starts the bridge)
-    normphone start --watch         the AVD, Bluetooth to the emulated watch (normwatch boot --netsim)
+    normphone start --watch         the AVD, Bluetooth to the emulated watch (normwatch boot --phone)
     normphone start --no-bridge     the AVD with no Bluetooth
     normphone install               build :app and install it on the running AVD
     normphone clear-bond            forget the watch's pairing on the AVD (after switching watches)
@@ -29,7 +29,7 @@ from .. import developer_options, paths
 AVD = "Pixel_8_API35"
 SYSTEM_IMAGE = "system-images;android-35;google_apis;x86_64"
 #: The port the AVD's packet streamer connects to: the dongle bridge, or the watch
-#: emulator (``normwatch boot --netsim``).
+#: emulator (``normwatch boot --phone``).
 PORT = 8877
 #: The CSR8510 dongle, bound to WinUSB with Zadig.
 USB = "usb:0A12:0001"
@@ -161,7 +161,7 @@ def cmd_start(args) -> int:
         if args.watch:
             if not listening(args.port):
                 raise SystemExit(f"normphone: nothing is listening on port {args.port}. Start the "
-                                 f"emulated watch first:\n  normwatch boot --netsim --live")
+                                 f"emulated watch first:\n  normwatch boot --phone --live")
             print(f"Bluetooth to the emulated watch on port {args.port}")
         elif listening(args.port):
             print(f"Reusing the bridge already listening on port {args.port}")
@@ -250,7 +250,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("start", help="start the AVD (and the dongle bridge)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--watch", action="store_true",
-                      help="Bluetooth to the emulated watch: start `normwatch boot --netsim` first")
+                      help="Bluetooth to the emulated watch: start `normwatch boot --phone` first")
     mode.add_argument("--no-bridge", action="store_true", help="no Bluetooth at all")
     p.add_argument("--cold-boot", action="store_true",
                    help="no snapshot, wipe data (after config changes, or when the guest's "

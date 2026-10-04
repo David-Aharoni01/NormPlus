@@ -81,6 +81,21 @@ def test_developer_options_come_after_the_users():
     assert where["--live"] == "options" and where["--max-instructions"] == "developer options"
 
 
+def test_boot_phone_answers_to_its_old_name_too():
+    # #80: --netsim became --phone. The old name still works, and only the new one is shown.
+    from normplus.watch import __main__ as watch
+    seen = []
+    real, watch.cmd_boot = watch.cmd_boot, lambda args: seen.append(args.phone) or 0
+    try:
+        for argv in (["--phone"], ["--netsim"], ["--phone", "9000"], ["--netsim", "9000"], []):
+            watch.main(["boot", *argv])
+    finally:
+        watch.cmd_boot = real
+    assert seen == [8877, 8877, 9000, 9000, None], seen
+    where = sections(page("normwatch", "boot")[1])
+    assert where["--phone"] == "options" and "--netsim" not in where, where
+
+
 def test_what_people_are_given_to_run_uses_only_their_options():
     lines = given_to_people()
     assert len(lines) > 20, lines       # the parsing above still finds them

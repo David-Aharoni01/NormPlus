@@ -50,7 +50,7 @@ polling and bus traffic all cost. The live window itself is cheap — about 8%.
 
 **The watch is on the air, and a phone can set it up.** With `--radio` the firmware's own
 BLE stack comes all the way up behind a bumble controller and advertises as `Norm2#00000`;
-with `--netsim` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
+with `--phone` the Pixel 8 AVD is on the same virtual air, and `:app` bonds with the
 emulated watch, *binds* it the way the companion app does after a QR scan -- bindStart,
 setDateTime, bindEnd -- and the watch leaves first-run setup for its watch face, showing
 the time the phone set. A bumble host does the same in `tests/test_ble_end_to_end.py`.
@@ -170,9 +170,9 @@ normwatch modules
 | `cmd` | Boots the watch, connects a phone the way the app does, sends one 0x6F command, prints every reply |
 
 Two switches put a radio behind the firmware's BLE stack: `--radio` (a bumble controller,
-alone on the air) and `--netsim [PORT]` (the same, plus the Android emulator's netsim
+alone on the air) and `--phone [PORT]` (the same, plus the Android emulator's netsim
 endpoint on PORT — default 8877 — so `normphone start --watch` gives the AVD the
-emulated watch as its Bluetooth peer). `--netsim` paces the watch against the wall clock;
+emulated watch as its Bluetooth peer). `--phone` paces the watch against the wall clock;
 `--hci-trace` logs every packet across the seam. See "A real stack behind the seam".
 
 `--flash-state PATH` keeps the watch's flash between runs: restored at start if the file
@@ -180,7 +180,7 @@ exists, saved at exit -- a closed window and Ctrl-C included. Bind the watch onc
 later run with the same file starts on the watch face, bonded:
 
 ```bash
-normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --phone --live --flash-state watch.zip
 ```
 
 `cmd` asks the firmware one question. It boots the watch, puts a bumble host on the same
@@ -929,7 +929,7 @@ watch's address, a phone connects to it, pairs with it, discovers its GATT table
 (`6006` with `8001`-`8004`, the `1530` DFU service, `FEE7`) and gets its 0x6F protocol
 answered by the firmware -- a battery CHECK comes back `6f 08 80 01 00 4d 8f`. The phone
 can be a bumble host (`tests/test_ble_end_to_end.py`, about ten seconds, no hardware) or
-the Pixel 8 AVD with `:app` in it (`--netsim`, below). The seam's rule is unchanged: the
+the Pixel 8 AVD with `:app` in it (`--phone`, below). The seam's rule is unchanged: the
 download phase and the OGF 0x3F vendor opcodes are answered locally, because neither means
 anything to bumble, and the rest is forwarded.
 
@@ -996,11 +996,11 @@ imported from `normplus.phone.netsim_transport`, which owns the fix for emulator
 the watch in the emulator are two controllers on one piece of air.
 
 ```bash
-normwatch boot --netsim --live     # the watch, on port 8877
+normwatch boot --phone --live     # the watch, on port 8877
 normphone start --watch                                # the phone, pointed at it
 ```
 
-`--netsim` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
+`--phone` implies `--realtime`: a phone answers in real time, and a watch whose clock runs
 ahead of the wall clock (1.25x at CLI defaults; `--idle-skip` and the deadline quantum
 fast-forward it further) times out on a peer that is answering promptly. The machine
 sleeps whenever it is ahead and never tries to catch up. `--hci-trace` logs every packet
@@ -1497,7 +1497,7 @@ process's blank context and this one's, keeps the target's own value: the genera
 special and FPU registers come across (checked across processes), the pointers do not.
 Unicorn's MPU is never configured anyway -- the PPB is CortexM's, in Python.
 
-What a snapshot cannot hold: a bumble radio (`--radio`, `--netsim`, `normwatch cmd`) --
+What a snapshot cannot hold: a bumble radio (`--radio`, `--phone`, `normwatch cmd`) --
 its link state lives in bumble, outside the machine; the NZ8801 model alone is fine. For
 BLE work `--flash-state` is the fast path. And stimulus still pending when it is saved.
 A snapshot is a pickle: load only ones you made.
@@ -2096,7 +2096,7 @@ lead with), and BLEIF → HCI through first-run setup (#25 and the bind).
 ## Relationship to the rest of the repo
 
 - `normphone` (`tools/normplus/phone/`) runs the **phone** side (Pixel 8 AVD) and bridges a real BT dongle to a
-  real watch. `watchemu` is the other end: no watch. They meet at `--netsim` /
+  real watch. `watchemu` is the other end: no watch. They meet at `--phone` /
   `normphone start --watch`, where the AVD's Bluetooth is the emulated watch's radio.
 - `normfw` (`tools/normplus/firmware/image_tool.py`) verifies and re-seals images; `watchemu`'s `image.py` is the
   loader's view of the same format and independently implements both CRCs.

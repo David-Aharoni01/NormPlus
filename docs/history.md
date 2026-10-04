@@ -16,7 +16,11 @@ and reading status at `IAsyncOperation[7]` hits `get_Completed` and hangs every 
 The wall that killed it: `add_ValueChanged` → `CO_E_NOT_SUPPORTED` (it needs a
 Free-Threaded-Marshaler-aggregated agile delegate).
 
-## Flags that were removed (#77)
+## Flags that were removed or renamed (#77, #80)
+
+- **`normwatch boot --netsim`** is **`--phone`** since #80: it is how a person runs the app
+  against the emulated watch, and netsim is only the Android emulator's transport. The old
+  name still works, unlisted.
 
 - **`normwatch boot --force-gestures`** suppressed the firmware's gesture cancel
   (`0x000842A4`), because every swipe in the emulator was cancelled. The cause was the

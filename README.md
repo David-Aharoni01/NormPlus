@@ -70,7 +70,7 @@ repository.
 **Run the app against the emulated watch, no hardware at all:**
 
 ```powershell
-normwatch boot --netsim --live --flash-state watch.zip   # 1. the watch (keep it running)
+normwatch boot --phone --live --flash-state watch.zip   # 1. the watch (keep it running)
 normphone start --watch                                  # 2. the phone, in a second terminal
 normphone install                                        # 3. the app, in a third
 ```

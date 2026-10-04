@@ -735,8 +735,8 @@ def cmd_boot(args) -> int:
         symbols, stall_window=args.stall, watch_for_stall=not args.live, log=log
     ) if args.trace else None
     # A phone on the other end of the radio keeps real time, so the watch
-    # must too; --netsim implies it.
-    realtime = args.realtime or args.netsim is not None
+    # must too; --phone implies it.
+    realtime = args.realtime or args.phone is not None
     machine = Apollo3Machine(img, log=log, trace=tracer, chiprev=args.chiprev,
                              idle_skip=args.idle_skip,
                              fast_hook=not args.no_fast_hook,
@@ -781,7 +781,7 @@ def cmd_boot(args) -> int:
         charger_status=getattr(args, "charger_status", None), log=log)
     controller = None
     android = None
-    if (args.radio or args.netsim is not None) and not args.no_ble:
+    if (args.radio or args.phone is not None) and not args.no_ble:
         # Imported here: bumble costs a third of a second to load and only
         # these two switches need it.
         from .fw.blelink import AndroidLink, BumbleController, Radio
@@ -790,11 +790,11 @@ def cmd_boot(args) -> int:
         controller = attach_ble_controller(
             machine, BumbleController(args.address, radio=radio, log=log), log=log)
         controller.trace = args.hci_trace
-        if args.netsim is not None:
-            android = AndroidLink(radio, args.netsim, log=log)
+        if args.phone is not None:
+            android = AndroidLink(radio, args.phone, log=log)
             if not quiet:
                 print(f"  Android emulator: normphone start --watch "
-                      f"(-BridgePort {args.netsim} if not the default)")
+                      f"(--port {args.phone} if not the default)")
     elif args.ble_controller and not args.no_ble:
         controller = attach_ble_controller(machine, log=log)
     # After every device is attached -- the snapshot names each by where it
@@ -838,7 +838,7 @@ def cmd_boot(args) -> int:
                     stats.stop = StopReason("budget", "the boot animation is over and the "
                                             "UI is up", stats.stop.pc)
     finally:
-        # Also on Ctrl-C and a closed window: that is how --netsim sessions
+        # Also on Ctrl-C and a closed window: that is how --phone sessions
         # end. Stopping between an erase and its program loses that page,
         # as pulling the battery at that instant would on the watch.
         if flash_state is not None and flash_state.resolve().is_relative_to(FIXTURES):
@@ -969,7 +969,7 @@ def main(argv=None) -> int:
                         help="run for N seconds of watch time (48M instructions each). "
                              "Without it, boot runs until the boot animation is over and "
                              f"the UI is drawn (at most {UNTIL_UI_AT_MOST}s), and a "
-                             "--live or --netsim session until it is closed. The "
+                             "--live or --phone session until it is closed. The "
                              "animation lasts about 8s, so a run shorter than that never "
                              "gets to the UI.")
     p_boot.add_argument("--live", action="store_true",
@@ -979,13 +979,13 @@ def main(argv=None) -> int:
                         help="magnify the live window by this factor (default: 1)")
     p_boot.add_argument("--screenshot", metavar="PATH",
                         help="write the watch's screen to a PNG when the run ends")
-    p_boot.add_argument("--netsim", type=int, nargs="?", const=8877, default=None,
+    p_boot.add_argument("--phone", type=int, nargs="?", const=8877, default=None,
                         metavar="PORT",
-                        help="also serve the Android emulator's netsim endpoint on "
-                             "PORT (default 8877), with the phone's virtual controller "
-                             "on the same air as the watch's -- launch the AVD with "
-                             "normphone start --watch and :app can pair with the "
-                             "emulated watch. Implies --radio and --realtime.")
+                        help="put the Android emulator's phone on the same air as the "
+                             "watch: start the AVD with normphone start --watch, and "
+                             ":app in it pairs with the emulated watch. Serves the "
+                             "emulator's netsim endpoint on PORT (default 8877). "
+                             "Implies --radio and --realtime.")
     p_boot.add_argument("--flash-state", metavar="PATH", default=None,
                         help="keep the watch's flash in PATH between runs: restored "
                              "at start if the file exists, saved at exit (Ctrl-C and "
@@ -994,7 +994,7 @@ def main(argv=None) -> int:
                              "Refuses a file saved against another image.")
     p_boot.add_argument("--save-state", metavar="PATH", default=None,
                         help="at the end of the run, save the whole machine -- memory, "
-                             "CPU, every device -- to PATH. Not with --radio/--netsim: "
+                             "CPU, every device -- to PATH. Not with --radio/--phone: "
                              "a bumble radio's state lives outside the machine")
     p_boot.add_argument("--load-state", metavar="PATH", default=None,
                         help="start from a machine saved with --save-state instead of "
@@ -1022,6 +1022,8 @@ def main(argv=None) -> int:
     p_boot.add_argument("--charging", action="store_true",
                         help="report the watch as sitting on the charger")
     dev = developer_options(p_boot)
+    dev.add_argument("--netsim", dest="phone", type=int, nargs="?", const=8877, default=None,
+                     help=argparse.SUPPRESS)          # --phone's old name (#80)
     dev.add_argument("--max-instructions", type=int, default=None, metavar="N",
                      help="the budget in instructions instead of --seconds (48M to a "
                           "second of watch time); it also bounds a --live session")
@@ -1088,19 +1090,19 @@ def main(argv=None) -> int:
                      help="put a real (virtual) radio behind the BLEIF: a bumble "
                           "controller on a local link, so the firmware's own BLE "
                           "stack comes all the way up and advertises as the "
-                          "watch. Alone on the air unless --netsim is given.")
+                          "watch. Alone on the air unless --phone is given.")
     dev.add_argument("--address", default=WATCH, metavar="MAC",
                      help="the BD address the radio reports (default: the physical "
                           "watch's, so the emulated one looks the same to the app)")
     dev.add_argument("--hci-trace", action="store_true",
-                     help="with --radio/--netsim, log every HCI packet across the "
+                     help="with --radio/--phone, log every HCI packet across the "
                           "seam once the link is up (commands, events, ACL data "
                           "both ways). The first thing to turn on when the phone "
                           "and the watch disagree about what was said.")
     dev.add_argument("--realtime", action="store_true",
                      help="never let watch time run ahead of wall time. Needed "
                           "whenever something outside keeps real time -- a phone on "
-                          "the radio -- and on by default with --netsim.")
+                          "the radio -- and on by default with --phone.")
     dev.add_argument("--json", action="store_true", help="machine-readable output")
     p_boot.set_defaults(func=cmd_boot)
 
@@ -1263,7 +1265,7 @@ def main(argv=None) -> int:
             args.max_instructions = 1 << 62
         elif args.seconds:
             args.max_instructions = int(args.seconds * Apollo3Machine.CYCLES_PER_SECOND)
-        elif args.netsim is not None:
+        elif args.phone is not None:
             # Nor does one with a phone on the other end: it ends with Ctrl-C.
             args.max_instructions = 1 << 62
         else:

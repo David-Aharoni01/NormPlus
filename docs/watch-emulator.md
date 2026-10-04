@@ -348,7 +348,7 @@ Response is `02 03 00 01 10 02 01`, AuthReq 0x01, no Secure Connections), discov
 table (`6006`/`8001-8004`, `1530`/`1531-1532`, `FEE7`) and gets 0x6F answers from the
 firmware. `tests/test_ble_end_to_end.py` does all of that with a bumble host, then
 restarts the watch from its saved flash and reconnects with the stored keys, in ~32s;
-`--netsim` does it with the Pixel 8 AVD (`normphone start --watch`).
+`--phone` does it with the Pixel 8 AVD (`normphone start --watch`).
 
 The seam answers three kinds of thing itself and forwards the rest: the download phase
 (not HCI), every OGF 0x3F vendor opcode (bumble answers those with silence), and the LE
@@ -396,7 +396,7 @@ too, but it has not been checked on hardware.
 **Two rules when touching the seam.** Everything on the bumble side lives on one loop
 (`Radio`): `LocalLink` dispatches on the *sender's* running loop, so controllers on
 different loops cannot hear each other. And a phone keeps real time, so the watch must
-too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead of the
+too: `--phone` implies `--realtime`, which sleeps whenever watch time is ahead of the
 wall clock and never tries to catch up; when the watch falls *behind* (drawing the pairing
 animation does it), `Apollo3Machine.realtime_lag` says by how much, and `Air` delivers
 data into the watch on the watch's clock so the firmware's timing windows stay the width
@@ -406,7 +406,7 @@ is all (#55; README "Binding"). `--hci-trace` is the first thing to turn on when
 disagree about what was said.
 
 The factory resources make that lag bigger, because the animation is now really drawn
-(#71): they are mounted by default on `boot`, so a `--netsim` session that only needs the
+(#71): they are mounted by default on `boot`, so a `--phone` session that only needs the
 pairing to happen is quicker with `--no-factory-resources`. Nothing about the handshake
 depends on it -- the phone binds on the setup screen being drawn, and `Air` keeps to the
 watch's clock either way -- but there is no reason to spend the 22 s if nobody is looking
@@ -480,7 +480,7 @@ accelerometer, battery/PMU, charger, SPI NAND, PSRAM and the display panel are a
 modelled from the firmware's own driver sequences. 26 test files, all standalone scripts.
 
 **The radio works end to end, and so does first-run setup** (card #25): the firmware's own
-BLE stack runs behind a bumble controller, and with `--netsim` the Pixel 8 AVD's `:app`
+BLE stack runs behind a bumble controller, and with `--phone` the Pixel 8 AVD's `:app`
 bonds with the emulated watch, binds it (bindStart / setDateTime / bindEnd, the companion
 app's post-QR handshake) and reads its battery, while the watch goes from "Select a
 Language" to its face — the two emulators meet there, with no hardware at

@@ -105,7 +105,7 @@ docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.
 ```
 
 Note the two "emulators": `normphone` (`tools/normplus/phone/`) runs the **phone**,
-`normwatch` (`tools/normplus/watch/`) runs the **watch**. They meet at `normwatch boot --netsim` / `normphone start --watch`.
+`normwatch` (`tools/normplus/watch/`) runs the **watch**. They meet at `normwatch boot --phone` / `normphone start --watch`.
 
 ### This repository is public; the vendor's material is not
 
@@ -235,13 +235,13 @@ normwatch boot --radio
 # ...and the Android emulator's netsim endpoint on the same virtual air, so the
 # Pixel 8 AVD (normphone start --watch) pairs with the EMULATED watch.
 # Implies --realtime. --hci-trace logs every packet across the seam.
-normwatch boot --netsim --live
+normwatch boot --phone --live
 # Keep the watch's flash between runs: bind it once, and every later run with the same
 # file boots to the face with its bond. Saved at exit, closed window and Ctrl-C included.
-normwatch boot --netsim --live --flash-state watch.zip
+normwatch boot --phone --live --flash-state watch.zip
 
 # Skip the boot: save the machine once past the boot animation, start there next time
-# (0.47s instead of 11s). Same switches on both; not with --radio/--netsim.
+# (0.47s instead of 11s). Same switches on both; not with --radio/--phone.
 normwatch boot --no-ble --save-state ui.snap
 normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # Ask the firmware one 0x6F question: boots, pairs, binds if checkInit says 0, sends,
@@ -310,7 +310,7 @@ tooling is `normphone` (`tools/normplus/phone/`; `docs/android-emulator.md` has 
   the Zadig WinUSB swap is the one manual step.
 - **The emulated watch instead of the real one:** `normphone start --watch` skips the dongle
   and points the AVD at the watch emulator, which serves the same netsim endpoint itself
-  (`normwatch boot --netsim --live`, start it first). `:app` bonds with it, binds it (the
+  (`normwatch boot --phone --live`, start it first). `:app` bonds with it, binds it (the
   pairing screen's first-run handshake) and lands on the dashboard while the watch goes to
   its face; nothing physical involved. Verified on this AVD. Run the watch with
   `--flash-state FILE` and it keeps the bind and the bond: restart it with the same file and
@@ -411,7 +411,7 @@ the protocol. `docs/watch-emulator.md` summarises it; `docs/watch-emulator-inter
 **Two rules when touching the seam.** Everything on the bumble side lives on one loop
 (`Radio`): `LocalLink` dispatches on the *sender's* running loop, so controllers on
 different loops cannot hear each other. And a phone keeps real time, so the watch must
-too: `--netsim` implies `--realtime`, which sleeps whenever watch time is ahead of the
+too: `--phone` implies `--realtime`, which sleeps whenever watch time is ahead of the
 wall clock and never tries to catch up; when the watch falls *behind* (drawing the pairing
 animation does it), `Apollo3Machine.realtime_lag` says by how much, and `Air` delivers
 data into the watch on the watch's clock so the firmware's timing windows stay the width
