@@ -30,9 +30,10 @@ Two facts that cost a lot to rediscover, in this order:
 
 1. **`ui_notify_poweroff_dlg.c` is a 134-frame boot animation**, ~2.95M instructions a
    frame, so ~400M total = **8.3 seconds of watch time**. The default `--max-instructions`
-   of 30M is 0.6s, i.e. frame 8 of 134. Every early "the screen is black / the watch is
-   stuck" investigation was a run that was too short. `boot` now says so when a run ends
-   mid-animation and prints the budget that would clear it.
+   was 30M, which is 0.6s, i.e. frame 8 of 134. Every early "the screen is black / the
+   watch is stuck" investigation was a run that was too short. `boot` says so when a run
+   ends mid-animation and prints the budget that would clear it, and since #77 a `boot`
+   given no budget runs until the animation is over and the UI is drawn.
 2. Past the animation the watch reaches **first-run setup** — "Select a Language", then a
    QR pairing screen showing `A0.2(R.T0.0H0.0B01)` / `Norm2#00000`. It ignores swipe and
    button there because it is waiting for a phone. **The watch face is behind first-run

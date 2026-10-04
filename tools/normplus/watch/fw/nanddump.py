@@ -326,8 +326,6 @@ class Dumper:
     #: ``await wake()`` to bring the storage stack up; see :func:`waker`. Without
     #: one, a stall waits for the watch to be used by hand.
     wake: Optional[Callable] = None
-    #: Seconds to leave the watch alone after each page.
-    page_pause: float = 0.0
     #: Seconds before asking again for a read the watch said it could not do. The
     #: losses are the UI holding the lock for a redraw and arrive in runs, so the
     #: point is to land the retry in a different frame, not to be polite.
@@ -527,8 +525,6 @@ class Dumper:
                         self.stats.wait_seconds += waited
                         self.log(f"  [dump] up again after {waited:g}s; going on")
                     dump.write_page(start, at - start, data, blank=blank)
-                    if self.page_pause:
-                        await asyncio.sleep(self.page_pause)
                     if (self.wake is not None and self.keep_awake
                             and time.monotonic() - last_nudge >= self.keep_awake):
                         await self.wake()

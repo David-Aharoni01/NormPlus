@@ -22,7 +22,6 @@ from normplus.watch.fw import image as image_mod
 from normplus.watch.fw.devices import (CMD_BLOCK_ERASE, CMD_PROGRAM_EXECUTE,
                                   CMD_PROGRAM_LOAD, CMD_WRITE_ENABLE, SpiNand)
 from normplus.watch.fw.machine import Apollo3Machine
-from normplus.watch.fw.patches import GESTURE_CANCEL_ADDRESS, force_gestures
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
@@ -124,14 +123,17 @@ def test_a_page_the_firmware_erased_stays_erased():
 
 
 def test_a_patch_is_not_saved():
-    path = _tmp / "patched.zip"
+    # A write with persist=False is a patch on top of the watch, not the watch writing
+    # its flash, and must not reach a state file that a later, unpatched run loads. It
+    # replaces the bytes (erase=True): a plain program ANDs into them, as NOR flash does.
+    path, at = _tmp / "patched.zip", 0x000842A4
     a = machine()
-    assert force_gestures(a, log=quiet)
+    a.write_flash(at, b"\x00\xbf\x00\xbf", erase=True, persist=False)
+    assert flash(a, at, 4) == b"\x00\xbf\x00\xbf"
     flashstate.save(path, a)
     b = machine()
     flashstate.load(path, b, log=quiet)
-    assert flash(b, GESTURE_CANCEL_ADDRESS, 4) == flash(machine(), GESTURE_CANCEL_ADDRESS, 4), \
-        "--force-gestures leaked into the state file"
+    assert flash(b, at, 4) == flash(machine(), at, 4), "a patch leaked into the state file"
 
 
 def test_a_state_from_another_image_is_refused():

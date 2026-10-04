@@ -20,8 +20,8 @@ same fingerprint to the instruction):
                 touch path into first-run setup's navigation.
 ``face_swipe``  radio off, started from ``fixtures/bound-watch.zip`` (a watch
                 bound over BLE and saved with ``normwatch cmd ... --save``), so
-                it boots to its face; ``--force-gestures`` and a right-to-left
-                swipe at 420M open the activity page. The gesture recogniser.
+                it boots to its face; a right-to-left swipe at 420M opens the
+                activity page. The gesture recogniser, on the stock firmware.
                 (A swipe during the boot animation, which is what this used to
                 be, reaches no further than the GPIO count.)
 
@@ -54,7 +54,6 @@ from normplus.watch.fw.cortexm import exception_name
 from normplus.watch.fw.devices import (attach_ble_controller, attach_motion_sensor,
                                   attach_mspi_devices, attach_pmu, attach_touch_panel)
 from normplus.watch.fw.machine import Apollo3Machine
-from normplus.watch.fw.patches import force_gestures
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -100,7 +99,7 @@ WORKLOADS = {
     "radio": dict(budget=445_000_000, radio=True),
     "language": dict(budget=460_000_000,
                      stimulus=lambda m, t: tap(m, t, 410_000_000, 180, 240)),
-    "face_swipe": dict(budget=500_000_000, state=BOUND, gestures=True,
+    "face_swipe": dict(budget=500_000_000, state=BOUND,
                        stimulus=lambda m, t: swipe(m, t, 420_000_000, (300, 180), (60, 180))),
 }
 
@@ -118,8 +117,6 @@ def build(name: str, *, idle_skip: bool = False, stimulus: bool = True):
     attach_pmu(m, log=quiet)
     if w.get("radio"):
         attach_ble_controller(m, log=quiet)
-    if w.get("gestures"):
-        force_gestures(m, log=quiet)
     if stimulus and w.get("stimulus"):
         w["stimulus"](m, touch)
     return m, devices, touch

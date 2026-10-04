@@ -32,18 +32,19 @@ data](#no-i2c-write-carried-any-data), which is the defect that hid it. The
 battery gauge answers too, on a bus the firmware clocks by hand on two GPIOs;
 that is what stopped the low-power dialog churning sixteen times a second.
 
-**The watch navigates.** With `--force-gestures` a drag on the window is recognised as
-a swipe, the page changes, and the next screen draws — the goal ring to the left, the
-"How to bind to APP" pairing help to the right. The flag is needed because every swipe is
-cancelled by the low-power notification dialog being built and torn down once per UI
-cycle; [Touch reaches the firmware, swipes do not reach the
-UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) traces the input path and
-[The swipe killer is the low-power dialog, not the watch
+**The watch navigates.** A drag on the window is recognised as a swipe, the page
+changes, and the next screen draws — the goal ring to the left, the "How to bind to APP"
+pairing help to the right. It used to take `--force-gestures`, a patch that suppressed the
+firmware's gesture cancel, because every swipe was cancelled by the low-power notification
+dialog being built and torn down once per UI cycle; [Touch reaches the firmware, swipes do
+not reach the UI](#touch-reaches-the-firmware-swipes-do-not-reach-the-ui) traces the input
+path and [The swipe killer is the low-power dialog, not the watch
 face](#the-swipe-killer-is-the-low-power-dialog-not-the-watch-face) identifies the cause.
-Why that dialog is raised at all is the one thing still open — the prime suspect is the
-missing battery/PMU model.
+The suspect was right: once the battery gauge answered, the dialog stopped churning and the
+patch changed nothing -- the golden swipe's fingerprint is identical with and without it,
+radio on or off -- so it was removed (#77).
 
-Throughput is roughly 4.4M instructions/second with `--no-trace` and 3.4M with tracing
+Throughput is roughly 4.4M instructions/second without `--trace` and 3.4M with tracing
 on (~1/10th of real time). Every MMIO access is a Python callback, so tracing, heavy GPIO
 polling and bus traffic all cost. The live window itself is cheap — about 8%.
 
@@ -67,7 +68,7 @@ real frames — 360×360 RGB565, four 64,800-byte DMA stripes per frame — and 
 puts them in a window as they arrive, with the mouse acting as a finger:
 
 ```bash
-normwatch boot --live --no-trace
+normwatch boot --live
 ```
 
 Click and drag on the window to touch the panel. `--screenshot out.png` still captures
@@ -240,7 +241,7 @@ second. See "Snapshots".
 ### The live window
 
 ```bash
-normwatch boot --live --scale 2 --no-trace
+normwatch boot --live --scale 2
 ```
 
 The emulator runs on a worker thread and Tk owns the main one; only the framebuffer and
@@ -277,9 +278,9 @@ It needs no symbols: task names live inside their control blocks, so searching R
 them (each candidate validated against its priority and stack pointers), and
 `pxCurrentTCB` is read from the literal that `vPortSVCHandler` loads.
 
-Useful `boot` flags: `--max-instructions N`, `--stall N` (instructions without new code
-before declaring a hang), `--chiprev 0x12` (force a silicon revision), `--no-trace` (faster,
-no coverage), `--force-gestures` (see below), `--json`.
+Useful `boot` flags: `--max-instructions N`, `--trace` (coverage and the stall detector,
+for about 28% of the run rate), `--stall N` (with `--trace`: instructions without new code
+before declaring a hang), `--chiprev 0x12` (force a silicon revision), `--json`.
 
 ## How it is put together
 
@@ -460,8 +461,10 @@ coordinates (below) and the missing TE line was stretching the UI cycle to 153 m
 (below). Neither changes the outcome: with a 61 ms cycle the cancel simply lands more
 often. Suppressing that one `bic` is the only thing that does, and then all four
 directions work and open four different pages, so everything else on the path is sound.
-That is what `--force-gestures` does (`normplus/watch/fw/patches.py`), and it is off by
-default because it is **not** what the shipped firmware does.
+That is what `--force-gestures` did (`normplus/watch/fw/patches.py`), off by default
+because it is **not** what the shipped firmware does. It is gone since #77: the next
+section found what was destroying objects, the battery gauge stopped it, and nothing has
+cancelled a swipe since.
 
 ### The swipe killer is the low-power dialog, not the watch face
 
@@ -1134,8 +1137,8 @@ zip (`manifest.json`, `flash/0x000FA000.bin`, `nand/<page>.bin`; `unzip -l` show
 puts them back over a fresh machine before anything runs. A page restored and never
 touched again is saved again, an erased page stays erased, the save is atomic, and a file
 saved against another image or resource blob is refused rather than half-applied. A patch
-is not the watch writing its flash: `--force-gestures` writes with `persist=False`, or a
-later run without the flag would get the patch anyway. Stopping between an erase and its
+is not the watch writing its flash: it goes in with `write_flash(persist=False)`, or a
+later run without it would get the patch anyway. Stopping between an erase and its
 program loses that page, as pulling the battery at that instant would.
 
 What it does not keep is the clock: the RTC is not flash, so a restarted watch shows
@@ -1512,7 +1515,7 @@ boot animation's frame, LVGL's active screen (`0x10001710`), the gesture flags
 | `boot` | radio off, 445M, to "Select a Language" |
 | `radio` | the same with the NZ8801 model answering: BLEIF, the download, HCI init |
 | `language` | a tap on the first language row: touch into setup's navigation |
-| `face_swipe` | from `tests/fixtures/bound-watch.zip`, so it boots to the face; a swipe with `--force-gestures` opens the activity page |
+| `face_swipe` | from `tests/fixtures/bound-watch.zip`, so it boots to the face; a swipe opens the activity page, on the stock firmware |
 
 It also holds `--idle-skip` to the `boot` fingerprint exactly, and to `radio` minus the
 one tick above. Two runs of each workload on one tree agree to the instruction, and
@@ -1583,8 +1586,9 @@ behind it:
 ```
 
 A frame takes about 2.95M instructions, so the animation runs for roughly 400M —
-**8.3 seconds of watch time**. The default budget is 30M, which is 0.6s, and
-every investigation of "the black screen" had been looking at frame 8 of 134.
+**8.3 seconds of watch time**. The default budget was 30M, which is 0.6s, and
+every investigation of "the black screen" had been looking at frame 8 of 134. Since #77 a
+`boot` given no budget runs until the animation is over and the UI is drawn.
 
 Run it for long enough and the watch simply boots:
 

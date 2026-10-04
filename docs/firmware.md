@@ -886,13 +886,13 @@ the hardware taught, which the emulator could not:
   2 s -- and not a backlight (`0x17`), not a buzz (`0x18`), not the charge screen, and not a
   message-count push while the screen is off. `nanddump`'s `waker` therefore goes in and out
   by turns, because arriving at the screen the watch is already on changes nothing.
-- **The link drops after 13-25 s of reading, every time.** Ruled out by measurement: the wake
-  command, the page pacing (`--page-pause`, including 0), a fixed read count, the storage
-  stack, and the keep-awake nudges. The emulated watch never drops -- 242 reads over 15.5 s --
-  so it is the hardware's own stack. The driver holding the storage lock for 0.28 s a chunk
-  with the BLE stack getting what is left is the best explanation left standing, and the page
-  buffer cuts that by sixteen; `--sessions` reconnects and continues either way, and a dropped
-  session costs the page in flight.
+- **The link drops after 13-25 s of reading, every time.** Ruled out by measurement: the
+  wake command, the page pacing (a pause after each page, 0 included; the flag went in #77),
+  a fixed read count, the storage stack, and the keep-awake nudges. The emulated watch never
+  drops -- 242 reads over 15.5 s -- so it is the hardware's own stack. The driver holding
+  the storage lock for 0.28 s a chunk with the BLE stack getting what is left is the best
+  explanation left standing, and the page buffer cuts that by sixteen; `--sessions`
+  reconnects and continues either way, and a dropped session costs the page in flight.
 - **A session must be its own process.** A dump that is killed and restarted in the same
   process leaves bleak holding the watch, and the watch serves one connection at a time -- the
   next attempt then looks exactly like a crashed watch. It is not: check for orphaned processes

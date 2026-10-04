@@ -8,7 +8,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from normplus.watch.fw import patches
 from normplus.watch.fw.devices import Rm67162Display, TouchPanel
 
 
@@ -101,43 +100,6 @@ def test_te_is_inert_until_attached():
     display = Rm67162Display(log=lambda *a: None)
     display.advance(10_000_000)          # must not raise, must not touch a machine
     assert display.te_pulses == 0
-
-
-# ── the opt-in gesture patch ─────────────────────────────────────────────────
-
-class FakeUc:
-    def __init__(self, at, data):
-        self.mem = {at: bytearray(data)}
-        self.at = at
-
-    def mem_read(self, address, size):
-        return bytes(self.mem[self.at][address - self.at:address - self.at + size])
-
-
-class PatchableMachine:
-    def __init__(self, data):
-        self.uc = FakeUc(patches.GESTURE_CANCEL_ADDRESS, data)
-        self.written = None
-
-    def write_flash(self, address, data, *, persist=True):
-        self.written = (address, bytes(data))
-        self.persisted = persist
-        self.uc.mem[self.uc.at][address - self.uc.at:address - self.uc.at + len(data)] = data
-
-
-def test_force_gestures_neutralises_the_cancel():
-    machine = PatchableMachine(patches.GESTURE_CANCEL_EXPECTED)
-    assert patches.force_gestures(machine, log=lambda *a: None) is True
-    assert machine.written == (patches.GESTURE_CANCEL_ADDRESS, patches.THUMB_NOP2)
-    # A patch is not the watch writing its flash: --flash-state must not
-    # carry it into a later run that never asked for it.
-    assert machine.persisted is False
-
-
-def test_force_gestures_refuses_an_image_it_does_not_recognise():
-    machine = PatchableMachine(bytes(4))
-    assert patches.force_gestures(machine, log=lambda *a: None) is False
-    assert machine.written is None, "must not write to an image it cannot identify"
 
 
 if __name__ == "__main__":

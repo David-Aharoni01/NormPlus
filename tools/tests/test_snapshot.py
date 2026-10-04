@@ -205,6 +205,17 @@ def boot_cli(*argv) -> tuple:
     return status, json.loads(out.getvalue()) if status == 0 else out.getvalue()
 
 
+def test_the_cli_runs_to_the_ui_when_given_no_budget():
+    # No --seconds and no --max-instructions means what "boot" says (#77): until the
+    # animation is over and the UI has drawn -- and a machine stopped there, with its
+    # poll taken off the queue, can be saved.
+    path = _tmp / "ui.snap"
+    status, out = boot_cli("--no-factory-resources", "--save-state", str(path))
+    assert status == 0 and path.exists(), out
+    assert out["stop"]["kind"] == "budget" and "UI is up" in out["stop"]["detail"], out["stop"]
+    assert 400_000_000 < out["instructions"] < 600_000_000, out["instructions"]
+
+
 def test_the_cli_saves_and_loads_the_same_screen():
     path = _tmp / "cli.snap"
     status, saved = boot_cli("--max-instructions", "30000000", "--save-state", str(path))
