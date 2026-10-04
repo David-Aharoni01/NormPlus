@@ -28,7 +28,8 @@ board this replaced (2026-10-02), so every `#N` in the docs and in commit messag
 ```bash
 uv run normboard                          # what is open: In Progress, then Todo, by priority
 uv run normboard show 56                  # one issue with its comments
-uv run normboard new "Title" -p high -l emulator -f body.md [--start]
+uv run normboard new "Title" -a emulator -p high -f body.md [--start]
+uv run normboard area 56 firmware         # file it under another area
 uv run normboard start 56                 # -> In Progress, when work begins
 uv run normboard note 56 -f finding.md    # a finding, a result, a commit hash
 uv run normboard done 56 -m "Done in <sha>: ..."   # closes it; the board says Done
@@ -40,8 +41,11 @@ uv run normboard done 56 -m "Done in <sha>: ..."   # closes it; the board says D
 - **Findings and results go on the issue as comments**, with the commit hashes. A commit
   message saying `Fixes #56` closes the issue when it reaches `main`.
 - **Dependencies** go on the first line of the body: `Depends on: #N`.
-- **Labels:** `priority: high|medium|low`, plus areas (`emulator`, `firmware`, `ota`, `ble`,
-  `protocol`, `app`, `tooling`, ...).
+- **Labels:** every issue, open or closed, has exactly one area (#78) -- `area: app`,
+  `protocol`, `firmware`, `emulator` or `tooling`; `normboard areas` says what each covers,
+  and an issue goes where it is *done* -- and one `priority: high|medium|low`.
+  `normboard new` refuses an issue without `-a AREA`. Anything else (`ble`, `ota`,
+  `verification`, ...) is an optional tag, `-l TAG`.
 - **Split an issue** if it exceeds ~1h, spans two layers, is hard to roll back, or is uncertain.
 - **The repository is public, so the issues are.** Findings, not vendor code excerpts or
   personal data.

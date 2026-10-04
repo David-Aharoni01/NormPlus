@@ -46,7 +46,7 @@ TOOLS = [
      "The task board: GitHub issues on the NormPlus project.",
      ["normboard                                   what is open, In Progress first",
       "normboard show 13                           one issue with its comments",
-      "normboard new \"Title\" -p high --start       a new issue, straight into In Progress",
+      "normboard new \"Title\" -a app --start        a new issue in an area, into In Progress",
       "normboard done 13 -m \"what was done\"        close it"]),
     ("normhelp", "normplus.help:main",
      "This overview.",

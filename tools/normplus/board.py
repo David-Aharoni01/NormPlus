@@ -7,8 +7,12 @@
     normboard todo 56               move it back to Todo
     normboard done 56 [-m TEXT]     close it as completed (with a comment); the board says Done
     normboard note 56 -m TEXT       add a comment: a finding, a result, a commit
-    normboard new "Title" [-p high|medium|low] [-l LABEL ...] [-m BODY | -f BODY.md] [--start]
+    normboard new "Title" -a AREA [-p high|medium|low] [-l TAG ...] [-m BODY | -f BODY.md] [--start]
+    normboard area 56 emulator      file an issue under another area
     normboard sync                  put every issue on the board, Done for closed ones
+
+Every issue has exactly one area label -- app, protocol, firmware, emulator or tooling
+(``normboard areas``) -- and one priority; anything else (``ble``, ``ota``, ...) is a tag.
 
 It drives the GitHub CLI (``gh``), signed in with the ``project`` scope
 (``gh auth refresh -s project``). The repository is public, so issues are too.
@@ -29,6 +33,21 @@ OWNER = "David-Aharoni01"
 REPO = f"{OWNER}/NormPlus"
 PROJECT = 1
 PRIORITIES = ("high", "medium", "low")
+#: The category every issue is filed under (#78): its label's colour and description (GitHub
+#: allows 100 characters). The four goals in CLAUDE.md, and the tooling around them. An issue
+#: goes where it is done.
+AREAS = {
+    "app": ("0e8a16", "The Android app (:app): BLE connection, sync, notifications, calls, UI, "
+                      "on-device checks"),
+    "protocol": ("5319e7", "The watch's 0x6F protocol and :protocol: finding, decoding and "
+                           "building commands"),
+    "firmware": ("b60205", "The watch's own firmware and hardware: reverse-engineering, patches, "
+                           "updating it"),
+    "emulator": ("0052cc", "The emulators: the watch's firmware on the PC (normwatch), the "
+                           "Android one (normphone)"),
+    "tooling": ("6e7781", "The rest on the PC: normcmd, normfw, normtest, normboard, the repo, "
+                          "the docs, the board"),
+}
 
 
 def _gh_path() -> str:
@@ -75,12 +94,20 @@ class Board:
            "--field-id", self.status_field, "--single-select-option-id", self.options[status])
 
 
-def _priority(labels) -> str:
+def _prefixed(labels, prefix: str) -> str:
     for label in labels or []:
         name = label if isinstance(label, str) else label.get("name", "")
-        if name.startswith("priority: "):
-            return name.split(": ", 1)[1]
+        if name.startswith(prefix):
+            return name[len(prefix):]
     return "-"
+
+
+def _priority(labels) -> str:
+    return _prefixed(labels, "priority: ")
+
+
+def _area(labels) -> str:
+    return _prefixed(labels, "area: ")
 
 
 def cmd_list(args) -> int:
@@ -97,13 +124,13 @@ def cmd_list(args) -> int:
             "Done" if issue["state"] == "CLOSED" else "(not on board)")
         rows.append((order.get(status, 3), PRIORITIES.index(_priority(issue["labels"]))
                      if _priority(issue["labels"]) in PRIORITIES else 3, issue["number"],
-                     status, _priority(issue["labels"]), issue["title"]))
+                     status, _priority(issue["labels"]), _area(issue["labels"]), issue["title"]))
     current = None
-    for _, _, number, status, priority, title in sorted(rows):
+    for _, _, number, status, priority, area, title in sorted(rows):
         if status != current:
             print(f"\n{status}")
             current = status
-        print(f"  #{number:<4} {priority:<7} {title}")
+        print(f"  #{number:<4} {priority:<7} {area:<9} {title}")
     print(f"\n{board.url}")
     return 0
 
@@ -172,7 +199,7 @@ def cmd_note(args) -> int:
 
 
 def cmd_new(args) -> int:
-    labels = [f"priority: {args.priority}", *args.label]
+    labels = [f"priority: {args.priority}", f"area: {args.area}", *args.label]
     command = ["issue", "create", "--repo", REPO, "--title", args.title,
                "--body-file", _body(args) or _body(argparse.Namespace(message=" "))]
     for label in labels:
@@ -181,6 +208,25 @@ def cmd_new(args) -> int:
     number = int(url.rsplit("/", 1)[1])
     Board().set_status(number, "In Progress" if args.start else "Todo")
     print(url)
+    return 0
+
+
+def cmd_area(args) -> int:
+    """File an issue under *area*: add its label and take off any other area's."""
+    labels = gh_json("issue", "view", str(args.number), "--repo", REPO, "--json",
+                     "labels")["labels"]
+    edit = ["--add-label", f"area: {args.area}"]
+    for label in labels:
+        if label["name"].startswith("area: ") and label["name"] != f"area: {args.area}":
+            edit += ["--remove-label", label["name"]]
+    gh("issue", "edit", str(args.number), "--repo", REPO, *edit)
+    print(f"#{args.number}: {args.area}")
+    return 0
+
+
+def cmd_areas(args) -> int:
+    for name, (_, description) in AREAS.items():
+        print(f"  {name:<9} {description}")
     return 0
 
 
@@ -228,12 +274,20 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_note)
     p = sub.add_parser("new", help="create an issue on the board")
     p.add_argument("title")
+    p.add_argument("-a", "--area", choices=AREAS, required=True,
+                   help="what it is about (normboard areas); every issue has one")
     p.add_argument("-p", "--priority", choices=PRIORITIES, default="medium")
-    p.add_argument("-l", "--label", action="append", default=[])
+    p.add_argument("-l", "--label", action="append", default=[], metavar="TAG",
+                   help="a tag besides the area and the priority (ble, ota, ...); repeatable")
     p.add_argument("-m", "--message", help="the body")
     p.add_argument("-f", "--body-file", help="the body, from a file")
     p.add_argument("--start", action="store_true", help="put it straight into In Progress")
     p.set_defaults(func=cmd_new)
+    p = sub.add_parser("area", help="file an issue under another area")
+    p.add_argument("number", type=int)
+    p.add_argument("area", choices=AREAS)
+    p.set_defaults(func=cmd_area)
+    sub.add_parser("areas", help="what each area covers").set_defaults(func=cmd_areas)
     sub.add_parser("sync", help="put every issue on the board").set_defaults(func=cmd_sync)
     args = ap.parse_args(argv)
     if not getattr(args, "func", None):
