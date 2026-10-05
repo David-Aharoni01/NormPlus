@@ -425,10 +425,11 @@ disagree about what was said.
 - **"No data" on the screen, or a solid white box where an image belongs, is missing NAND
   data, not broken drawing.** "No data" is LVGL's placeholder for an image it could not
   decode. A white box is an image whose header is in the NAND and whose pixels are not:
-  they read 0xFF. The watch's factory resources (`NORM/_nand`, #65) are mounted by
-  default, but the first read-out missed some (#82, #83). The live window's status line
-  counts both kinds, and the boot report ends with the NAND ranges to read off the watch to
-  complete them (`fw/resources.py`).
+  they read 0xFF. The watch's whole chip has been read (#83), and `NORM/_nand`, mounted
+  by default, holds every byte up to the resource partition. So with the default mount
+  neither should appear: if one does, something else is wrong. The live window's status
+  line counts both kinds, and the boot report lists the NAND ranges involved
+  (`fw/resources.py`).
 
 **An emulator-only result is not a result about the watch.** The places the two are known
 to differ are listed in `docs/watch-emulator.md` ("Where the emulated watch and the real

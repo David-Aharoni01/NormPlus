@@ -86,9 +86,11 @@ missing data, not broken drawing (#64): LVGL's placeholder for an image it could
 decode, for images that live in tens of MB of NAND from `0x026DA430` upwards and in no
 file the app ships. The emulated NAND otherwise has only the app's 401 KB resource image.
 
-Those 40 MB were read off the physical watch on 2026-10-03 over a patched 0xEE (#70,
-`docs/firmware.md` section 11) and are the vendor's material, so they live in the private
-reference repo rather than here. With them mounted the boot report says `images: every
+They were read off the physical watch over a patched 0xEE (#70, `docs/firmware.md`
+section 11): 40 MB on 2026-10-03, then the whole chip on 2026-10-04/05 (#83). So
+`NORM/_nand` now holds every byte from `0x00000000` to the resource partition at
+`0x0C780000`. They are the vendor's material, so they live in the private reference repo
+rather than here. With them mounted the boot report says `images: every
 image the firmware drew was in the NAND`, the animation plays its 134 frames, and the
 setup screen has its artwork. The live window counts what is missing ("N images not in the
 NAND") and the boot report lists the ranges. See "Most of the watch's images are not in
@@ -219,12 +221,15 @@ Most screens drew LVGL's "No data" and the boot animation ran black, because the
 NAND held only the app's 401 KB resource image. **Closed on 2026-10-03**: 40,089,600 bytes
 read off the watch (#70) and mounted by default (#65, #71).
 
-**The read-out has gaps (#82).** Each range ended at the page after the last image *start*
-a screen tour saw, so the last image in a range is cut short and draws white: the weather
-screen's second digit is one. Screens the tour never opened, such as the notification
-banner, use resources that are not in the dump at all. The live window's status line
-counts both kinds ("N images not in the NAND, M cut short"), and the boot report ends with
-the ranges to read off the watch. Reading them is #83.
+**The first read-out had gaps (#82), and the whole-chip read closed them (#83).** Each of
+its ranges ended at the page after the last image *start* a screen tour saw, so the last
+image in a range was cut short and drew white: the weather screen's second digit was one.
+Screens the tour never opened, such as the notification banner, used resources that were
+not read at all. On 2026-10-05 the whole 256 MB was read. With everything up to
+`0x0C780000` mounted, the weather screen draws its digits, the banner draws its artwork,
+and nothing is missing or cut short. The live window still counts both kinds ("N images
+not in the NAND, M cut short"), so a "No data" or a white box now means something else is
+wrong.
 
 ### 8. The clock starts from nothing at every run, and keeps watch time
 

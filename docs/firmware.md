@@ -220,10 +220,29 @@ internal flash  0x00000000 – 0x0001FFFF   bootloader + config (128 KB reserved
                                           (Apollo3 Blue flash ends at 0x000FFFFF)
 SRAM            0x10000000 – 0x1005FFFF   384 KB, stack top 0x1005FA50
 
-external SPI NAND (inferred from the OTA addresses + the 0x10000000 bound):
-                0x0C780000                resource / picture partition
-                0x0FC00000                OTA staging (last 4 MB of a 256 MB device)
+external SPI NAND, 256 MB -- read whole off the physical watch, 2026-10-05 (#83):
+                0x00000000                one page: the six ASCII bytes "040404"; the
+                                          rest of block 0 erased
+                0x00020000 – 0x0C77FFFF   factory resources: one continuous run of LVGL
+                                          images (~197 MB, 59 pages erased in all)
+                0x0C780000 – 0x0C7E2201   resource / picture partition (update type 4):
+                                          identical to Picture_P03B_NORM2_0.4.bin
+                0x0C7E2202 – 0x0C7FFFFF   122 KB more data in the partition's last pages
+                0x0C800000 – 0x0FBFFFFF   erased, but for one page at 0x0EF57800 filled
+                                          with a repeating ff ff 00 (a test pattern)
+                0x0FC00000 – 0x0FCB67FF   OTA staging (update type 1): the last image sent,
+                                          byte for byte normfw patch-nand's (#70)
+                0x0FD00000, 0x0FD20000    named next to the staging in the firmware's
+                                          update table (0x0005A91E), probably the touch
+                                          panel and heart-rate slots (types 2, 3): erased
+                0x0FD00000 – 0x0FFFFFFF   erased
 ```
+
+No user data is kept in the NAND: settings, the bond and the bind live in internal flash
+("Internal flash, and where the watch keeps its settings" in the emulator internals). No
+bad blocks: all 131,072 pages read. The emulator mounts `0x00000000`-`0x0C77FFFF` from
+`NORM/_nand`; the partition copy and the test-pattern page are kept unmounted in
+`NORM/_nand/unmounted`.
 
 ---
 
@@ -900,6 +919,28 @@ the hardware taught, which the emulator could not:
 
 The screen timeout was raised from 5 s to 60 s on the watch (`BRIGHT_SCREEN_TIME`, `0x13`) to
 keep the stack up for longer. **It is a setting on the owner's watch: put it back to 5.**
+
+### The whole chip (#83)
+
+The rest of the 256 MB was read unattended on 2026-10-04/05: 228,345,856 bytes in
+**13 h 55 min**, one connection the whole way. The emulator had shown two kinds of gap,
+images cut short at the first read-out's range ends and images it never reached (#82),
+and the owner chose the whole chip over the gaps alone.
+
+| | |
+|---|---|
+| Pages | 83,069 with data, 28,428 erased (an erased page costs two reads, not sixteen) |
+| Rate | 3.6 KB/s on data, 4.6 KB/s overall; 28 reads/s |
+| Lost to the UI | 2.3% (33,001 times `0xFA`, one `0xFF`), each retried |
+| Storage stack down | 55 times, 246 s in all, each brought back by the waker |
+| Bad blocks | **none**: every page answered |
+
+A driver script (`NORM/_nand_full/fullread.py`, kept with the dump) ran `normwatch dump
+--mac` over ten ranges and re-ran it whenever it stopped. It was ready to step over a page
+the watch could not read, because the dumper ends a run at one and a whole-chip read was
+expected to meet factory bad blocks; it never had to. The screen timeout went to 60 s for
+the read and back to 5 s at the end, both acknowledged. What the chip holds is the NAND
+map in section 4.
 
 ---
 

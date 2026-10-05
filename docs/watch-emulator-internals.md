@@ -1987,10 +1987,16 @@ upper bound, because its header is what is missing: a full screen at three bytes
 never past the next resource drawn. LVGL hands a failed image a 2047x2047 area at
 (-1, -1), so the area says nothing, and the placeholder is clipped out of sight.
 
-Pushing a notification of every type (0x76) finds five more resources missing outright.
+Pushing a notification of every type (0x76) found five more resources missing outright.
 The banner draws them on every frame of its animation: three between `0x05988557` and
-`0x05A4B83E`, and two at `0x0915F89D` and `0x09169091`. Reading those, the two tails and
-everything else a session reports is #83.
+`0x05A4B83E`, and two at `0x0915F89D` and `0x09169091`.
+
+**All of it is in now (#83).** The whole chip was read on 2026-10-05 (13 h 55 min,
+no bad blocks), and `NORM/_nand` holds every byte up to the resource partition. With
+it mounted, the weather screen draws "25°C" and the banner its ring and calendar icon,
+and `MissingResources` reports nothing missing, nothing cut short, and no blank reads of
+resource pages. That costs 0.3 s to mount 200 MB, and a snapshot taken past the boot
+animation stays at 35 MB, restored in 0.56 s.
 
 ### The NAND sees every command bit-expanded
 
