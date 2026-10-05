@@ -4,9 +4,10 @@ The watch keeps its images in its SPI NAND, each named by its address (``"0x288b
 "The resource path" in docs/watch-emulator-internals.md). The emulated NAND holds the
 resource image the companion app ships, ``Picture_P03B_NORM2_0.4.bin`` at ``0x0C780000``
 (401 KB), and -- mounted by default -- the watch's factory resources read off the physical
-watch (``NORM/_nand``, #65): about 40 MB in five ranges between ``0x026DA000`` and
-``0x0C556800``. When the firmware asks for a resource outside what is mounted, its pages read
-back blank and one of two things happens:
+watch (``NORM/_nand``, #65, #83): since the whole chip was read, every byte from
+``0x00000000`` to the resource partition. When the firmware asks for a resource outside what
+is mounted (with ``--no-factory-resources``, say), its pages read back blank and one of two
+things happens:
 
 * **Missing**: the header is blank too, LVGL's image decoder fails, and ``lv_draw_img`` draws
   its placeholder, "No / data". That is what the real firmware does on a watch without those
@@ -14,7 +15,7 @@ back blank and one of two things happens:
 * **Cut short**: the header is there and the pixels run past what is mounted. The decoder
   takes 0xFF for pixels and draws a white rectangle -- the weather screen's second digit
   (#82). The first read-out made each range from the *start* addresses a screen tour saw, so
-  the last resource of a range ends past it.
+  the last resource of a range ended past it, until the whole chip was read (#83).
 
 This counts both, so the live window and the boot report can say so, and :meth:`wanted`
 turns them into the NAND ranges a follow-up read-out needs (#83).

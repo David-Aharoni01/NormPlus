@@ -1,8 +1,8 @@
 """Reading the watch's SPI NAND out, through the patch's 0xEE (#68, #69).
 
-The watch's factory resources -- about 40 MB of images the emulator has nothing
-for, so it draws "No data" over them (#64, #65) -- exist only in the watch's own
-NAND. #66 found no way to read them with the shipped firmware; #68's patch adds
+The watch's factory resources -- some 200 MB of images the emulator had nothing
+for, so it drew "No data" over them (#64, #65) -- exist only in the watch's own
+NAND. This read them: 40 MB first (#70), then the whole chip (#83). #66 found no way to read them with the shipped firmware; #68's patch adds
 one: command 0xEE with its address tagged ``0xFnnnnnnn`` returns NAND bytes
 instead of CPU bytes. This drives that command for as long as it takes.
 

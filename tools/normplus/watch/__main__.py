@@ -703,8 +703,7 @@ def cmd_dump(args) -> int:
                        f"{dict((hex(c), n) for c, n in sorted(stats.errors.items()))}"
                        if stats.errors else ""))
     if stats.reads_per_second:
-        for size, what in ((40 << 20, "the ~40 MB of missing resources"),
-                           (166 << 20, "the whole 166 MB span")):
+        for size, what in ((NAND_SIZE, "the whole 256 MB chip"),):
             say(f"dump: {what}, read in full, would take "
                 f"{stats.estimate(size) / 3600:.1f} h at this rate "
                 f"({stats.reads_per_second:.1f} reads/s); blank pages cost an eighth of that")
@@ -1158,9 +1157,9 @@ def main(argv=None) -> int:
                              "An existing dump is continued")
     p_dump.add_argument("--range", action="append", required=True, metavar="START-END",
                         help="a NAND range in hex, e.g. 026DA430-0496C000 (rounded out to "
-                             "whole 2 KB pages). Repeatable. The missing resources are "
-                             "026DA430-0496BDAC, 04E1152B-04E1C618, 08CBF981-0902DDCA, "
-                             "0AA58ACE-0AA6E974 and 0C53D84A-0C55619B (docs/firmware.md)")
+                             "whole 2 KB pages). Repeatable. The physical watch's whole chip "
+                             "has been read (#83): what it holds is in NORM/_nand and "
+                             "docs/firmware.md")
     p_dump.add_argument("--mac", metavar="MAC", nargs="?", const=WATCH, default=None,
                         help=f"dump the PHYSICAL watch instead -- {WATCH}, or the one at "
                              f"MAC -- over this PC's Bluetooth adapter. It must already be "

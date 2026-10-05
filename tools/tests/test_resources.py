@@ -156,29 +156,79 @@ def test_with_the_resources_mounted_the_placeholders_are_gone():
 
 
 
-def test_the_first_read_out_cut_two_images_short():
-    """#82: each range of the first read-out ended at the page after the last image
-    *start* a screen tour saw, so the image starting there runs past it. Its header
-    is in the NAND and its pixels read 0xFF, which LVGL draws as white -- the
-    weather screen's second digit. The decode succeeds, so only the header says so.
-
-    When #83 reads the tails off the watch, this becomes: nothing cut short.
-    """
+def test_with_the_whole_chip_nothing_is_cut_short():
+    """#82 found two images cut short at the first read-out's range ends:
+    0x0496BDAB (360x360, drawn at every boot; 597 of 259,204 bytes) and 0x0902DDC9
+    (the weather screen's second digit, a white box; 567 of 6,682). The whole-chip
+    read (#83) filled in everything up to the resource partition, so the same run --
+    the face, then the weather screen -- now draws every image whole."""
     if not dumped():
         print("   (skipped: NORM/_nand holds no dump on this machine)")
         return
     _, devices, missing = mounted()
-    assert missing.truncated == {
-        0x0496BDAB: (4, 360, 360, 259_204, 597),    # drawn at every boot
-        0x0902DDC9: (5, 42, 53, 6_682, 567),        # the weather screen's digit
-    }, {hex(a): v for a, v in missing.truncated.items()}
-    assert missing.wanted() == [(0x0496C000, 0x049AB800), (0x0902E000, 0x0902F800)], \
-        [f"{lo:08X}-{hi:08X}" for lo, hi in missing.wanted()]
-    assert "2 cut short" in missing.status(), missing.status()
-    assert "0496C000-049AB800 0902E000-0902F800" in missing.summary(), missing.summary()
-    # ...and the NAND saw the same thing from its side.
-    blank = devices["nand"].blank_reads
-    assert all(n in blank for n in range(0x0902E000 // PAGE, 0x0902F800 // PAGE)), sorted(blank)[:8]
+    assert not missing.truncated, {hex(a): v for a, v in missing.truncated.items()}
+    assert not missing.missing, sorted(hex(a) for a in missing.missing)
+    assert missing.wanted() == [] and missing.status() == "", missing.status()
+    # ...and the NAND agrees from its side: no page of the resource area read blank.
+    blank = [n for n in devices["nand"].blank_reads if n * PAGE >= 0x00020000]
+    assert not blank, [hex(n * PAGE) for n in sorted(blank)[:8]]
+
+
+class _FakeUc:
+    """Just enough of a Unicorn engine to drive MissingResources' hooks by hand."""
+
+    def __init__(self, memory: dict, registers: dict):
+        self.memory, self.registers = memory, registers
+
+    def mem_read(self, address: int, size: int) -> bytes:
+        for base, data in self.memory.items():
+            if base <= address and address + size <= base + len(data):
+                return data[address - base:address - base + size]
+        raise ValueError(hex(address))
+
+    def reg_read(self, register: int) -> int:
+        return self.registers[register]
+
+    def hook_add(self, *args, **kwargs) -> None:
+        pass
+
+
+def test_an_image_whose_pixels_run_past_the_nand_is_counted_cut_short():
+    """The detection itself, without the firmware: a 42x53 TRUE_COLOR_ALPHA image whose
+    header page is in the NAND and whose pixels run into a page that is not -- the
+    weather digit as the first read-out left it."""
+    from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R2
+    from normplus.watch.fw.resources import DRAW_IMG, DRAW_IMG_EXPECTED
+
+    address = 0x0902DDC9
+    header = (5 | (42 << 10) | (53 << 21)).to_bytes(4, "little")
+    nand = SpiNand(log=lambda *a, **k: None)
+    first = address - address % PAGE
+    page = bytearray(b"\x00" * PAGE)
+    page[address - first:address - first + 4] = header
+    nand.load(bytes(page), first)                          # only the header's page
+    name, area = 0x10050000, 0x10050100
+    uc = _FakeUc({DRAW_IMG: DRAW_IMG_EXPECTED,
+                  name: f"0x{address:x}".encode() + b"\0" * 8,
+                  area: (10).to_bytes(2, "little", signed=True) * 2 + (51).to_bytes(2, "little") * 2},
+                 {UC_ARM_REG_R2: name, UC_ARM_REG_R0: area})
+
+    class Machine:
+        pass
+
+    machine = Machine()
+    machine.uc = uc
+    missing = MissingResources(machine, nand)
+    assert missing.active
+    missing._entered(uc, DRAW_IMG, 4, None)
+    assert missing.truncated == {address: (5, 42, 53, 6_682, first + PAGE - address)}
+    assert missing.wanted() == [(first + PAGE, first + 4 * PAGE)], missing.wanted()
+    assert missing.status() == "1 cut short"
+    # Once the rest is mounted, the same image is whole.
+    nand.load(bytes(3 * PAGE), first + PAGE)
+    whole = MissingResources(machine, nand)
+    whole._entered(uc, DRAW_IMG, 4, None)
+    assert not whole.truncated
 
 
 def test_an_lvgl_header_gives_the_images_extent():
