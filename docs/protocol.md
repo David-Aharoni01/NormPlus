@@ -62,7 +62,7 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
 | Request | Answer |
 |---|---|
 | `TOTAL_SPORT_SLEEP_COUNT` (0x52) `[00]` | LE16 counts: sport `[0..1]`, sleep `[2..3]`, heart rate `[4..5]` when the reply is longer than 4 bytes (`AllDataTypeCount.parse80BytesArray`). The physical watch: `[98 03 00 00 0f 01 00 00]` = 920 sport, 0 sleep, 271 heart rate |
-| `GET_SPORT_DATA` (0x54) `[00 00]` | **every** sport record, one frame each, 28 bytes: `[index 2][time 4][steps 4][calories 4][distance 4][sportTime 4][avgBpm 1][type 1][staticCalories 4]`, LE, index from 1 |
+| `GET_SPORT_DATA` (0x54) `[00 00]` | **every** sport record, one frame each, 28 bytes: `[index 2][time 4][steps 4][calories 4][distance 4][sportTime 4: active minutes, #89][avgBpm 1][type 1][staticCalories 4]`, LE, index from 1 |
 | `GET_HEART_RATE_DATA` (0x5B) `[00]` | every heart-rate record, 7 bytes: `[index 2][time 4][bpm 1]` |
 | `GET_SLEEP_DATA` (0x56) `[00]` | the same shape for sleep, by the smali; not seen on hardware (no sleep records yet) |
 

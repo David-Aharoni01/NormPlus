@@ -166,7 +166,7 @@ class SyncHealthDataUseCase @Inject constructor(
                 distanceMeters = rec.distanceMeters,
                 avgHeartRate = rec.avgHr,
                 sportType = rec.sportType,
-                durationSeconds = rec.durationSeconds,
+                activeMinutes = rec.activeMinutes,
             )
         }
         sportDao.insertAll(records)

@@ -20,7 +20,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): Norm2Database =
         Room.databaseBuilder(ctx, Norm2Database::class.java, "norm2.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -73,6 +73,16 @@ object AppModule {
             // (No schema change — NotificationRuleEntity.enabled only changed its *Kotlin* default,
             // which never reached SQL; the column is still `enabled INTEGER NOT NULL`.)
             db.execSQL("UPDATE notification_rules SET enabled = 0")
+        }
+    }
+
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // sport_sessions.durationSeconds always held the record's sportTime as the watch sent
+            // it, which is MINUTES (#89; SportRecord.activeMinutes). Renaming the column makes the
+            // stored values right without touching them. (RENAME COLUMN needs SQLite 3.25; minSdk
+            // 30 ships 3.28.)
+            db.execSQL("ALTER TABLE sport_sessions RENAME COLUMN durationSeconds TO activeMinutes")
         }
     }
 

@@ -202,7 +202,7 @@ object SportCommand {
     //   [6..9]   step
     //   [10..13] calories
     //   [14..17] distance     (metres)
-    //   [18..21] sportTime    (duration, seconds)
+    //   [18..21] sportTime    (active minutes -- see activeMinutes)
     //   [22]     avgBpm       (1 byte)
     //   [23]     type         (1 byte)
     //   [24..27] staticCalorie
@@ -214,10 +214,10 @@ object SportCommand {
         val steps = if (b.size >= 10) b.readInt32LE(6) else 0
         val calories = if (b.size >= 14) b.readInt32LE(10).toFloat() / 1000f else 0f
         val distance = if (b.size >= 18) b.readInt32LE(14).toFloat() else 0f
-        val durationSec = if (b.size >= 22) b.readInt32LE(18) else 0
+        val activeMinutes = if (b.size >= 22) b.readInt32LE(18) else 0
         val avgHr = if (b.size >= 23) b[22].toInt() and 0xFF else 0
         val sportType = if (b.size >= 24) b[23].toInt() and 0xFF else 0
-        return SportRecord(timestamp, steps, calories, distance, avgHr, sportType, durationSec)
+        return SportRecord(timestamp, steps, calories, distance, avgHr, sportType, activeMinutes)
     }
 }
 
@@ -228,7 +228,14 @@ data class SportRecord(
     val distanceMeters: Float,
     val avgHr: Int,
     val sportType: Int,
-    val durationSeconds: Int,
+    /**
+     * The record's `sportTime`: MINUTES of activity in its half hour, not seconds (#89). The
+     * official app shows a day's worth as "Active time N min" (view_activity_active_time_tab.xml,
+     * `@string/unit_min`) against a goal that defaults to 30 (DeviceGoalInfo.activeTime), and the
+     * records agree: the physical watch's 911-step half hour says 11, ~70 s of walking on the
+     * emulated watch says 1.
+     */
+    val activeMinutes: Int,
 )
 
 // ── Device display data (the watch-face "today" totals) ─────────────────────────

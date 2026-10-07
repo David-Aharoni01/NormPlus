@@ -179,10 +179,10 @@ ota/                  (in :protocol)
 
 ### Data Layer (`data/`)
 
-Room database v4 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
+Room database v5 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
 
 ```
-sport_sessions         timestampEpoch (UNIQUE)
+sport_sessions         timestampEpoch (UNIQUE); activeMinutes is the record's sportTime, in minutes (#89, v5)
 heart_rate_samples     timestampEpoch (UNIQUE)
 sleep_sessions         startEpoch (UNIQUE)
 sleep_stages           (sessionId, timestampEpoch) composite UNIQUE
@@ -411,7 +411,7 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - SET commands work — brightness, DND, vibration, language, and other settings apply on the watch
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
-- Room database v4 with unique constraints and 3 migrations
+- Room database v5 with unique constraints and 4 migrations
 - Notification forwarding with an explicit per-app whitelist (installed-app picker + listener-permission
   flow), junk-type filtering, RTL (Hebrew/Arabic), 300 ms coalescing/group-merge, and exact-repeat
   suppression

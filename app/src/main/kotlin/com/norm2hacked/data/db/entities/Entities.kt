@@ -14,7 +14,9 @@ data class SportEntity(
     val distanceMeters: Float,
     val avgHeartRate: Int,
     val sportType: Int,
-    val durationSeconds: Int,
+    // The record's sportTime, which is minutes (SportRecord.activeMinutes). Was `durationSeconds`
+    // until v5, holding the same minutes under the wrong name (#89).
+    val activeMinutes: Int,
 )
 
 @Entity(tableName = "heart_rate_samples", indices = [Index("timestampEpoch", unique = true)])

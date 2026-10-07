@@ -71,6 +71,17 @@ class RecordStreamTest {
     }
 
     @Test
+    fun `sportTime is minutes, as the physical watch's busiest half hours say`() {
+        // Record 249: 911 steps and 650 m in a half hour, sportTime 11. Seconds it cannot be.
+        val rec = SportCommand.parse(sport(
+            "f9 00 cc 8d b3 6a 8f 03 00 00 88 0d 01 00 8a 02 00 00 0b 00 00 00 00 01 e8 80 00 00"))!!
+        assertEquals(911, rec.steps)
+        assertEquals(650.0f, rec.distanceMeters)
+        assertEquals(11, rec.activeMinutes)
+        assertEquals(1, SportCommand.parse(sport(emulatedWalk))!!.activeMinutes)
+    }
+
+    @Test
     fun `the physical watch's heart-rate record parses`() {
         val rec = HeartRateCommand.parse(hr("01 00 36 7f 2e 6a 4a"))!!
         assertEquals(0x6A2E7F36L * 1000, rec.timestampMs)
