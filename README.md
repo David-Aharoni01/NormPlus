@@ -78,6 +78,14 @@ normphone install                                        # 3. the app, in a thir
 If the phone held a pairing with a different watch, `normphone clear-bond` forgets it; then
 tap *Pair* when Android asks.
 
+**Give the emulated watch something to sync.** A fresh one has no history. This has its own
+firmware write a day of half-hourly sport records (about 2 minutes; `--count 200` for four
+days) into the state file, then the recipe above with the same file syncs them:
+
+```powershell
+normwatch records --flash-state watch.zip --count 48
+```
+
 ## Asking a watch a question from the PC (`normcmd`)
 
 One 0x6F command, sent the way the companion app sends it (to 8001, then `[03]` to 8002),

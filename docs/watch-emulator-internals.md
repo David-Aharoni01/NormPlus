@@ -1854,6 +1854,61 @@ pointer sits at `0x0005235C`), and nothing has been seen to call it; pulsing eac
 of the interrupt-capable GPIOs in turn does not either. That is the next thing to
 find.
 
+### Health records: the firmware writes them, the clock decides when (#51)
+
+A fresh watch has no sport records, so `:app`'s sync only ever ran its empty paths here.
+Nothing had to be invented to change that: bound and with its clock set, the firmware writes
+them itself, and the whole of #51 was finding out when and making it happen quickly.
+
+**Where.** `system_step_task.c` posts message 0x1A to its own queue through the poster at
+`0x0005E4F0` (entry `0x000CC9A8` of the task's API table, so nothing calls it directly); the
+dispatcher's handler `0x0003D6E8` hands the record to the store's append at `0x0003D8A4`. The
+store keeps a ring of 8 KB internal-flash pages per record type, listed at `0x000C8F60`:
+
+```
+type 0  4 pages  0xE0000 0xE2000 0xE4000 0xE6000   sport, 28-byte records, 292 a page
+type 1  2 pages  0xE8000 0xEA000
+type 2  2 pages  0xEE000 0xF0000
+type 3  1 page   0xEC000
+type 4  1 page   0xF6000
+```
+
+Per-type state sits at `0x10006BCC + type * 12 + 0x2EF..`: a full flag, the record size, the
+oldest and current page, the index in the page and the count. A full page moves on to the
+next, erasing it (`blx [ops+4]`) and dropping the oldest page's records from the count; past
+90% of a ring's capacity something more is done (`0x0003D9A2`), not followed. All of it is
+the region the bind erases, which is why a fresh bind has no history.
+
+**When**, from both watches (the physical watch's 920 records, and probes here):
+
+- at the **:29 and :59 minute ticks**, stamped with that minute;
+- the day's last half hour **at midnight, stamped 23:58:30** -- every one of the physical
+  watch's days ends `23:29, 23:58:30, 00:29`, and here a run through midnight wrote the
+  23:58:30 record at 00:00:00, and nothing at 23:59;
+- when a phone asks for **the counts** (`TOTAL_SPORT_SLEEP_COUNT`), the half hour so far,
+  stamped with the time asked -- not every ask (two 11 s apart on the physical watch wrote
+  one);
+- **not** on the first tick after the clock is set, usually, and not when the clock was set
+  only one second before the tick (three tries out of three). What decides that is upstream
+  of the poster and has not been read.
+
+**Making it quick.** `fw/health.write_sport_records` sets the clock two seconds before each
+tick, runs until `Apollo3Machine.flash_programs` shows a program into the sport ring, and
+crosses the tick again if none came (up to three times). `flash_programs` is a plain
+`Counter` of programs per page kept by `write_flash` -- no hook, so it costs nothing and a
+snapshot carries it. 200 records take ~8 minutes with the radio up, 202 crossings.
+
+**Steps.** The firmware drains the accelerometer's FIFO (the read side at `0x00052000`) and
+its pedometer counts: `devices.Walking` (gravity on Z, a bounce at the step rate) on
+`MotionSensor.motion` for ~70 s gave a record of 261 steps, 186 m, sportTime 1. Standing
+still, or a 0.05 g bounce, counts none; 2 Hz counts 237 a minute whatever the waveform, 1 Hz
+167 -- so it counts, but its algorithm is not modelled, and a test asserts only "walking
+> 0".
+
+**Reading them back** is the stream in `docs/protocol.md` ("Health records"): one request,
+every record, index ignored. `tests/test_health_records.py` pins it on this watch, and the
+physical watch's own frames in `:protocol`'s `RecordStreamTest`.
+
 ### The clock stood still: the RTC was storage (#81)
 
 After a phone set the time the face showed it, and kept showing it. The firmware keeps the
@@ -2172,9 +2227,10 @@ In the order to do them. All are GitHub issues on the NormPlus board (`normboard
    through; see "Rehearsing an OTA". **#56** then replaced `ApolloOtaProtocol.kt` with
    `ApolloOtaSession` in `:protocol`, and the same update went through end to end from
    `:app` in the AVD.
-6. **#51 — health records.** A fresh watch has no sport, sleep or HR records, so `:app`'s
-   sync only runs its empty paths against it. Drive the modelled accelerometer so the
-   firmware's own pedometer records steps.
+6. ~~**#51 — health records**~~ -- done: the firmware writes its own sport records
+   (`fw/health.py`, `normwatch records`), and walking the wrist (`devices.Walking`) puts
+   steps in them; see "Health records". It recreated #85, the sync's timeout, before #85 was
+   fixed. Heart rate and sleep have no sensor model yet.
 7. **#52 — script the AVD's stale-bond removal** for `normphone start --watch`.
 8. **#53 — `0x50023800` / `0x50023804`**, unmodelled MMIO the BLE path touches.
 9. ~~**#54 — `--idle-skip` loses one STIMER tick with the radio up**~~ -- done: the skip

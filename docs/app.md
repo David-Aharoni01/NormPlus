@@ -38,6 +38,7 @@ interface WatchTransport {
     suspend fun connect(mac: String)
     fun disconnect()
     suspend fun sendAndAwait(cmd, action, payload, timeoutMs): Packet
+    fun sendAndStream(cmd, action, payload, idleTimeoutMs, isLast): Flow<Packet>
     fun writeToChar(bytes, charUuid)
 }
 ```
@@ -79,11 +80,14 @@ BleConstants          All UUIDs, MTU values, timeouts, frame markers.
 - `scanResultFlow: SharedFlow<BluetoothDevice>`
 - `suspend fun connect(mac: String)` — rate-limited, mutex-guarded, auto-retries up to 8× (see "Connection lifecycle" below)
 - `suspend fun sendAndAwait(cmd, action, payload, timeoutMs)` — routes through `BleWriteQueue`
+- `fun sendAndStream(cmd, action, payload, idleTimeoutMs, isLast): Flow<Packet>` — one write, then
+  every matching response until `isLast` accepts one; the timeout is an idle timer restarted by
+  every frame (a record stream, see "Domain Layer")
 - `fun writeToChar(bytes, charUuid)` — fire-and-forget (OTA control, clock sync, find-device)
 - `suspend fun writeToCharAwait(bytes, charUuid, mtu)` — chunked OTA write with per-chunk ACK
 - `fun drainOtaWriteChannel()` — call once before each new OTA session
 
-**BleWriteQueue:** All command writes (not OTA) go through the queue. It subscribes to `parsedFlow` **before** writing to prevent the race where the watch replies before the subscriber registers. Urgent requests (e.g., time sync) skip the normal queue.
+**BleWriteQueue:** All command writes (not OTA) go through the queue. It subscribes to `parsedFlow` **before** writing to prevent the race where the watch replies before the subscriber registers. Urgent requests (e.g., time sync) skip the normal queue. A streamed request (`sendAndStream`) holds the queue until its stream ends, so nothing is written to the watch in the middle of one -- the watch restarts a record stream on any new request for it -- and buffers responses without bound, because the GATT callback's packet channel drops frames when the collector behind it stalls.
 
 ### Connection lifecycle & the cold-connect penalty (IMPORTANT)
 
@@ -193,7 +197,14 @@ Schema migrations live in `di/AppModule.kt`. Bump `Norm2Database.version` and ad
 
 ### Domain Layer (`domain/`)
 
-`SyncHealthDataUseCase` orchestrates the full multi-step sync: counts → fetch-by-index → delete-on-watch, for sport, heart-rate, and sleep. It emits `SyncProgress` as a `Flow`. All results are upserted into Room via the DAOs.
+`SyncHealthDataUseCase` orchestrates the sync as the official app does (`SyncBluetoothDataNew`): **one** `TOTAL_SPORT_SLEEP_COUNT` for every count, then each record type -- sport, heart rate, sleep -- as **one request whose reply is a stream** of every record on the watch, then the clock. It emits `SyncProgress` as a `Flow` (the dashboard shows `Sport data 412/922`). All results are upserted into Room via the DAOs; delete-on-watch stays off (`DELETE_AFTER_SYNC`), and would only follow a complete read.
+
+How the reads work, as the smali and both watches have them (#85, `docs/protocol.md` "Health records"):
+
+- `GET_SPORT_DATA [00 00]` (`GetSportData(cb, 2, 0, count)`) and `GET_HEART_RATE_DATA [00]` are each answered with **every** record, one frame each, indexed from 1. The index in the request is ignored. The physical watch streamed 920 sport records in ~29 s and 271 heart-rate records in ~9 s.
+- So the timeout is an idle one, 10 s without a frame (`Leaf.isTimeout`, reset by `setLastSendTime`), and the stream ends at the frame indexed `count` (`RecordStreams.isLast`). `RecordStreams.assemble` checks what came: each index once, what never came, what did not parse. A short stream is inserted and reported as an error rather than shown as a full history.
+- **The heart-rate count comes from the same `0x52` reply** (`[4..5]`, `AllDataTypeCount`): `TOTAL_HEART_RATE_COUNT`'s reply from this watch is four bytes and `HeartRateCount.smali` accepts two. Asking for the counts also makes the watch write the half hour so far as one more sport record, which is why there is exactly one count per sync.
+- **What it used to do, and why it timed out:** one `sendAndAwait` per index. The watch restarted its stream from record 1 on every request, so the replies were records 1, 2, 1, 2, 3, 2, ... -- never past ~4 -- while every request left another stream running; some requests were answered `00 02` (wiped by the stream), and on the phone the flood ended in timeouts.
 
 Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `GpsPoint`, `WatchSettings`, `SportType` (24 types).
 

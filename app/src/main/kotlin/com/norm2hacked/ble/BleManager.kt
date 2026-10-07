@@ -27,12 +27,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -566,6 +569,37 @@ class BleManager @Inject constructor(
                 urgent = urgent,
             )
         )
+    }
+
+    /**
+     * Send one command and collect the stream of responses it provokes (see
+     * [WatchTransport.sendAndStream]): queued like [sendAndAwait], and the queue is held until the
+     * stream ends, so nothing is written to the watch in the middle of it.
+     */
+    override fun sendAndStream(
+        cmd: CommandCode,
+        action: Action,
+        payload: ByteArray,
+        idleTimeoutMs: Long,
+        isLast: (Packet) -> Boolean,
+    ): Flow<Packet> = flow {
+        if (!connectionState.value.isConnected) throw IllegalStateException("Not connected")
+        val q = queue ?: throw IllegalStateException("Write queue not initialised")
+        // UNLIMITED: the queue's actor must never wait on a slow collector (BleWriteQueue.processStream).
+        val responses = Channel<Packet>(Channel.UNLIMITED)
+        q.enqueueStream(
+            BleRequest(
+                bytes = PacketBuilder.build(cmd, action, payload),
+                charUuid = commandWriteChar,
+                expectedCmd = cmd,
+                timeoutMs = idleTimeoutMs,
+                stream = responses,
+                isLast = isLast,
+            )
+        )
+        // Ends when the queue closes the channel, rethrowing what it closed it with. A collector
+        // that leaves early cancels the channel; the actor then drains the stream into nothing.
+        emitAll(responses)
     }
 
     /**

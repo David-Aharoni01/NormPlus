@@ -196,7 +196,10 @@ class DashboardViewModel @Inject constructor(
             _state.update { it.copy(isSyncing = true, error = null) }
             syncUseCase.syncAll().collect { progress ->
                 when (progress) {
-                    is SyncProgress.Running -> _state.update { it.copy(syncLabel = progress.label) }
+                    is SyncProgress.Running -> _state.update {
+                        it.copy(syncLabel = if (progress.total > 0)
+                            "${progress.label} ${progress.current}/${progress.total}" else progress.label)
+                    }
                     is SyncProgress.Done -> {
                         _state.update { it.copy(isSyncing = false, syncLabel = "") }
                         // Refresh DB-derived totals; also re-attempt the live watch summary

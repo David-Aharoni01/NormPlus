@@ -99,8 +99,7 @@ def cmd_command(args) -> int:
     import asyncio
     import time
 
-    from .fw.phone import (BIND_END, BIND_START, CHECK, DATETIME, Deframer, EmulatedWatch,
-                           ack, action_byte, command_byte, describe, frame)
+    from .fw.phone import CHECK, Deframer, EmulatedWatch, action_byte, command_byte, describe, frame
     from .physical import PhysicalPhone, mac_address
 
     try:
@@ -161,35 +160,8 @@ def cmd_command(args) -> int:
                                                                "encryption not reported")
         say(f"phone: connected, paired, {link}")
         if not args.no_bind:
-            init = await phone.check_init()
-            if init == 1:
-                say("watch: initialised (checkInit 1), not binding")
-            elif init == 0:
-                say("watch: in first-run setup (checkInit 0); binding once the setup screen is up")
-                if watch is not None and not await watch.past_boot_animation(timeout=90):
-                    result["failed"] = "the setup screen never came up"
-                    return
-                bound = await phone.bind()
-                expected = [ack(BIND_START), ack(DATETIME), ack(BIND_END)]
-                if list(bound.values()) != expected:
-                    got = ", ".join((r or b"").hex(" ") or "nothing" for r in bound.values())
-                    result["failed"] = f"the bind was not acknowledged: {got}"
-                    return
-                # Acknowledged is not done: the firmware writes its init flag
-                # (0xFA000) when the "Pairing Success" dialog closes, about two
-                # seconds after bindEnd. Until then checkInit still reads 0, and
-                # a --save taken now would keep an unbound watch.
-                for _ in range(30):
-                    await asyncio.sleep(0.5)
-                    if await phone.check_init() == 1:
-                        break
-                else:
-                    result["failed"] = ("the bind was acknowledged but the watch never "
-                                        "reported itself initialised")
-                    return
-                say("watch: bound (bind acknowledged, checkInit now 1)")
-            else:
-                result["failed"] = "checkInit got no answer"
+            result["failed"] = await _ensure_bound(phone, watch, say)
+            if result["failed"]:
                 return
         phone.clear()
         say(f"-> {args.char}  {packet.hex(' ')}    {describe(packet)}")
@@ -238,6 +210,113 @@ def cmd_command(args) -> int:
         say(f"watch: flash saved to {state}" if keep and saved
             else "watch: flash NOT saved")
     return status
+
+
+async def _ensure_bound(phone, watch, say) -> str | None:
+    """What BindWatchUseCase does: checkInit, and the bind only if it reads 0.
+
+    *watch* is the EmulatedWatch, or None for the physical one. Returns why it
+    failed, or None once the watch says it is initialised.
+    """
+    import asyncio
+
+    from .fw.phone import BIND_END, BIND_START, DATETIME, ack
+
+    init = await phone.check_init()
+    if init == 1:
+        say("watch: initialised (checkInit 1), not binding")
+        return None
+    if init != 0:
+        return "checkInit got no answer"
+    say("watch: in first-run setup (checkInit 0); binding once the setup screen is up")
+    if watch is not None and not await watch.past_boot_animation(timeout=90):
+        return "the setup screen never came up"
+    bound = await phone.bind()
+    expected = [ack(BIND_START), ack(DATETIME), ack(BIND_END)]
+    if list(bound.values()) != expected:
+        got = ", ".join((r or b"").hex(" ") or "nothing" for r in bound.values())
+        return f"the bind was not acknowledged: {got}"
+    # Acknowledged is not done: the firmware writes its init flag (0xFA000) when the
+    # "Pairing Success" dialog closes, about two seconds after bindEnd. Until then
+    # checkInit still reads 0, and a --save taken now would keep an unbound watch.
+    for _ in range(30):
+        await asyncio.sleep(0.5)
+        if await phone.check_init() == 1:
+            say("watch: bound (bind acknowledged, checkInit now 1)")
+            return None
+    return "the bind was acknowledged but the watch never reported itself initialised"
+
+
+def cmd_records(args) -> int:
+    """Give the emulated watch a history: sport records its own firmware writes (#51).
+
+    The firmware appends a record at every :29 and :59 minute tick, so the clock is
+    set to just before each of the last --count ticks in turn (fw/health.py), and
+    the flash is saved to --flash-state -- bound first if it is not yet. Then
+    `boot --phone --flash-state` gives :app a watch with something to sync.
+    """
+    import time
+    from datetime import datetime
+
+    from .fw import health
+    from .fw.devices import Walking
+    from .fw.phone import EmulatedWatch
+
+    state = Path(args.flash_state)
+    if state.resolve().is_relative_to(FIXTURES):
+        print(f"error: {state} is a test fixture, which is never rewritten", file=sys.stderr)
+        return 2
+    if args.count < 1:
+        print("error: --count must be at least 1", file=sys.stderr)
+        return 2
+    t0 = time.monotonic()
+
+    def say(text: str) -> None:
+        print(f"{time.monotonic() - t0:6.1f}s  {text}", flush=True)
+
+    try:
+        watch = EmulatedWatch(args.image, args.resources, address=args.address,
+                              flash_state=state if state.exists() else None)
+    except flashstate.FlashStateMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    say(f"watch: started from {state}" if state.exists() else "watch: a fresh one")
+    result = {"failed": None, "counts": None}
+
+    async def flow(phone) -> None:
+        if not await phone.find(watch.address):
+            result["failed"] = f"{watch.address} was never heard advertising"
+            return
+        await phone.connect(watch.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        result["failed"] = await _ensure_bound(phone, watch, say)
+        if result["failed"]:
+            return
+        before = await health.ask_counts(phone)
+        say(f"watch: {before['sport'] if before else '?'} sport records to begin with")
+        await health.write_sport_records(
+            phone, watch, args.count, walk=args.walk,
+            motion=Walking() if args.walk else None, log=lambda text: say(f"watch: {text}"))
+        result["counts"] = await health.ask_counts(phone)
+        await phone.disconnect()
+
+    try:
+        watch.start(seconds=args.timeout)
+        watch.drive(flow, timeout=args.timeout)
+    except Exception as exc:  # noqa: BLE001 - reported, and the watch still stops
+        result["failed"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        saved = watch.stop(save_to=None if result["failed"] else state)
+    if result["failed"]:
+        say(f"failed: {result['failed']}; flash NOT saved")
+        return 2
+    counts = result["counts"] or {}
+    say(f"watch: {counts.get('sport', '?')} sport records now (the count request writes "
+        f"the half hour so far as one more); flash {'saved to ' + str(state) if saved else 'NOT saved'}")
+    return 0 if saved else 2
+
 
 #: Keys 1-5 in the live window drive the GPIO pins the firmware enables interrupts
 #: on (2, 3, 10, 16, 38), minus 28 which is the touch panel. Pin 3 is the button:
@@ -1147,6 +1226,29 @@ def main(argv=None) -> int:
                      help="the emulated watch's BD address (default: the physical "
                           "watch's)")
     p_cmd.set_defaults(func=cmd_command)
+
+    p_rec = sub.add_parser(
+        "records", help="give the emulated watch a history to sync: sport records written "
+                        "by its own firmware, one per half hour, saved to --flash-state")
+    p_rec.add_argument("--flash-state", metavar="PATH", required=True,
+                       help="the watch to give records to, bound first if it is not; "
+                            "created if missing, and saved when it is done")
+    p_rec.add_argument("--count", type=int, default=48, metavar="N",
+                       help="how many half hours of records, ending now (default 48, a "
+                            "day). About two seconds each")
+    dev = developer_options(p_rec)
+    dev.add_argument("--walk", type=float, default=0.0, metavar="S",
+                     help="walk the wrist for S seconds of watch time before each tick, "
+                          "so the records have steps (default 0: standing still)")
+    dev.add_argument("--timeout", type=float, default=7200.0, metavar="S",
+                     help="seconds the emulated watch may run (default 2 h)")
+    dev.add_argument("--image", default=str(DEFAULT_IMAGE),
+                     help=f"firmware .bin (default: {DEFAULT_IMAGE})")
+    dev.add_argument("--resources", default=str(DEFAULT_RESOURCES),
+                     help="resource blob loaded into the emulated NAND")
+    dev.add_argument("--address", default=WATCH, metavar="MAC",
+                     help="the emulated watch's BD address")
+    p_rec.set_defaults(func=cmd_records)
 
     p_dump = sub.add_parser(
         "dump", help="read a range of the watch's SPI NAND out through the patched 0xEE "

@@ -8,10 +8,12 @@ import com.norm2hacked.protocol.CommandCode
 import com.norm2hacked.protocol.Packet
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.filter
@@ -19,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "BleWriteQueue"
@@ -36,6 +39,12 @@ data class BleRequest(
     // response is awaited (for SET pushes the watch may not ACK, e.g. notifications).
     val awaitResponse: Boolean = true,
     val deferred: CompletableDeferred<Packet> = CompletableDeferred(),
+    // A reply that comes as many frames (BleManager.sendAndStream): every matching response goes
+    // to [stream] until [isLast] accepts one, and [timeoutMs] is then an IDLE timeout, restarted
+    // by every frame. [stream] is closed when it ends -- with a BleTimeoutException if nothing
+    // came, or the write's failure. [deferred] is not used.
+    val stream: SendChannel<Packet>? = null,
+    val isLast: (Packet) -> Boolean = { true },
 ) {
     override fun equals(other: Any?) = other is BleRequest && bytes.contentEquals(other.bytes)
     override fun hashCode() = bytes.contentHashCode()
@@ -98,13 +107,22 @@ class BleWriteQueue(
         return req.deferred.await()
     }
 
+    /** Queue a streamed request; its responses arrive on [BleRequest.stream], which is closed when it ends. */
+    suspend fun enqueueStream(req: BleRequest) {
+        Log.d(TAG, "enqueue stream cmd=${req.expectedCmd}")
+        if (req.urgent) urgentChannel.send(req) else normalChannel.send(req)
+    }
+
     private suspend fun processRequest(req: BleRequest) {
         Log.d(TAG, "→ process cmd=${req.expectedCmd} urgent=${req.urgent} bytes=${req.bytes.toHex()}")
         val gatt = gattRef.get() ?: run {
             Log.e(TAG, "processRequest: GATT not attached, failing ${req.expectedCmd}")
-            req.deferred.completeExceptionally(IllegalStateException("GATT not attached"))
+            val e = IllegalStateException("GATT not attached")
+            req.stream?.close(e)
+            req.deferred.completeExceptionally(e)
             return
         }
+        req.stream?.let { processStream(gatt, req, it); return }
         try {
             withTimeout(req.timeoutMs) {
                 if (!req.awaitResponse) {
@@ -151,6 +169,64 @@ class BleWriteQueue(
         } catch (e: Exception) {
             Log.e(TAG, "Error processing ${req.expectedCmd}: ${e.message}")
             req.deferred.completeExceptionally(e)
+        }
+    }
+
+    /**
+     * One write, then every matching response until [BleRequest.isLast] accepts one or
+     * [BleRequest.timeoutMs] passes without one. The queue is held throughout, so nothing else is
+     * written to the watch mid-stream: the watch restarts a stream on any new request for it, and
+     * a frame landing while it clears its 8001 buffer is wiped (answered `00 02`).
+     *
+     * Never suspends the parsedFlow collector -- its upstream, the GATT callback's packet channel,
+     * drops frames when full -- so responses are buffered without bound (a stream is bounded by the
+     * watch's record ring, 1168 sport records). Sends to [out] with trySend: if the consumer has
+     * gone, the stream is drained to its end and dropped rather than throwing in the actor.
+     */
+    private suspend fun processStream(gatt: BluetoothGatt, req: BleRequest, out: SendChannel<Packet>) {
+        if (out.isClosedForSend) {
+            Log.w(TAG, "stream ${req.expectedCmd}: nobody is listening any more, not sending it")
+            return
+        }
+        var received = 0
+        var failure: Throwable? = null
+        try {
+            coroutineScope {
+                val inbox = Channel<Packet>(Channel.UNLIMITED)
+                // Subscribed BEFORE writing, and synchronously (UNDISPATCHED), so not even an
+                // immediate first response can be missed.
+                val subscription = launch(start = CoroutineStart.UNDISPATCHED) {
+                    parsedFlow.filter { pkt -> matchesResponse(pkt, req) }.collect { inbox.trySend(it) }
+                }
+                try {
+                    withTimeout(BleConstants.WRITE_TIMEOUT_MS) {
+                        writeChunked(gatt, req)
+                        if (req.charUuid == BleConstants.CHAR_WRITE_8001) writeTrigger(gatt)
+                    }
+                    while (true) {
+                        val pkt = withTimeoutOrNull(req.timeoutMs) { inbox.receive() } ?: break
+                        received++
+                        out.trySend(pkt)
+                        if (req.isLast(pkt)) break
+                    }
+                } finally {
+                    subscription.cancel()
+                }
+            }
+            if (received == 0) {
+                Log.e(TAG, "Stream ${req.expectedCmd}: no response in ${req.timeoutMs}ms")
+                failure = BleTimeoutException(req.expectedCmd)
+            } else {
+                Log.d(TAG, "← ${req.expectedCmd} stream ended after $received response(s)")
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Stream ${req.expectedCmd}: the write did not complete")
+            failure = BleTimeoutException(req.expectedCmd)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error streaming ${req.expectedCmd}: ${e.message}")
+            failure = e
+        } finally {
+            out.close(failure)
         }
     }
 

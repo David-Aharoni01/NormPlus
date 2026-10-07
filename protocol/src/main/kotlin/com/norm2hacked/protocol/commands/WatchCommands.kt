@@ -102,17 +102,91 @@ object SyncCountCommand {
     fun buildSportSleepCountQuery() =
         PacketBuilder.build(CommandCode.TOTAL_SPORT_SLEEP_COUNT, Action.CHECK, byteArrayOf(0x00))
 
-    fun parseSportCount(p: Packet): Int =
-        if (p.payload.size >= 2) (p.payload[0].toInt() and 0xFF) or ((p.payload[1].toInt() and 0xFF) shl 8) else 0
+    /**
+     * Every count in one TOTAL_SPORT_SLEEP_COUNT reply, as AllDataTypeCount.parse80BytesArray
+     * reads it: LE16 sport [0..1], sleep [2..3], and heart rate [4..5] only when the reply is
+     * longer than 4 bytes. The physical watch answers `[98 03 00 00 0f 01 00 00]`: 920 sport,
+     * no sleep, 271 heart rate (2026-10-07).
+     *
+     * This, not TOTAL_HEART_RATE_COUNT, is where the heart-rate count comes from: that one's
+     * reply from this watch is four bytes (`[0f 01 00 00]`), and HeartRateCount.smali takes
+     * exactly two, so the official app cannot be counting this watch's records with it.
+     *
+     * Asking writes a record: the watch stores the half hour so far as one more sport record
+     * before it answers (#51), so the count is only good for the stream read right after it.
+     */
+    fun parseCounts(p: Packet): DataCounts {
+        fun le16(at: Int) =
+            (p.payload[at].toInt() and 0xFF) or ((p.payload[at + 1].toInt() and 0xFF) shl 8)
+        return DataCounts(
+            sport = if (p.payload.size >= 2) le16(0) else 0,
+            sleep = if (p.payload.size >= 4) le16(2) else 0,
+            heartRate = if (p.payload.size > 4) le16(4) else 0,
+        )
+    }
+}
 
-    fun parseSleepCount(p: Packet): Int =
-        if (p.payload.size >= 4) (p.payload[2].toInt() and 0xFF) or ((p.payload[3].toInt() and 0xFF) shl 8) else 0
+data class DataCounts(val sport: Int, val sleep: Int, val heartRate: Int)
 
-    fun buildHrCountQuery() =
-        PacketBuilder.build(CommandCode.TOTAL_HEART_RATE_COUNT, Action.CHECK, byteArrayOf(0x00))
+// ── Record streams ────────────────────────────────────────────────────────────
+//
+// One GET_SPORT_DATA / GET_HEART_RATE_DATA / GET_SLEEP_DATA request is answered with EVERY record
+// on the watch, one frame each, indexed from 1 (MBluetooth.getSportData → GetSportData(cb, 2, 0,
+// count), getHeartRateData/getSleepData → (cb, 1, 0, count); parse80BytesArray returns 3, "keep
+// receiving", until the list holds `count`). The index in the request is ignored: asking for
+// [02 00] still streams from record 1, on the physical watch and the emulated one. Asking once per
+// index -- what the sync used to do -- restarts the stream on every request, so it only ever got
+// records 1 to ~4 back while the streams it left running flooded the link (#85).
 
-    fun parseHrCount(p: Packet): Int =
-        if (p.payload.size >= 2) (p.payload[0].toInt() and 0xFF) or ((p.payload[1].toInt() and 0xFF) shl 8) else 0
+object RecordStreams {
+    /** GetSportData's request: contentLen 2, content intToByteArray(0, 2). */
+    val SPORT_REQUEST: ByteArray get() = byteArrayOf(0x00, 0x00)
+
+    /** GetHeartRateData's and GetSleepData's: contentLen 1, content [0x00]. */
+    val SINGLE_BYTE_REQUEST: ByteArray get() = byteArrayOf(0x00)
+
+    /** A record's 1-based index: bytes [0..1] LE in every record type (bytesToLong(0, 1)). */
+    fun index(p: Packet): Int =
+        if (p.payload.size < 2) 0
+        else (p.payload[0].toInt() and 0xFF) or ((p.payload[1].toInt() and 0xFF) shl 8)
+
+    /** The stream's last frame is the one indexed [count]. */
+    fun isLast(count: Int): (Packet) -> Boolean = { index(it) >= count }
+
+    /**
+     * What a stream delivered, against the [count] asked for: each index once (the first copy;
+     * a later one is counted in [RecordStream.duplicates]), in index order, through [parse].
+     */
+    fun <T> assemble(packets: List<Packet>, count: Int, parse: (Packet) -> T?): RecordStream<T> {
+        val byIndex = sortedMapOf<Int, Packet>()
+        var duplicates = 0
+        var outOfRange = 0
+        for (p in packets) {
+            val i = index(p)
+            when {
+                i !in 1..count -> outOfRange++
+                byIndex.putIfAbsent(i, p) != null -> duplicates++
+            }
+        }
+        val records = mutableListOf<T>()
+        var unparsed = outOfRange
+        for (p in byIndex.values) parse(p)?.let { records += it } ?: unparsed++
+        val missing = (1..count).filter { it !in byIndex }
+        return RecordStream(records, count, missing, duplicates, unparsed)
+    }
+}
+
+data class RecordStream<T>(
+    val records: List<T>,
+    /** How many the count said there were. */
+    val expected: Int,
+    /** Indices in 1..expected that never came. */
+    val missing: List<Int>,
+    val duplicates: Int,
+    /** Frames that came but did not parse, or whose index was outside 1..expected. */
+    val unparsed: Int,
+) {
+    val complete: Boolean get() = missing.isEmpty() && unparsed == 0
 }
 
 // ── Sport data ────────────────────────────────────────────────────────────────

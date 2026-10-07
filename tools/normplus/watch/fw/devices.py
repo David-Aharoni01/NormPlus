@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -1024,6 +1025,31 @@ MOTION_I2C_ADDRESS = 0x68
 MOTION_IRQ_PIN = 16
 
 
+class Walking:
+    """A wrist on someone walking: gravity on Z and a vertical bounce at the step rate.
+
+    Give it to :attr:`MotionSensor.motion` and the firmware's own pedometer
+    (``system_step_task.c``) counts steps, and its next sport record carries them
+    (#51). What it counts is the firmware's business and it is not one step a
+    bounce. Over a minute of watch time a 2 Hz bounce of 0.5 g counted 237 steps
+    -- and so did a bounce with an arm swing on X and a heel-strike pulse, which
+    looks like a ceiling -- a 1 Hz bounce 167, and a 0.05 g bounce or standing
+    still none. So walking makes steps and stillness does not; how many is not
+    modelled, because the step algorithm has not been read.
+
+    A class rather than a closure so that a snapshot can carry it.
+    """
+
+    def __init__(self, cadence: float = 2.0, bounce: float = 0.5) -> None:
+        #: Steps a second.
+        self.cadence = cadence
+        #: Peak vertical acceleration on top of gravity, in g.
+        self.bounce = bounce
+
+    def __call__(self, seconds: float) -> tuple[float, float, float]:
+        return (0.0, 0.0, 1.0 + self.bounce * math.sin(2 * math.pi * self.cadence * seconds))
+
+
 class MotionSensor(I2cDevice):
     """The wrist's accelerometer: a FIFO that fills on the clock.
 
@@ -1070,6 +1096,10 @@ class MotionSensor(I2cDevice):
         self.fifo = bytearray()
         #: Acceleration in g, as the watch feels it lying still face up.
         self.acceleration = (0.0, 0.0, 1.0)
+        #: What the wrist is doing, if not lying still: a callable from watch
+        #: seconds (counted in samples since the part started) to (x, y, z) in g,
+        #: such as :class:`Walking`. None holds :attr:`acceleration`.
+        self.motion = None
         self._phase = 0
         self._asserted = False
         self.enabled = False
@@ -1142,7 +1172,10 @@ class MotionSensor(I2cDevice):
     def _push_sample(self) -> None:
         if len(self.fifo) + self.SAMPLE_BYTES > self.FIFO_CAPACITY:
             del self.fifo[:self.SAMPLE_BYTES]        # a real FIFO drops the oldest
-        for axis in self.acceleration:
+        axes = self.acceleration
+        if self.motion is not None:
+            axes = self.motion(self.samples_made * self.sample_period_cycles / 48_000_000)
+        for axis in axes:
             raw = max(-32768, min(32767, int(axis * self.LSB_PER_G)))
             self.fifo.extend((raw & 0xFFFF).to_bytes(2, "big"))
         self.fifo.extend(bytes(2))                   # the pair the reader strides past
