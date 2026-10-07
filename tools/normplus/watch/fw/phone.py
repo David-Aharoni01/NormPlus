@@ -319,7 +319,8 @@ class EmulatedWatch:
         if flash_state is not None:
             flashstate.load(flash_state, self.machine, self.devices["nand"], log=log)
         attach_touch_panel(self.machine, log=log)
-        attach_motion_sensor(self.machine, log=log)
+        #: The wrist's accelerometer: set its ``motion`` to make the wearer move.
+        self.motion = attach_motion_sensor(self.machine, log=log)
         attach_pmu(self.machine, log=log)
         self.radio = Radio()
         self.controller = attach_ble_controller(
@@ -472,6 +473,31 @@ class Conversation:
                 break
             out += deframer.feed(value)
         return out
+
+    async def stream(self, data: bytes, *, idle: float, code: Optional[int] = None,
+                     last=None, char: str = "8001", trigger: bool = True) -> list:
+        """Send a frame, then the whole frames it provokes: a reply that comes as many.
+
+        Until ``last(frame)`` says that was the last, or *idle* seconds pass without
+        one -- an idle timer, restarted by every frame, as the official app keeps
+        for a streamed reply (``Leaf.isTimeout``, reset by ``setLastSendTime``).
+        With *code*, only that command's CHECK_RESPONSE frames count. Without
+        *last*, the first one is the last.
+        """
+        self.clear()
+        await self.send(data, char=char, trigger=trigger)
+        deframer, out = Deframer(), []
+        while True:
+            try:
+                _, value = await asyncio.wait_for(self._queue.get(), idle)
+            except asyncio.TimeoutError:
+                return out
+            for whole in deframer.feed(value):
+                if code is not None and (whole[1] != code or whole[2] != CHECK_RESPONSE):
+                    continue
+                out.append(whole)
+                if last is None or last(whole):
+                    return out
 
     async def replies(self, *, timeout: float, settle: float = 0.5) -> list:
         """Notifications from now on: until a whole frame has come and *settle*

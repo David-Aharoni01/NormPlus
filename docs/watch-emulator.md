@@ -251,6 +251,25 @@ wall clock in a run that is not real time.
 that would be the emulator inventing persistence the file does not stand for (it is the
 flash). Not done.
 
+### 9. The history is written by moving the clock, and has no heart rate (#51)
+
+The physical watch's sport records come from half-hour slots it lived through; the emulated
+watch's come from `normwatch records`, which sets the clock to just before each :29/:59 tick
+(and midnight, for the day's 23:58:30 record) and lets the firmware write the record itself.
+So each record covers the minute or two the watch actually ran, not thirty: `staticCalories`
+is 1000-4000 where the physical watch has ~33000, and steps are there only if the wrist
+walked (`--walk`). The first tick after a clock set usually writes nothing, which is why the
+generator checks for each record and crosses again; on the physical watch, which is never set
+twice in a minute, that does not come up.
+
+There is **no heart-rate sensor model**, so no heart-rate records, and no sleep records: a
+sync of the emulated watch exercises the sport stream only. The pedometer counts from
+`devices.Walking`, but not one step a bounce (237 a minute at 2 Hz, 167 at 1 Hz) -- the
+step algorithm has not been read.
+
+**Do not trust** the emulated watch's record contents as the physical watch's numbers; trust
+its framing, its indices, its timing rules and the streams.
+
 ### Written down as a difference, and wrong
 
 The physical watch sends generic `6F 01 81` acknowledgements "which the emulated one never
@@ -519,4 +538,9 @@ its face and the phone reconnects with its stored keys, and `normwatch cmd` (#49
 it any 0x6F question in ~4s. `--save-state` / `--load-state` (#46, done) skip the boot for
 everything that is not about the radio: 0.47s to the UI instead of 11s, and a restored run
 lands on the golden fingerprints exactly.
+
+**It has a history to sync** (#51): `normwatch records --flash-state FILE --count N` has the
+firmware write N half-hourly sport records itself (about 2.4 s each), and `:app` syncs them
+over `--phone` exactly as it syncs the physical watch -- which is where the per-index sync's
+timeout (#85) was recreated before it was fixed.
 Open issues are on the GitHub board (`normboard`); `docs/watch-emulator-internals.md`'s "What to build next" says why.

@@ -18,6 +18,7 @@ TOOLS = [
      ["normwatch boot --live                       the watch's screen in a window; click to touch",
       "normwatch boot --no-ble                     boot to the UI and print a report",
       "normwatch boot --phone --live --flash-state watch.zip   on the air, for the Android emulator",
+      "normwatch records --flash-state watch.zip   a day of sport records to sync (its own firmware writes them)",
       "normwatch info                              the firmware image's header",
       "normwatch dump -o DIR --range 026DA430-0496C000   read the NAND out (needs a patched image)"]),
     ("normcmd", "normplus.watch.__main__:cmd_main",
@@ -62,6 +63,7 @@ RECIPES = [
     ("After pulling new code", [
         "uv tool install --editable . --reinstall  (only when a new command appeared)"]),
     ("Run the app against the emulated watch -- no hardware", [
+        "normwatch records --flash-state watch.zip               (optional, first: a day of records to sync)",
         "normwatch boot --phone --live --flash-state watch.zip   (terminal 1, keep it running)",
         "normphone start --watch                                  (terminal 2)",
         "normphone install                                        (terminal 3)",

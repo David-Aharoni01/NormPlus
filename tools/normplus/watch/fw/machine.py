@@ -243,6 +243,10 @@ class Apollo3Machine:
         #: programmed, or that a saved flash state put back. What
         #: ``--flash-state`` keeps between runs; see flashstate.py.
         self.flash_dirty: set[int] = set()
+        #: How many times the firmware has programmed each internal-flash page
+        #: (by index), erases not counted. How a caller sees a record appended
+        #: without hooking anything (fw/health.py).
+        self.flash_programs: collections.Counter = collections.Counter()
 
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M4)
@@ -394,7 +398,10 @@ class Apollo3Machine:
         self._wait_cache.clear()
         if persist:
             page = BootRom.PAGE_SIZE
-            self.flash_dirty.update(range(addr // page, (addr + len(data) - 1) // page + 1))
+            pages = range(addr // page, (addr + len(data) - 1) // page + 1)
+            self.flash_dirty.update(pages)
+            if not erase:
+                self.flash_programs.update(pages)
         if erase:
             self.uc.mem_write(addr, data)
             return

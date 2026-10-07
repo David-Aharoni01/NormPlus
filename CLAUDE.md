@@ -251,6 +251,11 @@ normwatch boot --no-ble --load-state ui.snap --seconds 2 --live
 # --no-bind skips the bind. --mac asks the physical watch instead (--mac MAC another one).
 normcmd BIND_END CHECK --flash-state bound.zip --save
 normcmd 08 70 --flash-state bound.zip
+# Give the emulated watch a history: its own firmware writes N half-hourly sport records
+# (~2.4s each; the clock is moved to just before each tick, fw/health.py, #51). Then
+# `boot --phone --flash-state` with the same file, and :app has something to sync.
+# Records are read back as ONE request answered with a stream, not one per index (#85).
+normwatch records --flash-state watch.zip --count 48
 
 # Parse the image header / list source modules recovered from assert() strings
 normwatch info
