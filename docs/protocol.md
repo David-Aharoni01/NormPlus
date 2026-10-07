@@ -75,11 +75,17 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
   failed: replies 1, 2, 1, 2, 3, 2, ... and then a request nobody answered (10 s timeout). On the
   emulated watch the last thing before the timeout was the first halves of records 1 and 2, then
   that `00 02`.
-- **Time:** from the PC (one notification a frame) 920 sport records took ~29 s and 271 heart
-  rate ~9 s. From `:app` on the AVD, at ATT MTU 23, a sport frame is two notifications, and the
-  watch moved the link from a 15 ms to a 180 ms interval 11 s into the stream (31 → 12
-  notifications/s): 926 records took 139 s, 271 heart rate 10 s. The official app never calls
-  its `requestMtu` either.
+- **Time** (#86): the watch streams about 32 frames/s on a 15 ms interval -- its own pace, the
+  same from the PC and the phone. Two things slowed the phone: at ATT MTU 23 a 34-byte sport
+  frame is two notifications, and some 17-20 s after every connection (both watches) the watch
+  sends an L2CAP connection parameter update request for 120-180 ms, latency 2, which Android
+  grants: 10 frames/s. The watch's choices are a table at `0x000CE1F4` (12 bytes a mode: 120-180,
+  60-100, 15-30, 15, 7.5 ms ...), applied by `0x00024FAE` when the BLE module's `set_conn_mode`
+  (`0x00025A6C`, entry 9 of its API table at `0x0002551C`) raises bit 3 of the flags at
+  `0x10012240`. 952 sport records from the AVD: 139 s as it was, 71 s with MTU 247, 32 s with
+  MTU 247 and HIGH priority re-asserted through the stream (`BleManager.streamLink`); the
+  watch asked for the slow interval once and did not ask again. The official app raises neither
+  (`PBluetooth.requestMtu` has no caller).
 - `TOTAL_HEART_RATE_COUNT` (0x59) answers `[0f 01 00 00]`, four bytes; `HeartRateCount.smali`
   accepts exactly two, so the heart-rate count comes from 0x52.
 - **Asking for the counts writes a record**: the watch stores the half hour so far as one more

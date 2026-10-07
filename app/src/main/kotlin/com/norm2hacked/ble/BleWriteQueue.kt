@@ -51,6 +51,15 @@ data class BleRequest(
 }
 
 /**
+ * Readies the link for a record stream and stands it down after (#86). Called by the queue's
+ * actor, so it is serialised with every other command write.
+ */
+interface BulkLink {
+    suspend fun begin()
+    fun end()
+}
+
+/**
  * Coroutine actor that serialises ALL BLE command writes.
  *
  * This is the single write path for the main channel (0x8001/0x8003).
@@ -66,6 +75,7 @@ data class BleRequest(
 class BleWriteQueue(
     private val scope: CoroutineScope,
     private val parsedFlow: SharedFlow<Packet>,
+    private val bulk: BulkLink? = null,
 ) {
     private val urgentChannel = Channel<BleRequest>(capacity = 16)
     private val normalChannel = Channel<BleRequest>(capacity = 64)
@@ -191,6 +201,7 @@ class BleWriteQueue(
         var received = 0
         var failure: Throwable? = null
         try {
+            bulk?.begin()
             coroutineScope {
                 val inbox = Channel<Packet>(Channel.UNLIMITED)
                 // Subscribed BEFORE writing, and synchronously (UNDISPATCHED), so not even an
@@ -226,6 +237,7 @@ class BleWriteQueue(
             Log.e(TAG, "Error streaming ${req.expectedCmd}: ${e.message}")
             failure = e
         } finally {
+            bulk?.end()
             out.close(failure)
         }
     }
