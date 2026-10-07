@@ -35,8 +35,13 @@ it holds as many as the count said (``GetSportData.parse80BytesArray``), restart
 its 10 s timer on every frame (``Leaf.isTimeout``, ``setLastSendTime``). The physical
 watch streamed 920 sport records in about 29 s and 271 heart-rate records in 9 s.
 
-There is no heart-rate sensor model, so this watch has no heart-rate records, and none
-for sleep.
+**Heart rate is measured, not written** (#87). With auto heart rate on
+(``AUTO_HEART_RATE`` 0x5C, SET ``[minutes]``) the firmware opens the PAH8011 at every
+interval, feeds its samples and the wrist's motion to PixArt's algorithm once per
+accelerometer batch, and when the algorithm has a rate -- about a minute in -- stores a
+7-byte record in the heart-rate ring (type 2, :data:`HEART_RATE_PAGES`). Put a
+:class:`devices.Pulse` under the sensor and the record says its rate:
+:func:`write_heart_rate_records` does that. There are no sleep records yet.
 """
 
 from __future__ import annotations
@@ -51,6 +56,8 @@ from .phone import CHECK, DATETIME, SET, ack, datetime_payload, frame
 TOTAL_SPORT_SLEEP_COUNT = 0x52
 GET_SPORT_DATA = 0x54
 GET_HEART_RATE_DATA = 0x5B
+#: AUTO_HEART_RATE: SET [minutes between measurements], 0 for off (HeartRateFrequency.smali).
+AUTO_HEART_RATE = 0x5C
 
 #: The sport ring, from the store's page table at 0x000C8F60 (``4, 0xE0000, 0xE2000,
 #: 0xE4000, 0xE6000``). The first record goes to 0x000E0000, the next to 0x000E001C.
@@ -62,6 +69,16 @@ SPORT_RECORD_BYTES = 28
 SLOT_MINUTES = (29, 59)
 #: ...except at the end of the day: that record is stamped 23:58:30, and written at midnight.
 DAY_END = (23, 58, 30)
+
+
+#: The heart-rate ring: type 2 in the store's page table at 0x000C8F60 (``2, 0xEE000,
+#: 0xF0000``), where a measurement's records land.
+HEART_RATE_PAGES = (0x000EE000, 0x000F0000)
+
+
+def heart_rate_records_written(machine) -> int:
+    """Programs into the heart-rate ring so far: one for every record stored."""
+    return sum(machine.flash_programs[page // BootRom.PAGE_SIZE] for page in HEART_RATE_PAGES)
 
 
 def records_written(machine) -> int:
@@ -228,3 +245,46 @@ async def write_sport_records(phone, watch, count: int, *, end: Optional[datetim
                 f"({crossings} crossings so far)")
     await clock(end)
     return ticks
+
+
+async def set_auto_heart_rate(phone, minutes: int) -> bool:
+    """AUTO_HEART_RATE SET [minutes] (0 turns it off); True if acknowledged."""
+    reply = await phone.exchange(frame(AUTO_HEART_RATE, SET, bytes([minutes & 0xFF])))
+    return reply == ack(AUTO_HEART_RATE)
+
+
+async def write_heart_rate_records(phone, watch, count: int, *, bpm: float = 72.0,
+                                   per_record: float = 150.0, log=None) -> int:
+    """Have the firmware measure and store *count* heart-rate records from a pulse.
+
+    A :class:`devices.Pulse` at *bpm* goes under the PAH8011, auto heart rate goes
+    on at every minute, and the watch runs until its firmware has stored *count*
+    records -- each one a measurement, PixArt's algorithm and all, about a minute of
+    watch time -- or *per_record* seconds of watch time pass without the next one.
+    Auto heart rate is turned off and the wrist taken away again afterwards.
+    Returns how many were stored. *watch* is an ``EmulatedWatch``.
+    """
+    from .devices import Pulse
+
+    machine, sensor = watch.machine, watch.heart
+    if not await set_auto_heart_rate(phone, 1):
+        raise RuntimeError("the watch did not acknowledge AUTO_HEART_RATE")
+    sensor.wrist = Pulse(bpm)
+    start = heart_rate_records_written(machine)
+    stored = 0
+    try:
+        while stored < count:
+            before = heart_rate_records_written(machine)
+            until = machine.cycles + int(per_record * machine.CYCLES_PER_SECOND)
+            while machine.cycles < until and heart_rate_records_written(machine) == before:
+                await asyncio.sleep(0.1)
+            now = heart_rate_records_written(machine) - start
+            if now == stored:
+                break
+            stored = now
+            if log is not None:
+                log(f"{stored}/{count} heart-rate records")
+    finally:
+        sensor.wrist = None
+        await set_auto_heart_rate(phone, 0)
+    return stored

@@ -5,6 +5,9 @@ emulated one. The firmware writes them itself -- at the :29 and :59 minute ticks
 and when asked for the counts (``fw/health.py``) -- so moving its clock to just
 before a tick is enough to give it a history, and walking its wrist puts steps in it.
 
+Heart rate is measured the same way: a pulse under the emulated PAH8011, and the
+firmware's driver and PixArt's algorithm store its rate (#87).
+
 The second half is what the sync gets wrong (#85): one ``GET_SPORT_DATA`` is
 answered with every record, indexed from 1, whatever index the request names. The
 physical watch does the same; the replies from it pinned here were read on
@@ -127,6 +130,41 @@ def test_the_firmware_writes_records_and_one_request_streams_them_all():
     tick = [r for r in walked if r["timestamp"] == int(seen["walk_tick"].timestamp())]
     assert tick, (seen["walk_tick"], walked)
     assert tick[0]["steps"] > 0 and tick[0]["distance"] > 0, tick[0]
+
+
+def test_the_firmware_measures_a_pulse_and_stores_the_rate():
+    # Auto heart rate on, a 72 bpm pulse under the PAH8011: the firmware's own
+    # driver and PixArt's algorithm measure it, and the record it stores says 72
+    # (#87). Then the stream gives it back, 7 bytes, as GetHeartRateData reads it.
+    watch = EmulatedWatch(IMAGE, RESOURCES, flash_state=BOUND)
+    seen = {}
+
+    async def flow(phone):
+        await phone.find(watch.address)
+        await phone.connect(watch.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        await health.set_clock(phone, datetime(2026, 10, 7, 10, 0, 50))
+        seen["stored"] = await health.write_heart_rate_records(phone, watch, 1, bpm=72)
+        seen["counts"] = await health.ask_counts(phone)
+        seen["records"] = await health.read_records(phone, health.GET_HEART_RATE_DATA,
+                                                    seen["counts"]["heart_rate"])
+        await phone.disconnect()
+
+    try:
+        watch.start(seconds=300)
+        watch.drive(flow, timeout=400)
+    finally:
+        watch.stop()
+
+    assert seen["stored"] == 1, seen
+    assert seen["counts"]["heart_rate"] >= 1, seen["counts"]
+    records = [health.heart_rate_record(r) for r in seen["records"]]
+    assert all(records), [r.hex(" ") for r in seen["records"]]
+    assert [r["index"] for r in records] == list(range(1, len(records) + 1)), records
+    assert all(abs(r["bpm"] - 72) <= 2 for r in records), records
+    assert watch.heart.wrist is None, "the pulse was left under the sensor"
 
 
 if __name__ == "__main__":

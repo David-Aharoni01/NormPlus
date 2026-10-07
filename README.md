@@ -80,10 +80,13 @@ tap *Pair* when Android asks.
 
 **Give the emulated watch something to sync.** A fresh one has no history. This has its own
 firmware write a day of half-hourly sport records (about 2 minutes; `--count 200` for four
-days) into the state file, then the recipe above with the same file syncs them:
+days) into the state file, then the recipe above with the same file syncs them. With
+`--heart-rate N` it also takes N heart-rate readings: a pulse goes under the emulated sensor
+and the firmware measures it, about a minute and a half each.
 
 ```powershell
 normwatch records --flash-state watch.zip --count 48
+normwatch records --flash-state watch.zip --count 0 --heart-rate 5
 ```
 
 ## Asking a watch a question from the PC (`normcmd`)

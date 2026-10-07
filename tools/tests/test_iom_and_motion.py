@@ -158,6 +158,10 @@ class FakeGpio:
         from normplus.watch.fw.peripherals import Gpio
         Gpio.assert_irq(self, number, asserted)
 
+    def release_irq(self, number):
+        from normplus.watch.fw.peripherals import Gpio
+        Gpio.release_irq(self, number)
+
 
 class FakeMachine:
     def __init__(self, gpio):
@@ -195,6 +199,34 @@ def test_the_line_returns_to_rest_once_the_fifo_is_drained():
     sensor.read(sensor.FIFO_R_W, len(sensor.fifo))
     sensor.advance(0)
     assert gpio.level == 1, "the line should be released after a drain"
+
+
+def test_draining_the_fifo_is_not_a_second_interrupt():
+    # One interrupt per watermark: the init table's INT_PIN_CFG = 0 is a 50 us
+    # pulse, not a level. Latching the line's return to rest as an edge woke the
+    # step task again to an empty FIFO after every batch, and it fed the
+    # heart-rate driver a second time with no frames (#87).
+    gpio = FakeGpio(falling=True)
+    sensor = configured_sensor()
+    sensor.machine = FakeMachine(gpio)
+    sensor.irq_pin = MOTION_IRQ_PIN
+    sensor.advance(sensor.sample_period_cycles * sensor.WATERMARK_SAMPLES)
+    assert gpio.edges == 1, gpio.edges
+    sensor.read(sensor.FIFO_R_W, len(sensor.fifo))
+    sensor.advance(0)
+    assert gpio.edges == 1, f"the drain latched an interrupt ({gpio.edges} edges)"
+    assert gpio.level == 1
+
+
+def test_the_watermark_status_is_the_fifo_not_the_last_write():
+    # 0x39 bit 6 says a watermark's worth is waiting; the reader checks it before
+    # it reads (0x00052036). The init table writes 0x40 there, which must not
+    # make an empty FIFO look full.
+    sensor = configured_sensor()
+    sensor.write(sensor.FIFO_WM_INT_STATUS, bytes([0x40]))
+    assert sensor.read(sensor.FIFO_WM_INT_STATUS, 1) == b"\x00"
+    sensor.advance(sensor.sample_period_cycles * sensor.WATERMARK_SAMPLES)
+    assert sensor.read(sensor.FIFO_WM_INT_STATUS, 1) == bytes([0x40])
 
 
 def test_a_rising_edge_line_is_driven_the_other_way():

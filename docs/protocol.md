@@ -93,6 +93,10 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
   are otherwise written at the :29 and :59 minute ticks, and the day's last at midnight stamped
   23:58:30 (`tools/normplus/watch/fw/health.py` has the firmware side: the store, the ring of
   four 8 KB pages at `0xE0000`, 1168 records).
+- **A heart-rate record is a measurement**, not a tick: with `AUTO_HEART_RATE` (0x5C) SET
+  `[minutes]` the watch measures at that interval and stores a record when PixArt's algorithm
+  has a rate, about a minute in (two 8 KB pages at `0xEE000`). The emulated watch measures a
+  pulse put under its sensor model the same way (#87).
 
 ## Apollo DFU (Firmware Update)
 

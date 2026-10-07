@@ -24,7 +24,8 @@ from .fw.bootrom import BootRom
 from .fw import image as image_mod
 from .fw.console import FirmwareConsole, find_formatter
 from .fw.devices import (attach_ble_controller, attach_mspi_devices,
-                         attach_motion_sensor, attach_pmu, attach_touch_panel)
+                         attach_heart_rate_sensor, attach_motion_sensor, attach_pmu,
+                         attach_touch_panel)
 from .fw.machine import Apollo3Machine, StopReason
 from .fw.resources import MissingResources
 from .fw.rtos import format_tasks
@@ -248,11 +249,13 @@ async def _ensure_bound(phone, watch, say) -> str | None:
 
 
 def cmd_records(args) -> int:
-    """Give the emulated watch a history: sport records its own firmware writes (#51).
+    """Give the emulated watch a history: records its own firmware writes (#51, #87).
 
-    The firmware appends a record at every :29 and :59 minute tick, so the clock is
-    set to just before each of the last --count ticks in turn (fw/health.py), and
-    the flash is saved to --flash-state -- bound first if it is not yet. Then
+    The firmware appends a sport record at every :29 and :59 minute tick, so the
+    clock is set to just before each of the last --count ticks in turn
+    (fw/health.py). For --heart-rate N, auto heart rate goes on with a pulse under
+    the sensor until the firmware has measured and stored N records. The flash is
+    saved to --flash-state -- bound first if it is not yet. Then
     `boot --phone --flash-state` gives :app a watch with something to sync.
     """
     import time
@@ -266,8 +269,9 @@ def cmd_records(args) -> int:
     if state.resolve().is_relative_to(FIXTURES):
         print(f"error: {state} is a test fixture, which is never rewritten", file=sys.stderr)
         return 2
-    if args.count < 1:
-        print("error: --count must be at least 1", file=sys.stderr)
+    if args.count < 0 or args.heart_rate < 0 or not (args.count or args.heart_rate):
+        print("error: ask for some records: --count and --heart-rate cannot both be 0",
+              file=sys.stderr)
         return 2
     t0 = time.monotonic()
 
@@ -296,9 +300,17 @@ def cmd_records(args) -> int:
             return
         before = await health.ask_counts(phone)
         say(f"watch: {before['sport'] if before else '?'} sport records to begin with")
-        await health.write_sport_records(
-            phone, watch, args.count, walk=args.walk,
-            motion=Walking() if args.walk else None, log=lambda text: say(f"watch: {text}"))
+        if args.count:
+            await health.write_sport_records(
+                phone, watch, args.count, walk=args.walk,
+                motion=Walking() if args.walk else None, log=lambda text: say(f"watch: {text}"))
+        if args.heart_rate:
+            stored = await health.write_heart_rate_records(
+                phone, watch, args.heart_rate, bpm=args.bpm, log=lambda text: say(f"watch: {text}"))
+            if stored < args.heart_rate:
+                result["failed"] = (f"the watch stored {stored} of {args.heart_rate} "
+                                    f"heart-rate records")
+                return
         result["counts"] = await health.ask_counts(phone)
         await phone.disconnect()
 
@@ -314,7 +326,8 @@ def cmd_records(args) -> int:
         return 2
     counts = result["counts"] or {}
     say(f"watch: {counts.get('sport', '?')} sport records now (the count request writes "
-        f"the half hour so far as one more); flash {'saved to ' + str(state) if saved else 'NOT saved'}")
+        f"the half hour so far as one more), {counts.get('heart_rate', '?')} heart rate; "
+        f"flash {'saved to ' + str(state) if saved else 'NOT saved'}")
     return 0 if saved else 2
 
 
@@ -853,6 +866,7 @@ def cmd_boot(args) -> int:
                 f"image, and saving there at exit")
     devices["touch"] = attach_touch_panel(machine, log=log)
     devices["motion"] = attach_motion_sensor(machine, log=log)
+    devices["heart"] = attach_heart_rate_sensor(machine, log=log)
     devices["battery"], devices["charger"] = attach_pmu(
         machine, percent=getattr(args, "battery", 80.0),
         charging=getattr(args, "charging", False),
@@ -1234,9 +1248,15 @@ def main(argv=None) -> int:
                        help="the watch to give records to, bound first if it is not; "
                             "created if missing, and saved when it is done")
     p_rec.add_argument("--count", type=int, default=48, metavar="N",
-                       help="how many half hours of records, ending now (default 48, a "
-                            "day). About two seconds each")
+                       help="how many half hours of sport records, ending now (default 48, "
+                            "a day). About two seconds each")
+    p_rec.add_argument("--heart-rate", type=int, default=0, metavar="N",
+                       help="and N heart-rate records, each a measurement by the watch's "
+                            "own sensor driver and algorithm from a pulse under the "
+                            "sensor (default 0). About a minute and a half each")
     dev = developer_options(p_rec)
+    dev.add_argument("--bpm", type=float, default=72.0, metavar="BPM",
+                     help="the pulse under the heart-rate sensor (default 72)")
     dev.add_argument("--walk", type=float, default=0.0, metavar="S",
                      help="walk the wrist for S seconds of watch time before each tick, "
                           "so the records have steps (default 0: standing still)")

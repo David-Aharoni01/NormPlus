@@ -738,6 +738,14 @@ class Gpio(Peripheral):
         #: once the firmware drives a pin high nothing could contradict it, so a
         #: bit-banged slave could never ACK.
         self.pulled_low = [0, 0]
+        #: Pins with a pull-up on the board, per bank: the lines of a bit-banged
+        #: I2C bus. Such a pin reads high whenever its own pad is not driving it
+        #: -- configured as an input, or open-drain and released -- unless
+        #: something pulls it low. Without it, a master that drove its own ACK
+        #: low and then turned SDA into an input to read the next byte went on
+        #: reading its stale output bit: every 1 the slave sent arrived as 0
+        #: (the PAH8011's FIFO came through as its first byte and zeros, #87).
+        self.pulled_up = [0, 0]
         #: Callables notified as ``(bank, before, after)`` when an output
         #: register changes, so a device wired to a pin can react to the edge
         #: itself. Bit-banging is far finer-grained than the timer tick, so a
@@ -760,11 +768,43 @@ class Gpio(Peripheral):
         else:
             self.pulled_low[bank] &= ~(1 << bit)
 
+    def pull_up(self, number: int) -> None:
+        """Give *number* a board pull-up (see :attr:`pulled_up`)."""
+        bank, bit = divmod(number, 32)
+        self.pulled_up[bank] |= 1 << bit
+
+    def _released(self, bank: int) -> int:
+        """Pulled-up pins of *bank* that their own pad is not driving now.
+
+        CFG holds a nibble per pin with OUTCFG in bits 1..2: 0 output disabled,
+        1 push-pull, 2 open drain (drives only a 0), 3 tristate (drives when
+        enabled in EN).
+        """
+        released = 0
+        pins = self.pulled_up[bank]
+        while pins:
+            bit = (pins & -pins).bit_length() - 1
+            pins &= pins - 1
+            number = bank * 32 + bit
+            cfg = self.storage.get(self.CFG_BASE + (number // 8) * 4, 0)
+            outcfg = (cfg >> ((number % 8) * 4 + 1)) & 3
+            driving_one = (self.out[bank] >> bit) & 1
+            enabled = (self.storage.get(0x0A0 + 4 * bank, 0) >> bit) & 1
+            if (outcfg == 0 or (outcfg == 2 and driving_one)
+                    or (outcfg == 3 and not enabled)):
+                released |= 1 << bit
+        return released
+
+    def _levels(self, bank: int) -> int:
+        """Every pin of *bank* as a reader sees it."""
+        released = self._released(bank) if self.pulled_up[bank] else 0
+        driven = self.out[bank] & ~released
+        return ((driven | released | self.inputs[bank]) & ~self.pulled_low[bank]) & 0xFFFFFFFF
+
     def level(self, number: int) -> int:
         """The level a reader would actually see on *number*."""
         bank, bit = divmod(number, 32)
-        merged = (self.out[bank] | self.inputs[bank]) & ~self.pulled_low[bank]
-        return (merged >> bit) & 1
+        return (self._levels(bank) >> bit) & 1
 
     def pin(self, number: int) -> int:
         """Current output level of pin *number* (0-63)."""
@@ -823,6 +863,16 @@ class Gpio(Peripheral):
         self.set_input(number, (1 - resting) if asserted else resting)
         self.raise_interrupt(number)
 
+    def release_irq(self, number: int) -> None:
+        """Return *number* to its resting level without latching anything.
+
+        For a device whose line only ever signals one way: going back to rest is
+        the edge the firmware did not ask for. :meth:`assert_irq` latches on
+        release as well, which the touch panel needs (its lift is a report of its
+        own) and the accelerometer must not have (#87).
+        """
+        self.set_input(number, self.resting_level(number))
+
     def set_input(self, number: int, level: int) -> None:
         bank, bit = divmod(number, 32)
         if level:
@@ -858,9 +908,9 @@ class Gpio(Peripheral):
     def read(self, offset: int, size: int) -> int:
         self.reads[offset] += 1
         if offset == self.RDA:
-            return (self.out[0] | self.inputs[0]) & ~self.pulled_low[0] & 0xFFFFFFFF
+            return self._levels(0)
         if offset == self.RDB:
-            return (self.out[1] | self.inputs[1]) & ~self.pulled_low[1] & 0xFFFFFFFF
+            return self._levels(1)
         if offset in self.INT_STAT:
             return self.int_status[self.INT_STAT.index(offset)]
         return self.storage.get(offset, 0)
@@ -943,6 +993,12 @@ class I2cDevice:
     def write(self, register: int, data: bytes) -> None:
         pass
 
+    #: A device whose reads have side effects -- a FIFO that pops -- defines
+    #: ``read_byte(register) -> int`` instead, and the bit-banged bus then asks
+    #: for each byte as the master clocks it out, with the register advanced by
+    #: one each time, rather than handing over a run the master may not take.
+    read_byte = None
+
 
 class BitBangI2cBus:
     """An I2C bus the firmware clocks by hand on two GPIO pins.
@@ -969,6 +1025,9 @@ class BitBangI2cBus:
         self.devices: dict[int, I2cDevice] = {}
         self.transactions = 0
         self.unanswered: collections.Counter = collections.Counter()
+        # I2C needs its pull-ups; the board has them.
+        gpio.pull_up(scl)
+        gpio.pull_up(sda)
         self._reset()
         gpio.output_watchers.append(self._on_output_change)
 
@@ -979,6 +1038,10 @@ class BitBangI2cBus:
         self.reading = False
         self.payload = bytearray()
         self._tx = bytearray()
+        #: The device being read, when it streams (``I2cDevice.read_byte``).
+        self._streaming = None
+        #: The master NAKed the last byte it read: send nothing more.
+        self._master_nak = False
         #: The next rising clock is the acknowledge slot, not a data bit.
         self._ack_slot = False
         #: We are currently holding SDA through that slot.
@@ -1051,7 +1114,18 @@ class BitBangI2cBus:
         bit shifts every byte one place right, which is subtle enough to look
         like a plausible register map -- 0x08 arrives as 4, 0x5F as 0x17.
         """
-        if self._ack_slot or self.state == self.READING:
+        if self._ack_slot:
+            if self.state == self.READING and self._acking and not self._owes_ack:
+                # The master's own acknowledge, after a byte it read: low to
+                # ask for another, high (NAK) for "that was the last". A slave
+                # that went on fetching would pop a byte nobody reads, which
+                # for a FIFO is a byte lost -- every burst after it misaligned.
+                # Only on the ninth clock (``_acking``): the flag goes up as
+                # the eighth data bit is presented, and the rising edge after
+                # that is the master sampling the data bit, not acknowledging.
+                self._master_nak = self.gpio.level(self.sda) == 1
+            return
+        if self.state == self.READING:
             return
         self.bits.append(self.gpio.level(self.sda))
         if len(self.bits) < 8:
@@ -1071,8 +1145,12 @@ class BitBangI2cBus:
             self.transactions += 1
             if self.reading:
                 # A master reads as many bytes as it likes and NAKs the last
-                # one, so hand over a generous run and let it stop where it will.
-                self._tx = bytearray(device.read(self.register or 0, 32))
+                # one, so hand over a generous run and let it stop where it will
+                # -- or, for a device that streams, nothing until it is clocked.
+                self._streaming = device if device.read_byte is not None else None
+                self._master_nak = False
+                self._tx = (bytearray() if self._streaming is not None
+                            else bytearray(device.read(self.register or 0, 32)))
                 self.state = self.READING
             else:
                 self.state = self.REGISTER
@@ -1096,6 +1174,11 @@ class BitBangI2cBus:
             self.gpio.pull_low(self.sda, False)
         if self.state == self.READING:
             if not self.bits:
+                if self._master_nak:
+                    self.gpio.pull_low(self.sda, False)
+                    return
+                if self._streaming is not None:
+                    self._tx = bytearray([self._streaming.read_byte(self.register or 0) & 0xFF])
                 if not self._tx:
                     self._tx = bytearray(b"\xff")
                 byte = self._tx.pop(0)

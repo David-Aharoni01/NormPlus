@@ -1030,12 +1030,12 @@ class Walking:
 
     Give it to :attr:`MotionSensor.motion` and the firmware's own pedometer
     (``system_step_task.c``) counts steps, and its next sport record carries them
-    (#51). What it counts is the firmware's business and it is not one step a
-    bounce. Over a minute of watch time a 2 Hz bounce of 0.5 g counted 237 steps
-    -- and so did a bounce with an arm swing on X and a heel-strike pulse, which
-    looks like a ceiling -- a 1 Hz bounce 167, and a 0.05 g bounce or standing
-    still none. So walking makes steps and stillness does not; how many is not
-    modelled, because the step algorithm has not been read.
+    (#51). What it counts is the firmware's business. Over a minute of watch
+    time a 2 Hz bounce of 0.5 g counts 121 steps, one a bounce; a 1 Hz bounce
+    counts 108, not 60; standing still, none. (It was twice that -- 237 at 2 Hz
+    -- until the motion model stopped raising a second interrupt per batch,
+    #87.) So a brisk walk counts about right and a slow one does not; the step
+    algorithm has not been read.
 
     A class rather than a closure so that a snapshot can carry it.
     """
@@ -1063,6 +1063,10 @@ class MotionSensor(I2cDevice):
     WHO_AM_I_REG = 0x75
     SMPLRT_DIV = 0x19
     INT_STATUS = 0x3A
+    #: FIFO_WM_INT_STATUS: the init writes 0x60/0x61 as a FIFO watermark
+    #: threshold (0xC8), which an MPU-6500 does not have and an ICM-20602-class
+    #: part does, with the watermark status here.
+    FIFO_WM_INT_STATUS = 0x39
     FIFO_COUNTH = 0x72
     FIFO_COUNTL = 0x73
     FIFO_R_W = 0x74
@@ -1128,6 +1132,14 @@ class MotionSensor(I2cDevice):
         if register == self.INT_STATUS:
             # Bit 4 is the FIFO interrupt the firmware enables (INT_ENABLE=0x10).
             return bytes([0x10 if self._asserted else 0x00]) * max(1, length)
+        if register == self.FIFO_WM_INT_STATUS:
+            # Bit 6: a watermark's worth is waiting. The reader re-arms the
+            # FIFO and then reads only if this is set (0x00051FFA, then
+            # `tst r0, #0x40` at 0x00052036). It is a status, so the init
+            # table's write of 0x40 to it does not stick: answering with that
+            # write made the step task's second poll after every batch, when
+            # the FIFO is empty, look full (#87).
+            return bytes([0x40 if self._asserted else 0x00]) * max(1, length)
         return bytes([self.registers.get(register, 0)]) * max(1, length)
 
     def write(self, register: int, data: bytes) -> None:
@@ -1188,13 +1200,218 @@ class MotionSensor(I2cDevice):
         self._asserted = want
         if self.machine is None or self.irq_pin is None:
             return
-        self.machine.gpio.assert_irq(self.irq_pin, want)
+        # One interrupt per watermark: the init table writes INT_PIN_CFG
+        # (0x37) = 0x00, a 50 us pulse, not latched, so the line going back
+        # once the FIFO is read is no second event. Latching it as one woke the
+        # step task again after every batch, to an empty FIFO, and it fed the
+        # heart-rate driver a second time 14 ms after the first -- with no
+        # frames, which is what the PixArt algorithm then saw. The physical
+        # watch, read through 0xEE mid-measurement, feeds once every ~494 ms.
+        if want:
+            self.machine.gpio.assert_irq(self.irq_pin, True)
+        else:
+            self.machine.gpio.release_irq(self.irq_pin)
 
     def summary(self) -> str:
         state = "streaming" if self.enabled else "idle"
         return (f"  motion : {self.name} at 0x{MOTION_I2C_ADDRESS:02X}, {state}, "
                 f"{self.samples_made} samples made, {self.fifo_bytes_read} bytes read, "
                 f"{len(self.fifo)} queued")
+
+
+# -- the heart-rate sensor --------------------------------------------------
+
+#: The PixArt PAH8011 hangs off a second bus that ``ew_drv_sim_i2c.c`` clocks
+#: by hand. Its entry in the bit-bang device table at 0x000C92DF is
+#: ``2A 27 28``: 8-bit address 0x2A on SCL 39 / SDA 40 (the gauge's entry next
+#: to it is ``C4 0B 0D``, 0x62 on pins 11 / 13).
+PAH8011_I2C_ADDRESS = 0x15
+PAH8011_SCL_PIN = 39
+PAH8011_SDA_PIN = 40
+#: hr_pah8011.c's open (0x00047D7A) drives pin 17 to power the part, and its
+#: close (0x00047D2C) drops it.
+PAH8011_POWER_PIN = 17
+
+
+class Pulse:
+    """A wrist with a pulse under the sensor: the PPG the PAH8011 samples (#87).
+
+    Both channels the driver enables see the same waveform: a DC level and a
+    small sinusoid at *bpm*. The firmware's PixArt algorithm
+    (``pah_hrd_function.c``, a licensed blob) turns it into a heart rate after
+    a minute or so of a measurement; the scale is not from a datasheet, and
+    only the rate has been checked to come back.
+
+    A class rather than a closure so that a snapshot can carry it.
+    """
+
+    def __init__(self, bpm: float = 72.0, dc: int = 1 << 20, depth: float = 0.01) -> None:
+        self.bpm = bpm
+        self.dc = dc
+        self.depth = depth
+
+    def __call__(self, seconds: float) -> int:
+        # One sinusoid at the heart rate. A shaped beat -- systolic peak and a
+        # dicrotic dip -- read as twice the rate (72 bpm came back as 143).
+        return int(self.dc * (1.0 - self.depth * math.sin(2 * math.pi * self.bpm / 60.0 * seconds)))
+
+
+class Pah8011(I2cDevice):
+    """The PixArt PAH8011 heart-rate sensor, as the firmware's driver uses it (#87).
+
+    Everything here is from the driver's own sequence, read out of the image and
+    recorded on this bus:
+
+    * banks through register 0x7F, which every bank has;
+    * bank 0 register 0x00 is the product id, 0x11: the probe at 0x00047DB0
+      writes bank 4 0x69 and reads it up to nine times until it sees 0x11;
+    * bank 2 register 0x1B is the interrupt status, write-one-to-clear (the
+      init writes 0xFF to it, the task routine at 0x000B2C1C writes back what it
+      read): bits 2 and 3 are errors the routine returns as 0xB and 0xC;
+    * bank 2 registers 0x25-0x26 are the FIFO count in 32-bit samples (LE16);
+      the routine reads ``(count - 1) / channels`` frames, at most 60 samples;
+    * bank 3 is the FIFO port: LE 32-bit samples, the enabled channels
+      interleaved frame by frame (two channels in this firmware's config);
+    * bank 2 registers 0x1C-0x1F hold the XOR of every 32-bit word of the last
+      FIFO read, which 0x00088424 checks the data against (error 0xA otherwise);
+    * bank 2 register 0x00 bit 0 is touch: is the sensor on skin;
+    * it samples once the init has written bank 1 0x30 = 1, until its power
+      pin drops.
+
+    The frame period, 20 Hz, is the physical watch's: read through 0xEE in the
+    middle of a measurement, its algorithm input (0x10011D40) took 8 to 11
+    frames a fill, one fill every ~494 ms. It also fits the 20 frames per report
+    the driver asks for (0x1001210C + 0x108), and the 0x0FA0 the init writes to
+    bank 1 0x26-0x27 as 4000 ticks of an 80 kHz clock.
+    """
+
+    name = "PAH8011 heart rate"
+    PRODUCT_ID = 0x11
+    CHANNELS = 2
+    FIFO_SAMPLES = 256
+    FRAME_HZ = 20
+
+    def __init__(self, machine=None, *, power_pin=PAH8011_POWER_PIN, log=print) -> None:
+        self.machine = machine
+        self.power_pin = power_pin
+        self.log = log
+        self.bank = 0
+        self.registers: dict = {}
+        self.status = 0
+        self.fifo: collections.deque = collections.deque()
+        self.checksum = 0
+        self._last_word = bytearray()
+        self.running = False
+        #: What is under the sensor: a :class:`Pulse`, or None for nothing (no
+        #: touch, and a flat signal).
+        self.wrist = None
+        self._phase = 0
+        self.frames_made = 0
+        self.samples_read = 0
+        self.reads = 0
+        self.writes = 0
+
+    # -- the wire ------------------------------------------------------------
+
+    def read(self, register: int, length: int) -> bytes:
+        return bytes(self.read_byte((register + i) & 0xFF) for i in range(length))
+
+    def read_byte(self, register: int) -> int:
+        self.reads += 1
+        bank = self.bank
+        if bank == 0 and register == 0x00:
+            return self.PRODUCT_ID
+        if bank == 3:
+            return self._fifo_byte()
+        if bank == 2:
+            if register == 0x00:
+                return 0x01 if self.wrist is not None else 0x00
+            if register == 0x1B:
+                return self.status
+            if register in (0x25, 0x26):
+                count = len(self.fifo)
+                return count & 0xFF if register == 0x25 else count >> 8
+            if 0x1C <= register <= 0x1F:
+                return (self.checksum >> (8 * (register - 0x1C))) & 0xFF
+        return self.registers.get((bank, register), 0)
+
+    def write(self, register: int, data: bytes) -> None:
+        self.writes += 1
+        for offset, value in enumerate(data):
+            reg = (register + offset) & 0xFF
+            if reg == 0x7F:
+                if value == 3 and self.bank != 3:
+                    # Every FIFO read starts by selecting bank 3 (0x00088390),
+                    # and the XOR covers one read.
+                    self.checksum = 0
+                    self._last_word = bytearray()
+                self.bank = value
+                continue
+            if self.bank == 2 and reg == 0x1B:
+                self.status &= ~value & 0xFF
+                continue
+            if self.bank == 1 and reg == 0x30:
+                self._start(bool(value & 1))
+            self.registers[(self.bank, reg)] = value
+
+    def _start(self, on: bool) -> None:
+        if on and not self.running:
+            self.fifo.clear()
+            self.checksum = 0
+            self._phase = 0
+        self.running = on
+
+    def _fifo_byte(self) -> int:
+        """Pop the next byte of the FIFO port, keeping the read's XOR checksum."""
+        if not self._last_word:
+            word = self.fifo.popleft() if self.fifo else 0
+            self.samples_read += 1
+            self.checksum ^= word
+            self._last_word = bytearray(word.to_bytes(4, "little"))
+        return self._last_word.pop(0)
+
+    # -- the clock -----------------------------------------------------------
+
+    @property
+    def frame_cycles(self) -> int:
+        return 48_000_000 // self.FRAME_HZ
+
+    def next_deadline(self):
+        if not self._sampling():
+            return None
+        return max(1, self.frame_cycles - self._phase)
+
+    def _sampling(self) -> bool:
+        if not self.running:
+            return False
+        if self.machine is not None and self.power_pin is not None:
+            bank, bit = divmod(self.power_pin, 32)
+            return bool((self.machine.gpio.out[bank] >> bit) & 1)
+        return True
+
+    def advance(self, cycles: int) -> None:
+        if not self._sampling():
+            return
+        self._phase += cycles
+        while self._phase >= self.frame_cycles:
+            self._phase -= self.frame_cycles
+            self._push_frame()
+
+    def _push_frame(self) -> None:
+        seconds = self.frames_made / self.FRAME_HZ
+        value = self.wrist(seconds) if self.wrist is not None else 0
+        for _ in range(self.CHANNELS):
+            if len(self.fifo) >= self.FIFO_SAMPLES:
+                self.fifo.popleft()
+            self.fifo.append(value & 0xFFFFFFFF)
+        self.frames_made += 1
+        self.status |= 0x01
+
+    def summary(self) -> str:
+        state = "sampling" if self._sampling() else "idle"
+        on = "on a wrist" if self.wrist is not None else "on nothing"
+        return (f"  hr     : {self.name} at 0x{PAH8011_I2C_ADDRESS:02X}, {state}, {on}, "
+                f"{self.frames_made} frames made, {self.samples_read} samples read")
 
 
 #: The battery gauge is not on an IOM at all. ``ew_drv_sim_i2c.c`` clocks it by
@@ -1437,6 +1654,16 @@ def attach_motion_sensor(machine, *, irq_pin=MOTION_IRQ_PIN, log=print) -> Motio
     iom = machine.bus.by_base.get(MOTION_IOM_BASE)
     if iom is not None:
         iom.devices[MOTION_I2C_ADDRESS] = sensor
+    machine.add_timer(sensor)
+    return sensor
+
+
+def attach_heart_rate_sensor(machine, *, log=print) -> Pah8011:
+    """Put the PAH8011 on its own bit-banged bus and drive it from the clock."""
+    sensor = Pah8011(machine, log=log)
+    bus = BitBangI2cBus(machine.gpio, PAH8011_SCL_PIN, PAH8011_SDA_PIN)
+    bus.devices[PAH8011_I2C_ADDRESS] = sensor
+    sensor.bus = bus
     machine.add_timer(sensor)
     return sensor
 

@@ -40,7 +40,7 @@ from . import flashstate
 from ... import paths
 from . import image as image_mod
 from .blelink import AndroidLink, BumbleController, Radio, VirtualController
-from .devices import (attach_ble_controller, attach_motion_sensor,
+from .devices import (attach_ble_controller, attach_heart_rate_sensor, attach_motion_sensor,
                       attach_mspi_devices, attach_pmu, attach_touch_panel)
 from .machine import Apollo3Machine
 
@@ -321,6 +321,8 @@ class EmulatedWatch:
         attach_touch_panel(self.machine, log=log)
         #: The wrist's accelerometer: set its ``motion`` to make the wearer move.
         self.motion = attach_motion_sensor(self.machine, log=log)
+        #: The heart-rate sensor: set its ``wrist`` to put a pulse under it.
+        self.heart = attach_heart_rate_sensor(self.machine, log=log)
         attach_pmu(self.machine, log=log)
         self.radio = Radio()
         self.controller = attach_ble_controller(

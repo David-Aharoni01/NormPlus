@@ -255,7 +255,10 @@ normcmd 08 70 --flash-state bound.zip
 # (~2.4s each; the clock is moved to just before each tick, fw/health.py, #51). Then
 # `boot --phone --flash-state` with the same file, and :app has something to sync.
 # Records are read back as ONE request answered with a stream, not one per index (#85).
+# --heart-rate N: N readings the firmware MEASURES from a pulse under the emulated PAH8011
+# (devices.Pulse; ~1.5 min of watch time each, #87). --bpm sets the pulse.
 normwatch records --flash-state watch.zip --count 48
+normwatch records --flash-state watch.zip --count 0 --heart-rate 5
 
 # Parse the image header / list source modules recovered from assert() strings
 normwatch info

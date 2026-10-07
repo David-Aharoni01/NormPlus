@@ -251,7 +251,7 @@ wall clock in a run that is not real time.
 that would be the emulator inventing persistence the file does not stand for (it is the
 flash). Not done.
 
-### 9. The history is written by moving the clock, and has no heart rate (#51)
+### 9. The history is written by moving the clock, and the pulse is invented (#51, #87)
 
 The physical watch's sport records come from half-hour slots it lived through; the emulated
 watch's come from `normwatch records`, which sets the clock to just before each :29/:59 tick
@@ -262,10 +262,16 @@ walked (`--walk`). The first tick after a clock set usually writes nothing, whic
 generator checks for each record and crosses again; on the physical watch, which is never set
 twice in a minute, that does not come up.
 
-There is **no heart-rate sensor model**, so no heart-rate records, and no sleep records: a
-sync of the emulated watch exercises the sport stream only. The pedometer counts from
-`devices.Walking`, but not one step a bounce (237 a minute at 2 Hz, 167 at 1 Hz) -- the
-step algorithm has not been read.
+Heart-rate records are measured by the firmware from a **synthetic pulse** under the
+emulated PAH8011 (`--heart-rate N`): a DC level and a 1% sinusoid on both channels, at 20
+frames a second as the physical watch samples. PixArt's algorithm turns it into the rate
+asked for, but nothing else about the signal is the physical sensor's -- its scale, noise,
+ambient light and motion artefacts are made up or absent. A shaped beat with a dicrotic
+dip read as twice the rate. There are no sleep records (#88).
+
+The pedometer counts from `devices.Walking`: 121 a minute for a 2 Hz bounce, 108 for 1 Hz,
+none standing still. The step algorithm has not been read, so only "walking makes steps"
+is a result.
 
 **Do not trust** the emulated watch's record contents as the physical watch's numbers; trust
 its framing, its indices, its timing rules and the streams.
