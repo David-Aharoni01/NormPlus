@@ -54,6 +54,40 @@ is not memory-mapped, so no NAND offset can be read this way; that is what the p
 Apollo3 does not map anyway: `0xF` for "this is a NAND offset" and `0xE` for "a slice of the
 page you already hold". Everything else answers exactly as it does unpatched.
 
+### Health records: one count, then one request per type, answered as a stream (#85, #51)
+
+Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
+`tests/test_health_records.py`; the emulated watch answers the same way.
+
+| Request | Answer |
+|---|---|
+| `TOTAL_SPORT_SLEEP_COUNT` (0x52) `[00]` | LE16 counts: sport `[0..1]`, sleep `[2..3]`, heart rate `[4..5]` when the reply is longer than 4 bytes (`AllDataTypeCount.parse80BytesArray`). The physical watch: `[98 03 00 00 0f 01 00 00]` = 920 sport, 0 sleep, 271 heart rate |
+| `GET_SPORT_DATA` (0x54) `[00 00]` | **every** sport record, one frame each, 28 bytes: `[index 2][time 4][steps 4][calories 4][distance 4][sportTime 4][avgBpm 1][type 1][staticCalories 4]`, LE, index from 1 |
+| `GET_HEART_RATE_DATA` (0x5B) `[00]` | every heart-rate record, 7 bytes: `[index 2][time 4][bpm 1]` |
+| `GET_SLEEP_DATA` (0x56) `[00]` | the same shape for sleep, by the smali; not seen on hardware (no sleep records yet) |
+
+- **The index in a request is ignored**: `[02 00]` streams from record 1 too. The official app
+  sends `GetSportData(cb, 2, 0, count)` once and its `parse80BytesArray` returns 3 ("keep
+  receiving") until the list holds `count`; its 10 s timer is an idle timer, restarted by each
+  frame (`Leaf.isTimeout`, `setLastSendTime`).
+- **A new request during a stream restarts it**, and a frame that lands while the watch clears
+  its 8001 buffer is wiped and answered `6F 01 81 02 00 00 02 8F`. That is how per-index reading
+  failed: replies 1, 2, 1, 2, 3, 2, ... and then a request nobody answered (10 s timeout). On the
+  emulated watch the last thing before the timeout was the first halves of records 1 and 2, then
+  that `00 02`.
+- **Time:** from the PC (one notification a frame) 920 sport records took ~29 s and 271 heart
+  rate ~9 s. From `:app` on the AVD, at ATT MTU 23, a sport frame is two notifications, and the
+  watch moved the link from a 15 ms to a 180 ms interval 11 s into the stream (31 → 12
+  notifications/s): 926 records took 139 s, 271 heart rate 10 s. The official app never calls
+  its `requestMtu` either.
+- `TOTAL_HEART_RATE_COUNT` (0x59) answers `[0f 01 00 00]`, four bytes; `HeartRateCount.smali`
+  accepts exactly two, so the heart-rate count comes from 0x52.
+- **Asking for the counts writes a record**: the watch stores the half hour so far as one more
+  sport record before it answers (not on every ask -- two asks 11 s apart wrote one). Records
+  are otherwise written at the :29 and :59 minute ticks, and the day's last at midnight stamped
+  23:58:30 (`tools/normplus/watch/fw/health.py` has the firmware side: the store, the ring of
+  four 8 KB pages at `0xE0000`, 1168 records).
+
 ## Apollo DFU (Firmware Update)
 
 **Verified against the watch's own firmware in the emulator (2026-10-02, `tests/test_ota.py`,
