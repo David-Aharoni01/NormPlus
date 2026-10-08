@@ -309,7 +309,9 @@ object SleepCommand {
     fun buildDelete() =
         PacketBuilder.build(CommandCode.DELETE_SLEEP_DATA, Action.SET)
 
-    // 7-byte records: [index(2 LE)] [timestamp(4 LE)] [stage(1)]
+    // [index(2 LE)] [timestamp(4 LE)] [stage(1)], and 3 zero bytes: the firmware sends 10
+    // (#88), GetSleepData reads 7. Stage 0x10 starts a session, 0x11 ends it; between them
+    // 0 deep, 1 light, 2-4 awake (SleepNewDBService), each until the next record.
     // Source: GetSleepData.smali parse80BytesArray — index=bytesToLong(0,1) is TWO bytes,
     // timestamp=bytesToLong(2,5), stage=byte[6] (with the 0x12→0x11 normalisation below).
     // The index is 2 bytes, not 1 — same off-by-one as HR/sport; ts at offset 1 / stage at 5

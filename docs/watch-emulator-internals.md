@@ -1972,6 +1972,55 @@ reads the record back through the stream. The PPG itself is invented: a DC level
 sinusoid, the same on both channels, whose scale is not from a datasheet. Only the rate
 coming back has been checked.
 
+### Sleep: recorded only in sleep mode, and hidden while it lasts (#88)
+
+Neither watch had a sleep record: the physical one's counts say 0, and nothing on this one
+had ever asked for one. The firmware records sleep only in **sleep mode**, a flag at
+`0x10006BCC + 0x357`, and nothing turns it on unless asked:
+
+- **by hand**: the sleep screen, five right-to-left swipes from the face, has a play button.
+  Its handler (`0x00067594`, event 0x88B) flips the flag. The button is one of the images
+  only the factory NAND has, so with `--no-factory-resources` there is nothing to tap;
+- **by auto sleep**: the check at `0x000585D2` runs only when switch bit 0x8 is set
+  (`SWITCH_BIT_AUTO_SLEEP`; the bound fixture's mask is `0x002093F0`, off). Inside the
+  `AUTO_SLEEP` window (`[0x6C..0x6F]`, default 23:00-07:00; `0x0003B3F8` is the window test,
+  the awake minute itself outside it) it turns sleep mode on, and at the awake minute off.
+
+Either way `0x0005DB2C` posts message 0x0C to the queue at `[0x10001314 + 0x48]`, whose task
+(loop at `0x0005D040`) starts or ends the session in `0x0008668C`. The same task takes the
+accelerometer's batches (message 3) and runs each sample through the motion algorithm at
+`0x000492E4`; when that reports a sleep-state change, message 0x0B carries it to
+`0x0005D40A`, which maps the algorithm's 2, 1, 0, -1 to record types 0, 1, 2, 3 and posts
+message 0x1D (API-table entry 0xDC, `0x0005E434`) to the task whose loop is at `0x0005E0F0`
+-- the one that appends sport records on 0x1A -- where `0x0003D650` appends it to ring
+type 1, `0xE8000`/`0xEA000`. A record in flash is `[time 4][type 1][00 00 00]`; `GET_SLEEP_DATA`
+(`0x0003A2BC`) sends it with its index in front, 10 bytes. The official app reads the type
+as 0 deep, 1 light, 2-4 awake (`SleepNewDBService`), each until the next record.
+
+A still wrist, from the play button, with nothing else going on:
+
+```
+  0:00  0x10 start
+  1:00  0x02 awake
+  2:00  0x01 light
+  5:00  0x00 deep            ...and deep for the next seven minutes measured
+  stop  0x11 end, 0x02 awake  (both at the stop, end first)
+```
+
+**Two things a phone sees.** While a session is on, `TOTAL_SPORT_SLEEP_COUNT` says sleep 0:
+the data callback's 0x52 case (`0x00055C5C`) skips the count when the flag is set. And a
+clock change ends the session: `0x0003B478` calls any change of date or hour, or of more than
+two minutes forward, a new time, and then the DATETIME handler ends a session before it takes
+the new time, so the end is stamped with **the old time**. `SPORT_SLEEP_MODE` (0x51) CHECK
+answers `[00]` asleep or awake.
+
+**Making it quick.** `fw/health.write_sleep_records` uses both: auto sleep on, the clock ten
+seconds before bedtime (the session starts on the minute), `--asleep` seconds of a still wrist
+(330 by default, to reach deep), then the clock half a minute past the awake time. That ends
+the session, stamped when the clock was moved, and the window test keeps another from
+starting. So a session is minutes long, not a night; `test_health_records` pins one, and the
+stream, and the hidden count. `normwatch records --sleep N`.
+
 ### The clock stood still: the RTC was storage (#81)
 
 After a phone set the time the face showed it, and kept showing it. The firmware keeps the

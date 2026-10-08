@@ -82,11 +82,13 @@ tap *Pair* when Android asks.
 firmware write a day of half-hourly sport records (about 2 minutes; `--count 200` for four
 days) into the state file, then the recipe above with the same file syncs them. With
 `--heart-rate N` it also takes N heart-rate readings: a pulse goes under the emulated sensor
-and the firmware measures it, about a minute and a half each.
+and the firmware measures it, about a minute and a half each. With `--sleep N` it records a
+sleep session on each of the last N nights, about six minutes each (a few minutes of sleep,
+not a whole night).
 
 ```powershell
 normwatch records --flash-state watch.zip --count 48
-normwatch records --flash-state watch.zip --count 0 --heart-rate 5
+normwatch records --flash-state watch.zip --count 0 --heart-rate 5 --sleep 2
 ```
 
 ## Asking a watch a question from the PC (`normcmd`)

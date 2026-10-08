@@ -249,13 +249,15 @@ async def _ensure_bound(phone, watch, say) -> str | None:
 
 
 def cmd_records(args) -> int:
-    """Give the emulated watch a history: records its own firmware writes (#51, #87).
+    """Give the emulated watch a history: records its own firmware writes (#51, #87, #88).
 
     The firmware appends a sport record at every :29 and :59 minute tick, so the
     clock is set to just before each of the last --count ticks in turn
     (fw/health.py). For --heart-rate N, auto heart rate goes on with a pulse under
-    the sensor until the firmware has measured and stored N records. The flash is
-    saved to --flash-state -- bound first if it is not yet. Then
+    the sensor until the firmware has measured and stored N records. For --sleep N,
+    auto sleep goes on and the clock is set to bedtime on each of the last N nights,
+    and the firmware records the still wrist's sleep for --asleep seconds. The flash
+    is saved to --flash-state -- bound first if it is not yet. Then
     `boot --phone --flash-state` gives :app a watch with something to sync.
     """
     import time
@@ -269,8 +271,9 @@ def cmd_records(args) -> int:
     if state.resolve().is_relative_to(FIXTURES):
         print(f"error: {state} is a test fixture, which is never rewritten", file=sys.stderr)
         return 2
-    if args.count < 0 or args.heart_rate < 0 or not (args.count or args.heart_rate):
-        print("error: ask for some records: --count and --heart-rate cannot both be 0",
+    wanted = (args.count, args.heart_rate, args.sleep)
+    if min(wanted) < 0 or not any(wanted):
+        print("error: ask for some records: --count, --heart-rate and --sleep cannot all be 0",
               file=sys.stderr)
         return 2
     t0 = time.monotonic()
@@ -311,6 +314,9 @@ def cmd_records(args) -> int:
                 result["failed"] = (f"the watch stored {stored} of {args.heart_rate} "
                                     f"heart-rate records")
                 return
+        if args.sleep:
+            await health.write_sleep_records(phone, watch, args.sleep, asleep=args.asleep,
+                                             log=lambda text: say(f"watch: {text}"))
         result["counts"] = await health.ask_counts(phone)
         await phone.disconnect()
 
@@ -326,7 +332,8 @@ def cmd_records(args) -> int:
         return 2
     counts = result["counts"] or {}
     say(f"watch: {counts.get('sport', '?')} sport records now (the count request writes "
-        f"the half hour so far as one more), {counts.get('heart_rate', '?')} heart rate; "
+        f"the half hour so far as one more), {counts.get('heart_rate', '?')} heart rate, "
+        f"{counts.get('sleep', '?')} sleep; "
         f"flash {'saved to ' + str(state) if saved else 'NOT saved'}")
     return 0 if saved else 2
 
@@ -1242,8 +1249,8 @@ def main(argv=None) -> int:
     p_cmd.set_defaults(func=cmd_command)
 
     p_rec = sub.add_parser(
-        "records", help="give the emulated watch a history to sync: sport records written "
-                        "by its own firmware, one per half hour, saved to --flash-state")
+        "records", help="give the emulated watch a history to sync: sport, heart-rate and "
+                        "sleep records written by its own firmware, saved to --flash-state")
     p_rec.add_argument("--flash-state", metavar="PATH", required=True,
                        help="the watch to give records to, bound first if it is not; "
                             "created if missing, and saved when it is done")
@@ -1254,9 +1261,16 @@ def main(argv=None) -> int:
                        help="and N heart-rate records, each a measurement by the watch's "
                             "own sensor driver and algorithm from a pulse under the "
                             "sensor (default 0). About a minute and a half each")
+    p_rec.add_argument("--sleep", type=int, default=0, metavar="N",
+                       help="and a sleep session on each of the last N nights, recorded by "
+                            "the watch's own auto sleep from a still wrist (default 0). "
+                            "About six minutes each")
     dev = developer_options(p_rec)
     dev.add_argument("--bpm", type=float, default=72.0, metavar="BPM",
                      help="the pulse under the heart-rate sensor (default 72)")
+    dev.add_argument("--asleep", type=float, default=330.0, metavar="S",
+                     help="seconds of watch time each sleep session lasts (default 330: "
+                          "long enough to reach deep sleep, five minutes in)")
     dev.add_argument("--walk", type=float, default=0.0, metavar="S",
                      help="walk the wrist for S seconds of watch time before each tick, "
                           "so the records have steps (default 0: standing still)")

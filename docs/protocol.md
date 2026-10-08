@@ -64,7 +64,7 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
 | `TOTAL_SPORT_SLEEP_COUNT` (0x52) `[00]` | LE16 counts: sport `[0..1]`, sleep `[2..3]`, heart rate `[4..5]` when the reply is longer than 4 bytes (`AllDataTypeCount.parse80BytesArray`). The physical watch: `[98 03 00 00 0f 01 00 00]` = 920 sport, 0 sleep, 271 heart rate |
 | `GET_SPORT_DATA` (0x54) `[00 00]` | **every** sport record, one frame each, 28 bytes: `[index 2][time 4][steps 4][calories 4][distance 4][sportTime 4: active minutes, #89][avgBpm 1][type 1][staticCalories 4]`, LE, index from 1 |
 | `GET_HEART_RATE_DATA` (0x5B) `[00]` | every heart-rate record, 7 bytes: `[index 2][time 4][bpm 1]` |
-| `GET_SLEEP_DATA` (0x56) `[00]` | the same shape for sleep, by the smali; not seen on hardware (no sleep records yet) |
+| `GET_SLEEP_DATA` (0x56) `[00]` | every sleep record, **10 bytes**: `[index 2][time 4][type 1][00 00 00]`; `GetSleepData` reads the first 7. Types: 0x10 a session's start, 0x11 its end, 0 deep, 1 light, 2 awake (3 also awake to the official app). Seen from the emulated watch's own firmware (#88); the physical watch has had none |
 
 - **The index in a request is ignored**: `[02 00]` streams from record 1 too. The official app
   sends `GetSportData(cb, 2, 0, count)` once and its `parse80BytesArray` returns 3 ("keep
@@ -93,6 +93,16 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
   are otherwise written at the :29 and :59 minute ticks, and the day's last at midnight stamped
   23:58:30 (`tools/normplus/watch/fw/health.py` has the firmware side: the store, the ring of
   four 8 KB pages at `0xE0000`, 1168 records).
+- **Sleep is recorded only in sleep mode** (#88), started on the watch's sleep screen or by
+  auto sleep: `SWITCH_SETTING` bit 0x8 (`SWITCH_BIT_AUTO_SLEEP`, off out of the box) and the
+  `AUTO_SLEEP` (0x58) window `[bed h, bed m, awake h, awake m, remind]`, default 23:00-07:00.
+  Inside the window the watch turns sleep mode on at the minute, and off at the awake minute.
+  Each session stores its start (0x10), every state change, and at the end 0x11 and the last
+  state; each state lasts until the next record (`SleepNewDBService`). **While a session is
+  on, `TOTAL_SPORT_SLEEP_COUNT` says sleep 0** -- the records are there, the count hides
+  them -- and **setting the clock more than a couple of minutes away ends the session**,
+  stamped with the time before the change. `SPORT_SLEEP_MODE` (0x51) CHECK always answers
+  `[00]`, "sport mode", asleep or not.
 - **A heart-rate record is a measurement**, not a tick: with `AUTO_HEART_RATE` (0x5C) SET
   `[minutes]` the watch measures at that interval and stores a record when PixArt's algorithm
   has a rate, about a minute in (two 8 KB pages at `0xEE000`). The emulated watch measures a

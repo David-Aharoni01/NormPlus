@@ -251,7 +251,7 @@ wall clock in a run that is not real time.
 that would be the emulator inventing persistence the file does not stand for (it is the
 flash). Not done.
 
-### 9. The history is written by moving the clock, and the pulse is invented (#51, #87)
+### 9. The history is written by moving the clock, and the pulse is invented (#51, #87, #88)
 
 The physical watch's sport records come from half-hour slots it lived through; the emulated
 watch's come from `normwatch records`, which sets the clock to just before each :29/:59 tick
@@ -267,7 +267,14 @@ emulated PAH8011 (`--heart-rate N`): a DC level and a 1% sinusoid on both channe
 frames a second as the physical watch samples. PixArt's algorithm turns it into the rate
 asked for, but nothing else about the signal is the physical sensor's -- its scale, noise,
 ambient light and motion artefacts are made up or absent. A shaped beat with a dicrotic
-dip read as twice the rate. There are no sleep records (#88).
+dip read as twice the rate.
+
+Sleep sessions (`--sleep N`) are **minutes long, not nights**. Auto sleep starts each one at
+bedtime, the firmware's own sleep algorithm classifies a perfectly still wrist (awake at one
+minute, light at two, deep at five), and the session ends when the clock is moved to the
+morning -- stamped with the time it was moved from, as the firmware stamps any session a
+clock change ends. A real night has a wrist that moves, hours of it, and an end at the awake
+minute. The physical watch has never recorded a session, so none of this has been compared.
 
 The pedometer counts from `devices.Walking`: 121 a minute for a 2 Hz bounce, 108 for 1 Hz,
 none standing still. The step algorithm has not been read, so only "walking makes steps"

@@ -257,8 +257,10 @@ normcmd 08 70 --flash-state bound.zip
 # Records are read back as ONE request answered with a stream, not one per index (#85).
 # --heart-rate N: N readings the firmware MEASURES from a pulse under the emulated PAH8011
 # (devices.Pulse; ~1.5 min of watch time each, #87). --bpm sets the pulse.
+# --sleep N: a session on each of the last N nights via auto sleep (~6 min each, #88). While
+# a session is on, the counts say sleep 0; a clock change ends it, stamped with the OLD time.
 normwatch records --flash-state watch.zip --count 48
-normwatch records --flash-state watch.zip --count 0 --heart-rate 5
+normwatch records --flash-state watch.zip --count 0 --heart-rate 5 --sleep 2
 
 # Parse the image header / list source modules recovered from assert() strings
 normwatch info

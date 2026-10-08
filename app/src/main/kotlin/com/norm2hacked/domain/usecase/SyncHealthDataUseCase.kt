@@ -210,7 +210,8 @@ class SyncHealthDataUseCase @Inject constructor(
         if (count == 0) return
 
         // Source: MBluetooth.getSleepData → GetSleepData(callback, 1, 0, count) → payload=[0x00].
-        // Not yet seen on hardware: the physical watch has had no sleep records to stream.
+        // Streamed by the emulated watch's own firmware (#88, RecordStreamTest); the physical
+        // watch has had none yet. While a session is still on, the count says 0.
         val stream = readStream("Sleep data", CommandCode.GET_SLEEP_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
             count, onProgress) { pkt ->
             SleepCommand.parse(pkt) ?: run {
