@@ -98,7 +98,9 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
   `AUTO_SLEEP` (0x58) window `[bed h, bed m, awake h, awake m, remind]`, default 23:00-07:00.
   Inside the window the watch turns sleep mode on at the minute, and off at the awake minute.
   Each session stores its start (0x10), every state change, and at the end 0x11 and the last
-  state; each state lasts until the next record (`SleepNewDBService`). **While a session is
+  state; each state lasts until the next record (`SleepNewDBService`), and the official sync
+  keeps only what is inside a 0x10 ... 0x11 (`getGroupleepDataList`; `:app`'s
+  `SleepSessions`, #90). **While a session is
   on, `TOTAL_SPORT_SLEEP_COUNT` says sleep 0** -- the records are there, the count hides
   them -- and **setting the clock more than a couple of minutes away ends the session**,
   stamped with the time before the change. `SPORT_SLEEP_MODE` (0x51) CHECK always answers

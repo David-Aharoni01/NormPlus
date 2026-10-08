@@ -82,10 +82,11 @@ interface SleepDao {
     @Query("SELECT * FROM sleep_stages WHERE sessionId = :sessionId ORDER BY timestampEpoch ASC")
     fun queryStages(sessionId: Long): Flow<List<SleepStageEntity>>
 
+    // Stage codes are SleepStage's: 0 deep, 1 light, 2 awake (#90).
     @Query("""
-        SELECT COALESCE(SUM(CASE WHEN s.stage = 3 THEN s.durationSeconds ELSE 0 END), 0) AS deepSec,
-               COALESCE(SUM(CASE WHEN s.stage = 2 THEN s.durationSeconds ELSE 0 END), 0) AS lightSec,
-               COALESCE(SUM(CASE WHEN s.stage = 4 THEN s.durationSeconds ELSE 0 END), 0) AS remSec
+        SELECT COALESCE(SUM(CASE WHEN s.stage = 0 THEN s.durationSeconds ELSE 0 END), 0) AS deepSec,
+               COALESCE(SUM(CASE WHEN s.stage = 1 THEN s.durationSeconds ELSE 0 END), 0) AS lightSec,
+               COALESCE(SUM(CASE WHEN s.stage = 2 THEN s.durationSeconds ELSE 0 END), 0) AS awakeSec
         FROM sleep_stages s
         JOIN sleep_sessions ss ON s.sessionId = ss.id
         WHERE ss.startEpoch BETWEEN :start AND :end
@@ -96,8 +97,9 @@ interface SleepDao {
     suspend fun deleteAll()
 }
 
-data class SleepBreakdown(val deepSec: Int, val lightSec: Int, val remSec: Int) {
-    val totalSec: Int get() = deepSec + lightSec + remSec
+data class SleepBreakdown(val deepSec: Int, val lightSec: Int, val awakeSec: Int) {
+    /** Time asleep: deep and light, not awake -- the official app's total (SleepNewDBService). */
+    val totalSec: Int get() = deepSec + lightSec
     val totalMinutes: Int get() = totalSec / 60
 }
 
