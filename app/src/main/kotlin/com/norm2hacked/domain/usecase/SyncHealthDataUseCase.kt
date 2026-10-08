@@ -19,6 +19,8 @@ import com.norm2hacked.protocol.commands.HeartRateCommand
 import com.norm2hacked.protocol.commands.RecordStream
 import com.norm2hacked.protocol.commands.RecordStreams
 import com.norm2hacked.protocol.commands.SleepCommand
+import com.norm2hacked.protocol.commands.SleepSessions
+import com.norm2hacked.protocol.commands.SleepStage
 import com.norm2hacked.protocol.commands.SportCommand
 import com.norm2hacked.protocol.commands.SyncCountCommand
 import kotlinx.coroutines.flow.Flow
@@ -226,28 +228,25 @@ class SyncHealthDataUseCase @Inject constructor(
             return
         }
 
-        // Sort chronologically — records may not arrive in order.
-        val sorted = rawRecords.sortedBy { it.timestampMs }
-
-        // Compute actual stage durations as the gap to the next record.
-        // The last stage uses a 5-minute convention (standard for sleep tracker APIs).
-        // Source: original app infers duration from consecutive timestamps.
-        val stageEntities = sorted.mapIndexed { idx, rec ->
-            val nextMs = if (idx < sorted.size - 1) sorted[idx + 1].timestampMs
-                         else rec.timestampMs + 5 * 60_000L
-            SleepStageEntity(
-                sessionId = 0, // filled by insertSessionWithStages
-                timestampEpoch = rec.timestampMs,
-                stage = rec.stage,
-                durationSeconds = ((nextMs - rec.timestampMs) / 1000).toInt().coerceAtLeast(0),
-            )
+        // One session a night, 0x10 to 0x11, each record's stage lasting until the next record:
+        // the official app's reading (SleepSessions, #90). Records outside a session -- the state
+        // the watch writes again after each end -- belong to none.
+        val sessions = SleepSessions.group(rawRecords)
+        Log.i(TAG, "syncSleep: ${rawRecords.size} record(s) make ${sessions.size} session(s)")
+        for (s in sessions) {
+            Log.i(TAG, "  sleep ${s.startMs}–${s.endMs}: ${s.asleepSeconds}s asleep, " +
+                "deep ${s.seconds(SleepStage.DEEP)}s light ${s.seconds(SleepStage.LIGHT)}s " +
+                "awake ${s.seconds(SleepStage.AWAKE)}s")
+            val stages = s.periods.map {
+                SleepStageEntity(
+                    sessionId = 0, // filled by insertSessionWithStages
+                    timestampEpoch = it.startMs,
+                    stage = it.stage.code,
+                    durationSeconds = it.durationSeconds,
+                )
+            }
+            sleepDao.insertSessionWithStages(SleepSessionEntity(startEpoch = s.startMs, endEpoch = s.endMs), stages)
         }
-
-        val startMs = sorted.first().timestampMs
-        val endMs = sorted.last().timestampMs + (stageEntities.last().durationSeconds * 1000L)
-        Log.i(TAG, "syncSleep: ${rawRecords.size} stage(s) parsed into session ${startMs}–${endMs}")
-        val session = SleepSessionEntity(startEpoch = startMs, endEpoch = endMs)
-        sleepDao.insertSessionWithStages(session, stageEntities)
 
         // Source: MBluetooth.smali deleteSleepData → DeleteSleepData(callback, 1, 0) → payload=[0x00]
         if (DELETE_AFTER_SYNC && stream.complete) {

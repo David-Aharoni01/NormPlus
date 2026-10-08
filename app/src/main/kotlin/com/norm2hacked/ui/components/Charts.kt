@@ -96,7 +96,8 @@ fun SleepChart(
     modifier: Modifier = Modifier.fillMaxWidth().height(48.dp),
 ) {
     if (segments.isEmpty()) return
-    val stageColor = mapOf(2 to SleepLightPurple, 3 to SleepDeepPurple, 4 to SleepPurple)
+    // SleepStage codes: 0 deep, 1 light, 2 awake (#90).
+    val stageColor = mapOf(0 to SleepDeepPurple, 1 to SleepLightPurple, 2 to SleepPurple)
 
     Canvas(modifier = modifier) {
         val minT = segments.minOf { it.startEpoch }.toFloat()

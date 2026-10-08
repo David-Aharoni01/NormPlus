@@ -328,6 +328,76 @@ object SleepCommand {
 
 data class SleepRecord(val timestampMs: Long, val stage: Int)
 
+/**
+ * What the wrist was doing, as the official app reads a record's type (SleepNewDBService
+ * getSleepStatsBySleepInfoList): 0 deep, 1 light, and 2, 3, 4 and the session's own start
+ * awake. [code] is that type, and what `sleep_stages.stage` stores.
+ */
+enum class SleepStage(val code: Int) { DEEP(0), LIGHT(1), AWAKE(2) }
+
+/** [stage] from [startMs], when its record was written, until the next record. */
+data class SleepPeriod(val startMs: Long, val endMs: Long, val stage: SleepStage) {
+    val durationSeconds: Int get() = ((endMs - startMs) / 1000).toInt()
+}
+
+/** One session, from its start record (0x10) to its end record (0x11). */
+data class SleepSession(val startMs: Long, val endMs: Long, val periods: List<SleepPeriod>) {
+    fun seconds(stage: SleepStage): Int = periods.filter { it.stage == stage }.sumOf { it.durationSeconds }
+
+    /** Sleep is deep and light; awake is not counted (SleepNewDBService's total). */
+    val asleepSeconds: Int get() = seconds(SleepStage.DEEP) + seconds(SleepStage.LIGHT)
+}
+
+/**
+ * A sleep stream as sessions, the way the official app's sync takes it apart
+ * (ModeConvertUtil.getGroupleepDataList, then SleepNewDBService for the durations).
+ *
+ * The watch records a session as its start (0x10), every state its sleep algorithm reports,
+ * then its end (0x11) and the last state again at the same time (#88). One stream holds every
+ * session the watch has, one a night. So: a stable sort by time (the end stays before the state
+ * that shares its time), a session from each 0x10 to the next 0x11, and nothing outside one --
+ * not the state after an end, not a session the stream has no end for (a 0x10 followed by
+ * another 0x10, or the stream's last). Each record's type lasts until the next record; a
+ * period of no length, or of a type the official app does not read, counts for nothing.
+ */
+object SleepSessions {
+    const val START = 0x10
+    const val END = 0x11
+
+    fun stageOf(type: Int): SleepStage? = when (type) {
+        0 -> SleepStage.DEEP
+        1 -> SleepStage.LIGHT
+        START, 2, 3, 4 -> SleepStage.AWAKE
+        else -> null
+    }
+
+    fun group(records: List<SleepRecord>): List<SleepSession> {
+        val sessions = mutableListOf<SleepSession>()
+        var open: MutableList<SleepRecord>? = null
+        for (rec in records.sortedBy { it.timestampMs }) {
+            when (rec.stage) {
+                START -> open = mutableListOf(rec)
+                END -> open?.let {
+                    it += rec
+                    sessions += session(it)
+                    open = null
+                }
+                else -> open?.add(rec)
+            }
+        }
+        return sessions
+    }
+
+    private fun session(records: List<SleepRecord>): SleepSession {
+        val periods = records.zipWithNext().mapNotNull { (from, to) ->
+            val stage = stageOf(from.stage)
+            if (stage == null || to.timestampMs <= from.timestampMs) null
+            else SleepPeriod(from.timestampMs, to.timestampMs, stage)
+        }
+        return SleepSession(records.first().timestampMs, records.last().timestampMs, periods)
+    }
+}
+
 // ── Control device ────────────────────────────────────────────────────────────
 
 object ControlDeviceCommand {

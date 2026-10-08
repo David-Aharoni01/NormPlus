@@ -184,8 +184,9 @@ Room database v5 (`Norm2Database`). All timestamp index columns are **unique** â
 ```
 sport_sessions         timestampEpoch (UNIQUE); activeMinutes is the record's sportTime, in minutes (#89, v5)
 heart_rate_samples     timestampEpoch (UNIQUE)
-sleep_sessions         startEpoch (UNIQUE)
-sleep_stages           (sessionId, timestampEpoch) composite UNIQUE
+sleep_sessions         startEpoch (UNIQUE); one per 0x10..0x11 session on the watch (#90)
+sleep_stages           (sessionId, timestampEpoch) composite UNIQUE; stage is SleepStage.code:
+                       0 deep, 1 light, 2 awake; durationSeconds until the next record (#90)
 blood_pressure         timestampEpoch (non-unique; not yet synced)
 workouts               startEpoch (non-unique)
 notification_rules     packageName (UNIQUE)
@@ -204,6 +205,14 @@ How the reads work, as the smali and both watches have them (#85, `docs/protocol
 - `GET_SPORT_DATA [00 00]` (`GetSportData(cb, 2, 0, count)`) and `GET_HEART_RATE_DATA [00]` are each answered with **every** record, one frame each, indexed from 1. The index in the request is ignored. The physical watch streamed 920 sport records in ~29 s and 271 heart-rate records in ~9 s.
 - So the timeout is an idle one, 10 s without a frame (`Leaf.isTimeout`, reset by `setLastSendTime`), and the stream ends at the frame indexed `count` (`RecordStreams.isLast`). `RecordStreams.assemble` checks what came: each index once, what never came, what did not parse. A short stream is inserted and reported as an error rather than shown as a full history.
 - **The heart-rate count comes from the same `0x52` reply** (`[4..5]`, `AllDataTypeCount`): `TOTAL_HEART_RATE_COUNT`'s reply from this watch is four bytes and `HeartRateCount.smali` accepts two. Asking for the counts also makes the watch write the half hour so far as one more sport record, which is why there is exactly one count per sync.
+- **Sleep comes back as sessions** (#90), as the official sync takes the stream apart
+  (`ModeConvertUtil.getGroupleepDataList`, then `SleepNewDBService`): `SleepSessions.group`
+  makes a session of each 0x10 ... 0x11, each record's stage lasting until the next record
+  (0 deep, 1 light; 2-4 and the start itself awake), and leaves out what is outside one --
+  the state the watch writes again after each end, a session with no end. Time asleep is deep
+  plus light (`SleepBreakdown.totalSec`). It used to be one session from the first record to
+  the last plus five minutes, with the markers stored as stages and the breakdown reading 2 as
+  light and 3 as deep.
 - **What it used to do, and why it timed out:** one `sendAndAwait` per index. The watch restarted its stream from record 1 on every request, so the replies were records 1, 2, 1, 2, 3, 2, ... -- never past ~4 -- while every request left another stream running; some requests were answered `00 02` (wiped by the stream), and on the phone the flood ended in timeouts.
 
 Domain models (`Models.kt`): `DailyStats`, `SleepSummary`, `WorkoutSummary`, `GpsPoint`, `WatchSettings`, `SportType` (24 types).

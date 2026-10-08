@@ -47,8 +47,8 @@ data class SleepStageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: Long,
     val timestampEpoch: Long,
-    val stage: Int,         // 2=light, 3=deep, 4=REM
-    val durationSeconds: Int, // gap to next stage record; last stage uses 5-min convention
+    val stage: Int,         // SleepStage.code: 0 deep, 1 light, 2 awake (the watch has no REM)
+    val durationSeconds: Int, // until the next record in the session; the last stage ends at its end (#90)
 )
 
 @Entity(tableName = "blood_pressure", indices = [Index("timestampEpoch")])
