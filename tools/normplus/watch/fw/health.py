@@ -71,6 +71,12 @@ GET_HEART_RATE_DATA = 0x5B
 #: AUTO_HEART_RATE: SET [minutes between measurements], 0 for off (HeartRateFrequency.smali).
 AUTO_HEART_RATE = 0x5C
 GET_SLEEP_DATA = 0x56
+#: The deletes, each SET [00] (MBluetooth.deleteSportData and friends). Each erases its type's
+#: whole ring (0x0003DA14). Sport only if its count is still the one the last
+#: TOTAL_SPORT_SLEEP_COUNT reported (0x00055C72); sleep and heart rate whatever came since (#91).
+DELETE_SPORT_DATA = 0x53
+DELETE_SLEEP_DATA = 0x55
+DELETE_HEART_RATE_DATA = 0x5A
 #: AUTO_SLEEP: the bedtime and awake time (AutoSleep.smali).
 AUTO_SLEEP = 0x58
 SWITCH_SETTING = 0x90

@@ -198,7 +198,15 @@ Schema migrations live in `di/AppModule.kt`. Bump `Norm2Database.version` and ad
 
 ### Domain Layer (`domain/`)
 
-`SyncHealthDataUseCase` orchestrates the sync as the official app does (`SyncBluetoothDataNew`): **one** `TOTAL_SPORT_SLEEP_COUNT` for every count, then each record type -- sport, heart rate, sleep -- as **one request whose reply is a stream** of every record on the watch, then the clock. It emits `SyncProgress` as a `Flow` (the dashboard shows `Sport data 412/922`). All results are upserted into Room via the DAOs; delete-on-watch stays off (`DELETE_AFTER_SYNC`), and would only follow a complete read.
+`SyncHealthDataUseCase` orchestrates the sync as the official app does (`SyncBluetoothDataNew`): **one** `TOTAL_SPORT_SLEEP_COUNT` for every count, then each record type -- sport, heart rate, sleep -- as **one request whose reply is a stream** of every record on the watch, then the clock. It emits `SyncProgress` as a `Flow` (the dashboard shows `Sport data 412/922`). All results are upserted into Room via the DAOs.
+
+**Delete after syncing** (#91, Settings → Sync, on by default; `WatchPreferences.deleteAfterSync`): once a type's stream is complete and in the database, the sync deletes it from the watch, as the official app does, so the next sync reads only what the watch has written since -- the watch cannot stream from an index, so this is the only way to read less. Each delete (`0x53` / `0x5A` / `0x55`, SET `[00]`) erases that type's whole ring, so what was written after the read would go with it:
+
+- **Sport** is deleted straight after its read: the watch erases it only if its count is still the one this sync's count request reported, and otherwise keeps everything (and acknowledges the same) -- a `:29`/`:59` record that lands mid-sync is read next time.
+- **Heart rate and sleep** have no such guard on the watch, so they are deleted only if a second count, after both reads, says they have not moved: a measurement that ended meanwhile moves the heart-rate count, and a sleep session that began makes the sleep count 0. That second count makes the watch write the half hour so far as a sport record, which stays for the next sync.
+- A delete that fails is only logged: the records stay, and the next sync reads them again, which the unique timestamps make harmless.
+
+On the AVD against the emulated watch: the first sync read 14 sport, 1 heart-rate and 12 sleep records and deleted all three; the next read the 1 sport record written since. Switched off, every sync reads everything, as it did before.
 
 How the reads work, as the smali and both watches have them (#85, `docs/protocol.md` "Health records"):
 

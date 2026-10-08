@@ -30,15 +30,6 @@ import javax.inject.Inject
 
 private const val TAG = "SyncUseCase"
 
-// Whether to delete records off the watch after reading them.
-//
-// The original protocol deletes after each sync to free watch storage (single-consumer model).
-// But as a reverse-engineering tool that must COEXIST with the official app, deleting is
-// destructive: whichever app syncs first drains the records, leaving the other showing zeroes.
-// Default OFF so our sync is non-destructive. The watch keeps its records; our DB de-dupes via
-// the UNIQUE timestamp constraints, so re-reading the same records on each sync is harmless.
-private const val DELETE_AFTER_SYNC = false
-
 sealed class SyncProgress {
     data object Idle : SyncProgress()
     data class Running(val label: String, val current: Int, val total: Int) : SyncProgress()
@@ -96,22 +87,77 @@ class SyncHealthDataUseCase @Inject constructor(
         emit(SyncProgress.Done)
     }
 
+    /**
+     * Each type read and stored, and -- with "delete after syncing" on, the default (#91) -- deleted
+     * from the watch once all of it is in the database, so the next sync reads only what is new.
+     * The watch cannot stream from an index, so this is the only way to read less (#85).
+     *
+     * Every delete erases that type's whole ring (0x0003DA14), and what was written after the read
+     * would go with it. Sport is safe as it is: the watch erases it only if its count is still the
+     * one this sync's count request reported (the data callback compares 0x10006BCC+0x420 with
+     * +0x2F5), and otherwise acknowledges and keeps everything -- a :29/:59 record that landed
+     * mid-sync is read next time. Heart rate and sleep have no such guard, so they are deleted only
+     * if a second count says they have not changed: a measurement that ended in the meantime moves
+     * the heart-rate count, and a sleep session that began makes the sleep count 0.
+     */
     private suspend fun FlowCollector<SyncProgress>.syncEach(counts: DataCounts) {
-        runCatching { syncSportData(counts.sport) { emit(it) } }
+        val delete = watchPreferences.isDeleteAfterSync()
+        val sportRead = runCatching { syncSportData(counts.sport) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "Sport sync failed: ${it.message}", it)
                 emit(SyncProgress.Error("Sport sync failed: ${it.message}"))
-            }
-        runCatching { syncHeartRate(counts.heartRate) { emit(it) } }
+            }.getOrDefault(false)
+        // Straight after the read, as the official app does: the watch's own guard covers it.
+        if (delete && sportRead) deleteFromWatch("sport", CommandCode.DELETE_SPORT_DATA)
+
+        val hrRead = runCatching { syncHeartRate(counts.heartRate) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "HR sync failed: ${it.message}", it)
                 emit(SyncProgress.Error("HR sync failed: ${it.message}"))
-            }
-        runCatching { syncSleep(counts.sleep) { emit(it) } }
+            }.getOrDefault(false)
+        val sleepRead = runCatching { syncSleep(counts.sleep) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "Sleep sync failed: ${it.message}", it)
                 emit(SyncProgress.Error("Sleep sync failed: ${it.message}"))
+            }.getOrDefault(false)
+
+        if (!delete) {
+            Log.i(TAG, "syncEach: delete after syncing is off — every record stays on the watch")
+            return
+        }
+        if (!hrRead && !sleepRead) return
+        // The second count also makes the watch write the half hour so far as a sport record; the
+        // sport delete is already done, so that record stays on the watch for the next sync.
+        val now = runCatching {
+            SyncCountCommand.parseCounts(
+                bleManager.sendAndAwait(CommandCode.TOTAL_SPORT_SLEEP_COUNT, Action.CHECK, byteArrayOf(0x00))
+            )
+        }.onFailure { Log.w(TAG, "syncEach: recount failed (${it.message}) — heart rate and sleep stay on the watch") }
+            .getOrNull() ?: return
+        if (hrRead) {
+            if (now.heartRate == counts.heartRate) deleteFromWatch("heart rate", CommandCode.DELETE_HEART_RATE_DATA)
+            else Log.i(TAG, "syncEach: heart rate went ${counts.heartRate} → ${now.heartRate} during the sync — kept on the watch")
+        }
+        if (sleepRead) {
+            if (now.sleep == counts.sleep) deleteFromWatch("sleep", CommandCode.DELETE_SLEEP_DATA)
+            else Log.i(TAG, "syncEach: sleep went ${counts.sleep} → ${now.sleep} during the sync — kept on the watch")
+        }
+    }
+
+    /**
+     * MBluetooth.deleteSportData / deleteHeartRateData / deleteSleepData: Delete*(callback, 1, 0),
+     * a SET with content `[00]` (`[01]` on 0x5A would delete moods instead). The watch acknowledges
+     * with the generic `01 81 [cmd 00]`. A delete that fails is only logged: the records stay on the
+     * watch and the next sync reads them again, which the UNIQUE timestamps make harmless.
+     */
+    private suspend fun deleteFromWatch(label: String, cmd: CommandCode) {
+        runCatching { bleManager.sendAndAwait(cmd, Action.SET, byteArrayOf(0x00)) }
+            .onSuccess { ack ->
+                val status = ack.payload.getOrNull(1)?.toInt()?.and(0xFF)
+                if (status == 0) Log.i(TAG, "deleted $label from the watch")
+                else Log.w(TAG, "delete $label: the watch answered status $status (${ack.payload.toHex()}) — kept")
             }
+            .onFailure { Log.w(TAG, "delete $label failed: ${it.message} — the records stay on the watch") }
     }
 
     /**
@@ -148,9 +194,10 @@ class SyncHealthDataUseCase @Inject constructor(
         return stream
     }
 
-    private suspend fun syncSportData(count: Int, onProgress: suspend (SyncProgress) -> Unit) {
+    /** True if every record came and is in the database: only then may the watch's copy go. */
+    private suspend fun syncSportData(count: Int, onProgress: suspend (SyncProgress) -> Unit): Boolean {
         Log.i(TAG, "syncSportData: $count record(s) on watch")
-        if (count == 0) return
+        if (count == 0) return false
 
         // Source: MBluetooth.getSportData → GetSportData(callback, 2, 0, count) → payload=[0x00, 0x00]
         val stream = readStream("Sport data", CommandCode.GET_SPORT_DATA, RecordStreams.SPORT_REQUEST,
@@ -173,19 +220,13 @@ class SyncHealthDataUseCase @Inject constructor(
         }
         sportDao.insertAll(records)
         Log.i(TAG, "syncSportData: inserted ${records.size} record(s) into DB")
-        // Source: MBluetooth.smali deleteSportData → DeleteSportData(callback, 1, 0) → payload=[0x00]
-        // Only after a complete read: deleting would lose whatever the stream dropped.
-        if (DELETE_AFTER_SYNC && stream.complete) {
-            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SPORT_DATA, Action.SET, byteArrayOf(0x00))
-            Log.i(TAG, "syncSportData: delete ack action=${delPkt.action}")
-        } else {
-            Log.i(TAG, "syncSportData: non-destructive mode — leaving ${count} record(s) on watch")
-        }
+        return stream.complete
     }
 
-    private suspend fun syncHeartRate(count: Int, onProgress: suspend (SyncProgress) -> Unit) {
+    /** True if every record came and is in the database. */
+    private suspend fun syncHeartRate(count: Int, onProgress: suspend (SyncProgress) -> Unit): Boolean {
         Log.i(TAG, "syncHeartRate: $count record(s) on watch")
-        if (count == 0) return
+        if (count == 0) return false
 
         // Source: MBluetooth.getHeartRateData → GetHeartRateData(callback, 1, 0, count) → payload=[0x00]
         val stream = readStream("Heart rate", CommandCode.GET_HEART_RATE_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
@@ -198,18 +239,16 @@ class SyncHealthDataUseCase @Inject constructor(
         val records = stream.records.map { HeartRateEntity(timestampEpoch = it.timestampMs, bpm = it.bpm) }
         heartRateDao.insertAll(records)
         Log.i(TAG, "syncHeartRate: inserted ${records.size} record(s) into DB")
-        // Source: MBluetooth.smali deleteHeartRateData → DeleteHeartRateData(callback, 1, 0) → payload=[0x00]
-        if (DELETE_AFTER_SYNC && stream.complete) {
-            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_HEART_RATE_DATA, Action.SET, byteArrayOf(0x00))
-            Log.i(TAG, "syncHeartRate: delete ack action=${delPkt.action}")
-        } else {
-            Log.i(TAG, "syncHeartRate: non-destructive mode — leaving ${count} record(s) on watch")
-        }
+        return stream.complete
     }
 
-    private suspend fun syncSleep(count: Int, onProgress: suspend (SyncProgress) -> Unit) {
+    /**
+     * True if every record came and every session is in the database. Records outside a session
+     * are none of the official app's either, so they do not hold the delete back.
+     */
+    private suspend fun syncSleep(count: Int, onProgress: suspend (SyncProgress) -> Unit): Boolean {
         Log.i(TAG, "syncSleep: $count record(s) on watch")
-        if (count == 0) return
+        if (count == 0) return false
 
         // Source: MBluetooth.getSleepData → GetSleepData(callback, 1, 0, count) → payload=[0x00].
         // Streamed by the emulated watch's own firmware (#88, RecordStreamTest); the physical
@@ -225,7 +264,7 @@ class SyncHealthDataUseCase @Inject constructor(
 
         if (rawRecords.isEmpty()) {
             Log.w(TAG, "syncSleep: none of $count record(s) came or parsed — skipping insert and delete")
-            return
+            return false
         }
 
         // One session a night, 0x10 to 0x11, each record's stage lasting until the next record:
@@ -247,14 +286,7 @@ class SyncHealthDataUseCase @Inject constructor(
             }
             sleepDao.insertSessionWithStages(SleepSessionEntity(startEpoch = s.startMs, endEpoch = s.endMs), stages)
         }
-
-        // Source: MBluetooth.smali deleteSleepData → DeleteSleepData(callback, 1, 0) → payload=[0x00]
-        if (DELETE_AFTER_SYNC && stream.complete) {
-            val delPkt = bleManager.sendAndAwait(CommandCode.DELETE_SLEEP_DATA, Action.SET, byteArrayOf(0x00))
-            Log.i(TAG, "syncSleep: delete ack action=${delPkt.action}")
-        } else {
-            Log.i(TAG, "syncSleep: non-destructive mode — leaving ${count} record(s) on watch")
-        }
+        return stream.complete
     }
 }
 

@@ -34,6 +34,7 @@ class WatchPreferences @Inject constructor(
     private val KEY_AUTOSTART = booleanPreferencesKey("autostart_enabled")
     // The user dismissed the battery-optimization exemption prompt — never nag again.
     private val KEY_BATTERY_PROMPT_DISMISSED = booleanPreferencesKey("battery_opt_prompt_dismissed")
+    private val KEY_DELETE_AFTER_SYNC = booleanPreferencesKey("delete_after_sync")
     // Wall-clock time of the last time the link actually reached Ready. Shown in Connection health.
     private val KEY_LAST_CONNECTED = longPreferencesKey("last_connected_epoch")
 
@@ -76,6 +77,22 @@ class WatchPreferences @Inject constructor(
 
     suspend fun setAutoStartEnabled(enabled: Boolean) {
         context.dataStore.edit { it[KEY_AUTOSTART] = enabled }
+    }
+
+    // ── Sync ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Default true (#91): delete each record type from the watch once the sync has all of it, as
+     * the official app does, so the next sync reads only what is new -- the watch cannot stream
+     * from an index. Off keeps the records on the watch for another app to read too.
+     */
+    val deleteAfterSync: Flow<Boolean> = context.dataStore.data.map { it[KEY_DELETE_AFTER_SYNC] ?: true }
+
+    suspend fun isDeleteAfterSync(): Boolean =
+        context.dataStore.data.firstOrNull()?.get(KEY_DELETE_AFTER_SYNC) ?: true
+
+    suspend fun setDeleteAfterSync(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_DELETE_AFTER_SYNC] = enabled }
     }
 
     val batteryPromptDismissed: Flow<Boolean> =

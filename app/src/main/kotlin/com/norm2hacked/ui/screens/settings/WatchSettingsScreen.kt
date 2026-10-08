@@ -237,6 +237,28 @@ fun WatchSettingsScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
+            // ── Sync ──────────────────────────────────────────────────────────
+            // The phone's own setting (#91): it applies at once, not on Save.
+            item {
+                SectionHeader("Sync")
+                SettingCard {
+                    SwitchRow(
+                        label = "Delete records from the watch after syncing",
+                        checked = state.deleteAfterSync,
+                        onCheckedChange = { viewModel.setDeleteAfterSync(it) },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (state.deleteAfterSync)
+                            "Each sync reads only what is new. Records stay on the watch until this app has them all."
+                        else
+                            "Every sync reads every record again. Keeps them on the watch for another app.",
+                        style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
             // ── Power ─────────────────────────────────────────────────────────
             item {
                 SectionHeader("Power")

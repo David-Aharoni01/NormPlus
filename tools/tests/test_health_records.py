@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from normplus.watch.fw import health
-from normplus.watch.fw.phone import EmulatedWatch
+from normplus.watch.fw.phone import SET, EmulatedWatch, ack, frame
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = REPO / "NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin"
@@ -133,6 +133,63 @@ def test_the_firmware_writes_records_and_one_request_streams_them_all():
     assert tick[0]["steps"] > 0 and tick[0]["distance"] > 0, tick[0]
 
 
+def test_a_delete_erases_sport_but_not_a_record_newer_than_the_count():
+    # DELETE_SPORT_DATA SET [00] erases the whole sport ring -- but only if the count is still
+    # the one the last TOTAL_SPORT_SLEEP_COUNT reported (0x00055C72: [0x10006BCC+0x420] against
+    # +0x2F5). A record that lands in between is kept, and the delete is acknowledged all the
+    # same. What :app's delete after syncing relies on (#91). The watch goes on writing after.
+    watch = EmulatedWatch(IMAGE, RESOURCES, flash_state=BOUND)
+    seen = {}
+
+    async def delete():
+        reply = await phone_.exchange(frame(health.DELETE_SPORT_DATA, SET, b"\x00"))
+        await health.watch_seconds(watch.machine, 1.0)
+        return reply
+
+    async def flow(phone):
+        nonlocal phone_
+        phone_ = phone
+        await phone.find(watch.address)
+        await phone.connect(watch.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        await health.write_sport_records(phone, watch, 2, end=datetime(2026, 10, 7, 12, 10))
+        seen["counted"] = (await health.ask_counts(phone))["sport"]
+        seen["read"] = len(await health.read_records(phone, health.GET_SPORT_DATA, seen["counted"]))
+        # A :29 record after the count, as a tick in the middle of a sync would write it.
+        await health.write_sport_records(phone, watch, 1, end=datetime(2026, 10, 7, 12, 40))
+        seen["raced_ack"] = await delete()
+        seen["after_raced"] = (await health.ask_counts(phone))["sport"]
+        seen["ack"] = await delete()
+        seen["after"] = sport_count(watch)
+        ticks = await health.write_sport_records(phone, watch, 2, end=datetime(2026, 10, 7, 14, 10))
+        seen["new"] = [health.sport_record(r)["timestamp"] for r in await health.read_records(
+            phone, health.GET_SPORT_DATA, sport_count(watch))]
+        seen["ticks"] = [int(t.timestamp()) for t in ticks]
+        await phone.disconnect()
+
+    phone_ = None
+    try:
+        watch.start(seconds=200)
+        watch.drive(flow, timeout=300)
+    finally:
+        watch.stop()
+
+    acked = ack(health.DELETE_SPORT_DATA)
+    assert seen["read"] == seen["counted"] >= 2, seen
+    assert seen["raced_ack"] == acked, seen["raced_ack"]
+    # Nothing erased: the counted records and the raced one (and this count's own, if it wrote one).
+    assert seen["after_raced"] >= seen["counted"] + 1, seen
+    assert seen["ack"] == acked and seen["after"] == 0, seen
+    assert seen["new"][:2] == seen["ticks"], seen
+
+
+def sport_count(watch) -> int:
+    """The sport ring's count, from the store's state (0x10006BCC + 0x2F5)."""
+    return int.from_bytes(watch.machine.uc.mem_read(0x10006BCC + 0x2F5, 4), "little")
+
+
 def test_the_firmware_measures_a_pulse_and_stores_the_rate():
     # Auto heart rate on, a 72 bpm pulse under the PAH8011: the firmware's own
     # driver and PixArt's algorithm measure it, and the record it stores says 72
@@ -191,7 +248,11 @@ def test_the_firmware_records_a_sleep_session_and_one_request_streams_it():
         seen["counts"] = await health.ask_counts(phone)
         seen["records"] = await health.read_records(phone, health.GET_SLEEP_DATA,
                                                     seen["counts"]["sleep"])
-        # Asleep again: the records are still there, and the count hides them.
+        # DELETE_SLEEP_DATA erases them, with no count to check against (#91).
+        reply = await phone.exchange(frame(health.DELETE_SLEEP_DATA, SET, b"\x00"))
+        await health.watch_seconds(watch.machine, 1.0)
+        seen["deleted"] = (reply, (await health.ask_counts(phone))["sleep"])
+        # Asleep again: a new session's records are there, and the count hides them.
         await health.set_switches(phone, seen["mask"] | health.AUTO_SLEEP_SWITCH)
         stored = health.sleep_records_written(watch.machine)
         await health.set_clock(phone, datetime(2026, 10, 7, 22, 59, 50))
@@ -222,6 +283,7 @@ def test_the_firmware_records_a_sleep_session_and_one_request_streams_it():
     assert start == int(bedtime.timestamp()), (start, bedtime)
     # Ended by the clock moving to the morning, and stamped with the time it moved from.
     assert 75 <= end - start <= 90, (start, end)
+    assert seen["deleted"] == (ack(health.DELETE_SLEEP_DATA), 0), seen["deleted"]
     assert seen["asleep"], "auto sleep did not start a second session"
     assert seen["asleep_counts"]["sleep"] == 0, seen["asleep_counts"]
 
