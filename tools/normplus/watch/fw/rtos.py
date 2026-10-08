@@ -92,7 +92,9 @@ def list_tasks(machine) -> list[TaskInfo]:
 
     tasks: list[TaskInfo] = []
     seen: set[int] = set()
-    for match in re.finditer(rb"[A-Za-z][A-Za-z0-9_ ]{2,15}\x00", ram):
+    # Two characters at least: the heart-rate task, made when a measurement
+    # starts, is called "HR" (#87).
+    for match in re.finditer(rb"[A-Za-z][A-Za-z0-9_ ]{1,15}\x00", ram):
         name_address = SRAM_BASE + match.start()
         for offset in TCB_NAME_OFFSET_CANDIDATES:
             tcb = name_address - offset

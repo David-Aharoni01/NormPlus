@@ -19,6 +19,8 @@ TOOLS = [
       "normwatch boot --no-ble                     boot to the UI and print a report",
       "normwatch boot --phone --live --flash-state watch.zip   on the air, for the Android emulator",
       "normwatch records --flash-state watch.zip   a day of sport records to sync (its own firmware writes them)",
+      "normwatch records --flash-state watch.zip --count 0 --heart-rate 5   five heart-rate readings it measures",
+      "normwatch records --flash-state watch.zip --count 0 --sleep 2        two nights' sleep sessions it records",
       "normwatch info                              the firmware image's header",
       "normwatch dump -o DIR --range 026DA430-0496C000   read the NAND out (needs a patched image)"]),
     ("normcmd", "normplus.watch.__main__:cmd_main",

@@ -5,6 +5,10 @@ emulated one. The firmware writes them itself -- at the :29 and :59 minute ticks
 and when asked for the counts (``fw/health.py``) -- so moving its clock to just
 before a tick is enough to give it a history, and walking its wrist puts steps in it.
 
+Heart rate is measured the same way: a pulse under the emulated PAH8011, and the
+firmware's driver and PixArt's algorithm store its rate (#87). And sleep: auto sleep
+and the clock at bedtime, and the firmware's sleep algorithm records a still wrist (#88).
+
 The second half is what the sync gets wrong (#85): one ``GET_SPORT_DATA`` is
 answered with every record, indexed from 1, whatever index the request names. The
 physical watch does the same; the replies from it pinned here were read on
@@ -127,6 +131,99 @@ def test_the_firmware_writes_records_and_one_request_streams_them_all():
     tick = [r for r in walked if r["timestamp"] == int(seen["walk_tick"].timestamp())]
     assert tick, (seen["walk_tick"], walked)
     assert tick[0]["steps"] > 0 and tick[0]["distance"] > 0, tick[0]
+
+
+def test_the_firmware_measures_a_pulse_and_stores_the_rate():
+    # Auto heart rate on, a 72 bpm pulse under the PAH8011: the firmware's own
+    # driver and PixArt's algorithm measure it, and the record it stores says 72
+    # (#87). Then the stream gives it back, 7 bytes, as GetHeartRateData reads it.
+    watch = EmulatedWatch(IMAGE, RESOURCES, flash_state=BOUND)
+    seen = {}
+
+    async def flow(phone):
+        await phone.find(watch.address)
+        await phone.connect(watch.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        await health.set_clock(phone, datetime(2026, 10, 7, 10, 0, 50))
+        seen["stored"] = await health.write_heart_rate_records(phone, watch, 1, bpm=72)
+        seen["counts"] = await health.ask_counts(phone)
+        seen["records"] = await health.read_records(phone, health.GET_HEART_RATE_DATA,
+                                                    seen["counts"]["heart_rate"])
+        await phone.disconnect()
+
+    try:
+        watch.start(seconds=300)
+        watch.drive(flow, timeout=400)
+    finally:
+        watch.stop()
+
+    assert seen["stored"] == 1, seen
+    assert seen["counts"]["heart_rate"] >= 1, seen["counts"]
+    records = [health.heart_rate_record(r) for r in seen["records"]]
+    assert all(records), [r.hex(" ") for r in seen["records"]]
+    assert [r["index"] for r in records] == list(range(1, len(records) + 1)), records
+    assert all(abs(r["bpm"] - 72) <= 2 for r in records), records
+    assert watch.heart.wrist is None, "the pulse was left under the sensor"
+
+
+def test_the_firmware_records_a_sleep_session_and_one_request_streams_it():
+    # Auto sleep on and the clock at bedtime: the firmware's own window check starts a
+    # session, its sleep algorithm calls a still wrist awake after a minute, and moving
+    # the clock ends the session (#88). One GET_SLEEP_DATA streams it, 10 bytes a
+    # record. While a session is on, the counts say there is no sleep.
+    watch = EmulatedWatch(IMAGE, RESOURCES, flash_state=BOUND)
+    bedtime = datetime(2026, 10, 6, 23, 0)
+    seen = {}
+
+    async def flow(phone):
+        await phone.find(watch.address)
+        await phone.connect(watch.address)
+        await phone.pair()
+        await phone.discover()
+        await phone.listen()
+        seen["before"] = await health.ask_counts(phone)
+        seen["mask"] = await health.switches(phone)
+        seen["nights"] = await health.write_sleep_records(
+            phone, watch, 1, end=datetime(2026, 10, 7, 12, 0), asleep=75)
+        seen["mask_after"] = await health.switches(phone)
+        seen["counts"] = await health.ask_counts(phone)
+        seen["records"] = await health.read_records(phone, health.GET_SLEEP_DATA,
+                                                    seen["counts"]["sleep"])
+        # Asleep again: the records are still there, and the count hides them.
+        await health.set_switches(phone, seen["mask"] | health.AUTO_SLEEP_SWITCH)
+        stored = health.sleep_records_written(watch.machine)
+        await health.set_clock(phone, datetime(2026, 10, 7, 22, 59, 50))
+        for _ in range(40):
+            if health.sleep_records_written(watch.machine) > stored:
+                break
+            await health.watch_seconds(watch.machine, 0.5)
+        seen["asleep"] = health.sleep_records_written(watch.machine) > stored
+        seen["asleep_counts"] = await health.ask_counts(phone)
+        await phone.disconnect()
+
+    try:
+        watch.start(seconds=300)
+        watch.drive(flow, timeout=400)
+    finally:
+        watch.stop()
+
+    assert seen["before"]["sleep"] == 0, seen["before"]
+    assert seen["nights"] == [(bedtime, datetime(2026, 10, 7, 7, 0))], seen["nights"]
+    assert seen["mask_after"] == seen["mask"], "the switches were not put back"
+    records = [health.sleep_record(r) for r in seen["records"]]
+    assert all(records), [r.hex(" ") for r in seen["records"]]
+    assert [r["index"] for r in records] == list(range(1, seen["counts"]["sleep"] + 1)), records
+    assert [r["type"] for r in records] == [health.SLEEP_START, health.SLEEP_AWAKE,
+                                            health.SLEEP_END, health.SLEEP_AWAKE], records
+    assert all(r["rest"] == bytes(3) for r in records), records
+    start, end = records[0]["timestamp"], records[2]["timestamp"]
+    assert start == int(bedtime.timestamp()), (start, bedtime)
+    # Ended by the clock moving to the morning, and stamped with the time it moved from.
+    assert 75 <= end - start <= 90, (start, end)
+    assert seen["asleep"], "auto sleep did not start a second session"
+    assert seen["asleep_counts"]["sleep"] == 0, seen["asleep_counts"]
 
 
 if __name__ == "__main__":

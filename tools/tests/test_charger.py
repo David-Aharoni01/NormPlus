@@ -68,6 +68,15 @@ def test_a_sequential_read_puts_the_status_in_the_right_slot():
 
 # -- both halves share one bus ------------------------------------------------
 
+def _open_drain(gpio, *pins):
+    """OUTCFG = 2 for each pin, as ew_drv_sim_i2c.c configures the lines; a
+    released line then reads the board's pull-up."""
+    for pin in pins:
+        offset = Gpio.CFG_BASE + (pin // 8) * 4
+        nibble = (pin % 8) * 4
+        gpio.storage[offset] = (gpio.storage.get(offset, 0) & ~(0xF << nibble)) | (4 << nibble)
+
+
 def _set(gpio, pin, level):
     bank, bit = divmod(pin, 32)
     offset = (Gpio.WTSA, Gpio.WTSB)[bank] if level else (Gpio.WTCA, Gpio.WTCB)[bank]
@@ -107,6 +116,7 @@ def _recv(gpio):
 def test_the_gauge_and_the_charger_are_told_apart_on_the_wire():
     gpio = Gpio(0x40010000, 0x1000)
     bus = BitBangI2cBus(gpio, PMU_SCL_PIN, PMU_SDA_PIN)
+    _open_drain(gpio, PMU_SCL_PIN, PMU_SDA_PIN)
     bus.devices[PMU_I2C_ADDRESS] = Cw6303Pmu(percent=55.0)
     bus.devices[CHARGER_I2C_ADDRESS] = Cw6303Charger(charging=True)
 
@@ -130,6 +140,7 @@ def test_the_gauge_and_the_charger_are_told_apart_on_the_wire():
 def test_nothing_on_the_bus_goes_unanswered_now():
     gpio = Gpio(0x40010000, 0x1000)
     bus = BitBangI2cBus(gpio, PMU_SCL_PIN, PMU_SDA_PIN)
+    _open_drain(gpio, PMU_SCL_PIN, PMU_SDA_PIN)
     bus.devices[PMU_I2C_ADDRESS] = Cw6303Pmu()
     bus.devices[CHARGER_I2C_ADDRESS] = Cw6303Charger()
     for address in (PMU_I2C_ADDRESS, CHARGER_I2C_ADDRESS):

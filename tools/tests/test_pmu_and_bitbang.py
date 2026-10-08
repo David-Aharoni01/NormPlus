@@ -31,10 +31,27 @@ class Recorder(I2cDevice):
         self.writes.append((register, bytes(data)))
 
 
-def build():
+def open_drain(gpio, *pins):
+    """What ``am_hal_gpio_pinconfig`` leaves in CFG for an open-drain output
+    (OUTCFG = 2), as ew_drv_sim_i2c.c configures both lines."""
+    for pin in pins:
+        offset = Gpio.CFG_BASE + (pin // 8) * 4
+        nibble = (pin % 8) * 4
+        cfg = gpio.storage.get(offset, 0) & ~(0xF << nibble)
+        gpio.storage[offset] = cfg | (2 << 1) << nibble
+
+
+def as_input(gpio, pin):
+    """OUTCFG = 0: the pad stops driving, as the driver does before it reads."""
+    offset = Gpio.CFG_BASE + (pin // 8) * 4
+    gpio.storage[offset] = gpio.storage.get(offset, 0) & ~(0x6 << ((pin % 8) * 4))
+
+
+def build(device=None):
     gpio = Gpio(0x40010000, 0x1000)
     bus = BitBangI2cBus(gpio, SCL, SDA)
-    device = Recorder()
+    open_drain(gpio, SCL, SDA)
+    device = device or Recorder()
     bus.devices[ADDR] = device
     return gpio, bus, device
 
@@ -65,12 +82,24 @@ def send_byte(gpio, value):
     _set(gpio, SCL, 0)
 
 
-def read_byte(gpio):
+def read_byte(gpio, *, last=True, as_the_driver_does=False):
+    """Eight bits in, then the master's acknowledge: a NAK if *last*.
+
+    *as_the_driver_does*: drive SDA low for the ACK, then turn SDA into an
+    input before the next byte -- ew_drv_sim_i2c.c's read at 0x00032210.
+    """
     bits = []
+    if as_the_driver_does:
+        as_input(gpio, SDA)
+    else:
+        _set(gpio, SDA, 1)                 # released, so the slave can drive it
     for _ in range(8):
         _set(gpio, SCL, 1)
         bits.append(gpio.level(SDA))
         _set(gpio, SCL, 0)
+    if as_the_driver_does:
+        open_drain(gpio, SDA)
+    _set(gpio, SDA, 1 if last else 0)      # NAK or ACK, on the ninth clock
     _set(gpio, SCL, 1)
     _set(gpio, SCL, 0)
     return int("".join(str(b) for b in bits), 2)
@@ -131,6 +160,53 @@ def test_an_address_nobody_answers_is_counted_not_crashed():
     send_byte(gpio, 0x09 << 1)
     stop(gpio)
     assert bus.unanswered[0x09] == 1, dict(bus.unanswered)
+
+
+class Fifo(I2cDevice):
+    """A port that pops: what the PAH8011's bank 3 is (``read_byte``)."""
+
+    def __init__(self, data):
+        self.data = bytearray(data)
+        self.popped = 0
+
+    def read_byte(self, register):
+        self.popped += 1
+        return self.data.pop(0) if self.data else 0
+
+
+def burst(gpio, count, **kw):
+    start(gpio)
+    send_byte(gpio, ADDR << 1); send_byte(gpio, 0x00)
+    start(gpio)
+    send_byte(gpio, (ADDR << 1) | 1)
+    got = [read_byte(gpio, last=(i == count - 1), **kw) for i in range(count)]
+    stop(gpio)
+    return got
+
+
+def test_a_streaming_read_pops_only_what_the_master_clocks():
+    # Prefetching a run, or fetching one byte past the master's NAK, pops FIFO
+    # bytes nobody reads: every burst after that one is misaligned (#87).
+    gpio, bus, fifo = build(Fifo(range(1, 40)))
+    assert burst(gpio, 4) == [1, 2, 3, 4]
+    assert fifo.popped == 4, fifo.popped
+    assert burst(gpio, 3) == [5, 6, 7]
+    assert fifo.popped == 7, fifo.popped
+
+
+def test_a_data_bit_of_one_is_not_taken_for_a_nak():
+    # The master's acknowledge is the ninth clock. 0x01 ends in a 1, and
+    # reading that eighth bit as the acknowledge stopped the read after it.
+    gpio, bus, fifo = build(Fifo([0x01, 0xC9, 0xFE, 0x0F]))
+    assert burst(gpio, 4) == [0x01, 0xC9, 0xFE, 0x0F]
+
+
+def test_a_released_line_reads_high_after_the_master_drove_its_ack():
+    # The driver acknowledges with SDA low, then turns SDA into an input to read
+    # the next byte. Without the board's pull-up the line read the master's
+    # stale low, and every byte after the first arrived as zeros (#87).
+    gpio, bus, fifo = build(Fifo([0xC9, 0xFE, 0x0F, 0x00]))
+    assert burst(gpio, 4, as_the_driver_does=True) == [0xC9, 0xFE, 0x0F, 0x00]
 
 
 def test_a_slave_can_pull_the_line_low_against_a_driven_high():

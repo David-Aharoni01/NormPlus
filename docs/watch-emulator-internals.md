@@ -1827,7 +1827,8 @@ swallows its payload rather than leaving it for the next device.
 
 ### The motion sensor has to fill its FIFO on the clock
 
-The accelerometer on IOM1 at 0x68 is an InvenSense MPU-6500-class part, and the
+The accelerometer on IOM1 at 0x68 is an InvenSense ICM-20602-class part (the init
+writes a FIFO watermark threshold to 0x60/0x61, which an MPU-6500 does not have), and the
 whole model is transcribed from the firmware rather than a datasheet. Bring-up at
 `0x000522FC` reads `WHO_AM_I` (0x75), resets through `PWR_MGMT_1` = 0x80, waits
 100 ms, then walks a 16-entry (register, value) table at `0x000CE058`:
@@ -1848,11 +1849,15 @@ that only answers register reads stays silent. `MotionSensor` therefore runs off
 the emulated clock like the TE line, filling its FIFO at whatever rate
 `SMPLRT_DIV` asks for.
 
-It is configured correctly and streaming, and **the firmware still never reads
-it**. The sample reader at `0x00051F78` is reached only through a vtable (its
-pointer sits at `0x0005235C`), and nothing has been seen to call it; pulsing each
-of the interrupt-capable GPIOs in turn does not either. That is the next thing to
-find.
+For a while it streamed and **the firmware never read it**: the interrupt line had
+no pin. Pin 16 was the fix ("The accelerometer needed its interrupt before it was
+ever read"). Two more things were wrong until #87, and both made the step task
+handle every batch twice (see "Heart rate" below): the line's return after the FIFO
+is read was latched as a second interrupt -- the init writes `INT_PIN_CFG` (0x37)
+= 0, a pulse, so there is one edge per watermark -- and `FIFO_WM_INT_STATUS` (0x39)
+answered with the init's write of 0x40 instead of being a status. The reader checks
+its bit 6 before every read (`tst r0, #0x40` at `0x00052036`), so an empty FIFO
+looked full.
 
 ### Health records: the firmware writes them, the clock decides when (#51)
 
@@ -1901,13 +1906,120 @@ snapshot carries it. 200 records take ~8 minutes with the radio up, 202 crossing
 **Steps.** The firmware drains the accelerometer's FIFO (the read side at `0x00052000`) and
 its pedometer counts: `devices.Walking` (gravity on Z, a bounce at the step rate) on
 `MotionSensor.motion` for ~70 s gave a record of 261 steps, 186 m, sportTime 1. Standing
-still, or a 0.05 g bounce, counts none; 2 Hz counts 237 a minute whatever the waveform, 1 Hz
-167 -- so it counts, but its algorithm is not modelled, and a test asserts only "walking
-> 0".
+still, or a 0.05 g bounce, counts none; 2 Hz counted 237 a minute whatever the waveform, 1 Hz
+167 -- twice too many, because every batch was handled twice (#87, "Heart rate" below). Since
+that fix a minute at 2 Hz counts 121, one a bounce, and 1 Hz 108. The algorithm is not
+modelled, and a test asserts only "walking > 0".
 
 **Reading them back** is the stream in `docs/protocol.md` ("Health records"): one request,
 every record, index ignored. `tests/test_health_records.py` pins it on this watch, and the
 physical watch's own frames in `:protocol`'s `RecordStreamTest`.
+
+### Heart rate: the firmware measures a pulse (#87)
+
+A heart-rate record is not written on a tick: each one is a measurement. With auto heart
+rate on (`AUTO_HEART_RATE` 0x5C, SET `[minutes]`), the firmware starts a task called `HR`
+(priority 8, one below the step task) at every interval, powers the PixArt PAH8011, feeds
+its samples and the wrist's motion to PixArt's algorithm (`pah_hrd_function.c`, a licensed
+blob), and when the algorithm says it has a rate (0x30) stores a 7-byte record in ring
+type 2, `0xEE000`/`0xF0000`. So the model is the sensor and something under it --
+`devices.Pah8011` and `devices.Pulse` -- and the measurement is the firmware's.
+
+**The part.** It is not on an IOM: `ew_drv_sim_i2c.c` clocks it by hand, like the gauge.
+The bit-bang device table at `0x000C92DF` has `2A 27 28`, 8-bit address 0x2A (0x15) on
+SCL 39 / SDA 40, and `hr_pah8011.c` powers it through pin 17 (open at `0x00047D7A`, close
+at `0x00047D2C`). The register map in the class docstring is the driver's own sequence:
+product id 0x11 in bank 0, the FIFO port in bank 3, its count at bank 2 0x25/0x26, an XOR
+of every word of the last read at bank 2 0x1C-0x1F that the driver checks (`0x00088424`,
+error 0xA), the interrupt status at bank 2 0x1B (write one to clear), touch at bank 2
+0x00.
+
+**Its rate was read off the physical watch.** Polling RAM through 0xEE while the owner
+wore it and started a measurement: the algorithm's input at `0x10011D40` took 8 to 11
+frames a fill, one fill every ~494 ms. 20 Hz, which is also the 20 frames per report the
+driver asks for and the 0x0FA0 in bank 1 0x26-0x27 as 4000 ticks of an 80 kHz clock.
+
+**What it took** was all in the models the sensor sits on, in the order they showed up:
+
+- **A byte is read when the master clocks it.** The driver reads the FIFO in one burst of
+  whole words. The bus fetched from the device a byte ahead, so every burst popped a
+  sample too many, and the algorithm answered 0x6 instead of success. A device now opts
+  in to byte-at-a-time reads with `I2cDevice.read_byte`, and nothing is fetched after the
+  master's NAK.
+- **The NAK is on the ninth clock**, not the eighth bit: a data bit of 1 was taken for a
+  NAK and ended the read.
+- **The lines have pull-ups.** After the master drove its ACK low and let go, SDA read back
+  the 0 it had driven. `Gpio` now reads each pin through its own OUTCFG (input, open-drain
+  released, tristate without its enable), and the bus pulls its two lines up as the board
+  does. The gauge and charger tests now set their pads open-drain, as the firmware does.
+- **One motion interrupt per batch.** The HR task is fed from the step task's accelerometer
+  batches. The motion model latched the line's return as a second interrupt and answered
+  0x39 with a stale "full" (above), so after every batch the step task woke again, 14 ms
+  later, and fed the algorithm a second time with no PPG frames in it. The physical watch
+  feeds once every ~494 ms. `Gpio.release_irq` puts a line back without latching it; the
+  GPIO interrupt counts in `golden.json` halved, and so did the steps (see "Steps" above).
+- **A sinusoid, not a heartbeat.** With all of that the algorithm said 0x30, and 143 for a
+  72 bpm pulse shaped like a real one: a systolic peak and a dicrotic dip are two peaks a
+  beat. One sinusoid at the rate comes back as the rate, 72.
+- `rtos.list_tasks` missed the task: its name pattern wanted three characters, and the task
+  is called `HR`.
+
+**In use.** `fw/health.write_heart_rate_records` turns auto heart rate on at one minute,
+puts a `Pulse` under the sensor, waits on `flash_programs` for the heart-rate ring and turns
+both off again; about a minute and a half of watch time a record. `normwatch records
+--heart-rate N` (`--bpm` for another rate), and `test_health_records` measures 72 bpm and
+reads the record back through the stream. The PPG itself is invented: a DC level and a 1%
+sinusoid, the same on both channels, whose scale is not from a datasheet. Only the rate
+coming back has been checked.
+
+### Sleep: recorded only in sleep mode, and hidden while it lasts (#88)
+
+Neither watch had a sleep record: the physical one's counts say 0, and nothing on this one
+had ever asked for one. The firmware records sleep only in **sleep mode**, a flag at
+`0x10006BCC + 0x357`, and nothing turns it on unless asked:
+
+- **by hand**: the sleep screen, five right-to-left swipes from the face, has a play button.
+  Its handler (`0x00067594`, event 0x88B) flips the flag. The button is one of the images
+  only the factory NAND has, so with `--no-factory-resources` there is nothing to tap;
+- **by auto sleep**: the check at `0x000585D2` runs only when switch bit 0x8 is set
+  (`SWITCH_BIT_AUTO_SLEEP`; the bound fixture's mask is `0x002093F0`, off). Inside the
+  `AUTO_SLEEP` window (`[0x6C..0x6F]`, default 23:00-07:00; `0x0003B3F8` is the window test,
+  the awake minute itself outside it) it turns sleep mode on, and at the awake minute off.
+
+Either way `0x0005DB2C` posts message 0x0C to the queue at `[0x10001314 + 0x48]`, whose task
+(loop at `0x0005D040`) starts or ends the session in `0x0008668C`. The same task takes the
+accelerometer's batches (message 3) and runs each sample through the motion algorithm at
+`0x000492E4`; when that reports a sleep-state change, message 0x0B carries it to
+`0x0005D40A`, which maps the algorithm's 2, 1, 0, -1 to record types 0, 1, 2, 3 and posts
+message 0x1D (API-table entry 0xDC, `0x0005E434`) to the task whose loop is at `0x0005E0F0`
+-- the one that appends sport records on 0x1A -- where `0x0003D650` appends it to ring
+type 1, `0xE8000`/`0xEA000`. A record in flash is `[time 4][type 1][00 00 00]`; `GET_SLEEP_DATA`
+(`0x0003A2BC`) sends it with its index in front, 10 bytes. The official app reads the type
+as 0 deep, 1 light, 2-4 awake (`SleepNewDBService`), each until the next record.
+
+A still wrist, from the play button, with nothing else going on:
+
+```
+  0:00  0x10 start
+  1:00  0x02 awake
+  2:00  0x01 light
+  5:00  0x00 deep            ...and deep for the next seven minutes measured
+  stop  0x11 end, 0x02 awake  (both at the stop, end first)
+```
+
+**Two things a phone sees.** While a session is on, `TOTAL_SPORT_SLEEP_COUNT` says sleep 0:
+the data callback's 0x52 case (`0x00055C5C`) skips the count when the flag is set. And a
+clock change ends the session: `0x0003B478` calls any change of date or hour, or of more than
+two minutes forward, a new time, and then the DATETIME handler ends a session before it takes
+the new time, so the end is stamped with **the old time**. `SPORT_SLEEP_MODE` (0x51) CHECK
+answers `[00]` asleep or awake.
+
+**Making it quick.** `fw/health.write_sleep_records` uses both: auto sleep on, the clock ten
+seconds before bedtime (the session starts on the minute), `--asleep` seconds of a still wrist
+(330 by default, to reach deep), then the clock half a minute past the awake time. That ends
+the session, stamped when the clock was moved, and the window test keeps another from
+starting. So a session is minutes long, not a night; `test_health_records` pins one, and the
+stream, and the hidden count. `normwatch records --sleep N`.
 
 ### The clock stood still: the RTC was storage (#81)
 

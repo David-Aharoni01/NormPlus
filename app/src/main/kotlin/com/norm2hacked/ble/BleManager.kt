@@ -86,6 +86,21 @@ private const val WARM_STABLE_MS = 5_000L
 // every warm drop), pinning the radio and never giving up.
 private const val MAX_CONSECUTIVE_WARM_FLAPS = 5
 
+// What a record stream asks of the link (#86), measured on the physical watch syncing 952 sport
+// records from the AVD: 139 s as the link was, 71 s with the MTU, 32 s with the MTU and the
+// priority re-asserted.
+//
+// The ATT MTU: at 23 a 34-byte sport frame is two notifications; at 247 it is one. Asked once
+// per connection, at the first stream, not at connect (the cold-connect story, #48). The
+// official app never asks (PBluetooth.requestMtu has no caller).
+private const val STREAM_MTU = 247
+// The connection interval: the watch streams about 32 frames/s at 15 ms, but some 20 s after
+// every connection it asks for 120-180 ms, latency 2 (its own table at 0x000CE1F4), and Android
+// grants it -- 10 frames/s. HIGH priority at the start of a stream does not stop that request;
+// asking again does win the link back, and in every stream measured the watch asked only once,
+// so a stream re-asserts HIGH every few seconds until it ends.
+private const val STREAM_PRIORITY_REASSERT_MS = 4_000L
+
 @Singleton
 @SuppressLint("MissingPermission")
 class BleManager @Inject constructor(
@@ -291,7 +306,7 @@ class BleManager @Inject constructor(
         scope.launch { for (p in newPacketCh) _parsedFlow.emit(p) }
         scope.launch { for (b in newOtaCh) _otaFlow.emit(b) }
 
-        val q = BleWriteQueue(scope, _parsedFlow).also { queue = it; it.start() }
+        val q = BleWriteQueue(scope, _parsedFlow, streamLink).also { queue = it; it.start() }
 
         val cb = BleGattCallback(
             onConnectionStateChange = { g, connected ->
@@ -692,6 +707,39 @@ class BleManager @Inject constructor(
             offset += chunk.size
         }
         Log.d(TAG, "writeToCharAwait complete ($chunkNum chunks)")
+    }
+
+    /**
+     * What a record stream asks of the link (#86): the larger MTU, and a fast interval for as long
+     * as the stream lasts ([STREAM_MTU], [STREAM_PRIORITY_REASSERT_MS]).
+     *
+     * When the stream ends the link goes to LOW_POWER (100-125 ms, latency 2), the nearest public
+     * setting to the 120-180 ms, latency 2 the watch asks for itself: BALANCED would hold an
+     * always-on connection at 50 ms, faster than the watch wants for its battery.
+     */
+    private val streamLink = object : BulkLink {
+        private var reassert: Job? = null
+
+        override suspend fun begin() {
+            val g = gatt ?: return
+            if (STREAM_MTU > attMtu) Log.i(TAG, "stream: ATT MTU ${requestMtu(STREAM_MTU)}")
+            if (!g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)) {
+                Log.w(TAG, "stream: requestConnectionPriority(HIGH) was not accepted")
+            }
+            reassert?.cancel()
+            reassert = scope.launch {
+                while (true) {
+                    delay(STREAM_PRIORITY_REASSERT_MS)
+                    gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                }
+            }
+        }
+
+        override fun end() {
+            reassert?.cancel()
+            reassert = null
+            gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
+        }
     }
 
     /**

@@ -15,7 +15,7 @@ class SportCommandTest {
         steps: Int = 1234,
         caloriesRaw: Int = 33_000,
         distance: Int = 500,
-        durationSec: Int = 3600,
+        activeMinutes: Int = 11,
         avgBpm: Int = 72,
         type: Int = 1,
         staticCalorie: Int = 5000,
@@ -33,7 +33,7 @@ class SportCommandTest {
         put32(6, steps)
         put32(10, caloriesRaw)
         put32(14, distance)
-        put32(18, durationSec)
+        put32(18, activeMinutes)
         b[22] = avgBpm.toByte()
         b[23] = type.toByte()
         put32(24, staticCalorie)
@@ -50,7 +50,7 @@ class SportCommandTest {
         assertEquals(1234, rec.steps, "steps [6..9]")
         assertEquals(33.0f, rec.calories, "calories [10..13] / 1000")
         assertEquals(500.0f, rec.distanceMeters, "distance [14..17]")
-        assertEquals(3600, rec.durationSeconds, "sportTime [18..21]")
+        assertEquals(11, rec.activeMinutes, "sportTime [18..21], in minutes")
         assertEquals(72, rec.avgHr, "avgBpm single byte [22]")
         assertEquals(1, rec.sportType, "type single byte [23]")
     }

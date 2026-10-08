@@ -35,8 +35,25 @@ it holds as many as the count said (``GetSportData.parse80BytesArray``), restart
 its 10 s timer on every frame (``Leaf.isTimeout``, ``setLastSendTime``). The physical
 watch streamed 920 sport records in about 29 s and 271 heart-rate records in 9 s.
 
-There is no heart-rate sensor model, so this watch has no heart-rate records, and none
-for sleep.
+**Heart rate is measured, not written** (#87). With auto heart rate on
+(``AUTO_HEART_RATE`` 0x5C, SET ``[minutes]``) the firmware opens the PAH8011 at every
+interval, feeds its samples and the wrist's motion to PixArt's algorithm once per
+accelerometer batch, and when the algorithm has a rate -- about a minute in -- stores a
+7-byte record in the heart-rate ring (type 2, :data:`HEART_RATE_PAGES`). Put a
+:class:`devices.Pulse` under the sensor and the record says its rate:
+:func:`write_heart_rate_records` does that.
+
+**Sleep is recorded only in sleep mode** (#88), which the wearer starts from the sleep
+screen or auto sleep starts: with :data:`AUTO_SLEEP_SWITCH` set, the minute check at
+``0x000585D2`` turns it on inside the ``AUTO_SLEEP`` window and off at its awake minute.
+A session stores its start (0x10), every state the sleep algorithm reports from the
+accelerometer batches (``0x0005D40A``), and at its end 0x11 and the last state, in the
+sleep ring (type 1, :data:`SLEEP_PAGES`). A still wrist goes awake, light, deep at one,
+two and five minutes. Two things a phone sees: while a session is on, the counts say
+**no sleep** (the data callback's 0x52 case skips the count when sleep mode is on,
+``0x00055C5C``), and a clock change of more than a couple of minutes ends the session,
+stamped with the time before the change (``0x0003B478``). :func:`write_sleep_records`
+uses both.
 """
 
 from __future__ import annotations
@@ -51,6 +68,15 @@ from .phone import CHECK, DATETIME, SET, ack, datetime_payload, frame
 TOTAL_SPORT_SLEEP_COUNT = 0x52
 GET_SPORT_DATA = 0x54
 GET_HEART_RATE_DATA = 0x5B
+#: AUTO_HEART_RATE: SET [minutes between measurements], 0 for off (HeartRateFrequency.smali).
+AUTO_HEART_RATE = 0x5C
+GET_SLEEP_DATA = 0x56
+#: AUTO_SLEEP: the bedtime and awake time (AutoSleep.smali).
+AUTO_SLEEP = 0x58
+SWITCH_SETTING = 0x90
+#: SWITCH_BIT_AUTO_SLEEP (SwitchSettingCommand.BIT_AUTO_SLEEP): the firmware's minute
+#: check tests it (``tst [0x10006BCC + 0x34C], #8`` at ``0x000585DA``).
+AUTO_SLEEP_SWITCH = 0x8
 
 #: The sport ring, from the store's page table at 0x000C8F60 (``4, 0xE0000, 0xE2000,
 #: 0xE4000, 0xE6000``). The first record goes to 0x000E0000, the next to 0x000E001C.
@@ -62,6 +88,33 @@ SPORT_RECORD_BYTES = 28
 SLOT_MINUTES = (29, 59)
 #: ...except at the end of the day: that record is stamped 23:58:30, and written at midnight.
 DAY_END = (23, 58, 30)
+
+
+#: The heart-rate ring: type 2 in the store's page table at 0x000C8F60 (``2, 0xEE000,
+#: 0xF0000``), where a measurement's records land.
+HEART_RATE_PAGES = (0x000EE000, 0x000F0000)
+
+
+def heart_rate_records_written(machine) -> int:
+    """Programs into the heart-rate ring so far: one for every record stored."""
+    return sum(machine.flash_programs[page // BootRom.PAGE_SIZE] for page in HEART_RATE_PAGES)
+
+
+#: The sleep ring: type 1 in the store's page table at 0x000C8F60 (``2, 0xE8000,
+#: 0xEA000``). 8 bytes a record in flash, ``[time 4][type 1][00 00 00]``.
+SLEEP_PAGES = (0x000E8000, 0x000EA000)
+#: A sleep record on the wire: the index, then the flash record.
+SLEEP_RECORD_BYTES = 10
+#: Record types, as the firmware writes them (``0x0005D40A``: the sleep algorithm's state
+#: 2, 1, 0, -1 becomes 0, 1, 2, 3) and the official app reads them
+#: (``SleepNewDBService``: each lasts until the next record).
+SLEEP_START, SLEEP_END = 0x10, 0x11
+SLEEP_DEEP, SLEEP_LIGHT, SLEEP_AWAKE = 0, 1, 2
+
+
+def sleep_records_written(machine) -> int:
+    """Programs into the sleep ring so far: one for every record stored."""
+    return sum(machine.flash_programs[page // BootRom.PAGE_SIZE] for page in SLEEP_PAGES)
 
 
 def records_written(machine) -> int:
@@ -98,6 +151,16 @@ def heart_rate_record(payload: bytes) -> Optional[dict]:
         return None
     return {"index": int.from_bytes(payload[0:2], "little"),
             "timestamp": int.from_bytes(payload[2:6], "little"), "bpm": payload[6]}
+
+
+def sleep_record(payload: bytes) -> Optional[dict]:
+    """One ``GET_SLEEP_DATA`` reply: 10 bytes from the firmware (its handler sends 10,
+    ``0x0003A2EC``), of which ``GetSleepData`` reads the first 7 -- index, time, type."""
+    if len(payload) != SLEEP_RECORD_BYTES:
+        return None
+    return {"index": int.from_bytes(payload[0:2], "little"),
+            "timestamp": int.from_bytes(payload[2:6], "little"), "type": payload[6],
+            "rest": payload[7:]}
 
 
 def payload_of(whole: bytes) -> bytes:
@@ -228,3 +291,152 @@ async def write_sport_records(phone, watch, count: int, *, end: Optional[datetim
                 f"({crossings} crossings so far)")
     await clock(end)
     return ticks
+
+
+async def set_auto_heart_rate(phone, minutes: int) -> bool:
+    """AUTO_HEART_RATE SET [minutes] (0 turns it off); True if acknowledged."""
+    reply = await phone.exchange(frame(AUTO_HEART_RATE, SET, bytes([minutes & 0xFF])))
+    return reply == ack(AUTO_HEART_RATE)
+
+
+async def write_heart_rate_records(phone, watch, count: int, *, bpm: float = 72.0,
+                                   per_record: float = 150.0, log=None) -> int:
+    """Have the firmware measure and store *count* heart-rate records from a pulse.
+
+    A :class:`devices.Pulse` at *bpm* goes under the PAH8011, auto heart rate goes
+    on at every minute, and the watch runs until its firmware has stored *count*
+    records -- each one a measurement, PixArt's algorithm and all, about a minute of
+    watch time -- or *per_record* seconds of watch time pass without the next one.
+    Auto heart rate is turned off and the wrist taken away again afterwards.
+    Returns how many were stored. *watch* is an ``EmulatedWatch``.
+    """
+    from .devices import Pulse
+
+    machine, sensor = watch.machine, watch.heart
+    if not await set_auto_heart_rate(phone, 1):
+        raise RuntimeError("the watch did not acknowledge AUTO_HEART_RATE")
+    sensor.wrist = Pulse(bpm)
+    start = heart_rate_records_written(machine)
+    stored = 0
+    try:
+        while stored < count:
+            before = heart_rate_records_written(machine)
+            until = machine.cycles + int(per_record * machine.CYCLES_PER_SECOND)
+            while machine.cycles < until and heart_rate_records_written(machine) == before:
+                await asyncio.sleep(0.1)
+            now = heart_rate_records_written(machine) - start
+            if now == stored:
+                break
+            stored = now
+            if log is not None:
+                log(f"{stored}/{count} heart-rate records")
+    finally:
+        sensor.wrist = None
+        await set_auto_heart_rate(phone, 0)
+    return stored
+
+
+# -- sleep ---------------------------------------------------------------------------
+
+async def switches(phone) -> int:
+    """SWITCH_SETTING CHECK: the 4-byte LE switch mask (``SwitchSetting.parse80BytesArray``)."""
+    reply = await phone.exchange(frame(SWITCH_SETTING, CHECK, b"\x00"))
+    if reply is None:
+        raise RuntimeError("the watch did not answer SWITCH_SETTING")
+    return int.from_bytes(payload_of(reply)[:4], "little")
+
+
+async def set_switches(phone, mask: int) -> bool:
+    """SWITCH_SETTING SET: ``[00]`` and the whole mask, LE (``MBluetooth.setSwitchSetting``)."""
+    reply = await phone.exchange(frame(SWITCH_SETTING, SET, b"\x00" + mask.to_bytes(4, "little")))
+    return reply == ack(SWITCH_SETTING)
+
+
+async def sleep_window(phone) -> bytes:
+    """AUTO_SLEEP CHECK: ``[bed hour, bed minute, awake hour, awake minute, remind cycle]``."""
+    reply = await phone.exchange(frame(AUTO_SLEEP, CHECK, b"\x00"))
+    if reply is None:
+        raise RuntimeError("the watch did not answer AUTO_SLEEP")
+    return payload_of(reply)[:5]
+
+
+async def set_sleep_window(phone, window: bytes) -> bool:
+    """AUTO_SLEEP SET, the five bytes :func:`sleep_window` reads (``AutoSleep.smali``)."""
+    reply = await phone.exchange(frame(AUTO_SLEEP, SET, bytes(window)))
+    return reply == ack(AUTO_SLEEP)
+
+
+def nights(count: int, end: datetime, *, bed=(23, 0), awake=(7, 0)) -> list:
+    """The last *count* nights that are over by *end*: ``(bedtime, awake time)`` pairs."""
+    morning = end.replace(hour=awake[0], minute=awake[1], second=0, microsecond=0)
+    if morning > end:
+        morning -= timedelta(days=1)
+    length = timedelta(hours=awake[0] - bed[0], minutes=awake[1] - bed[1]) % timedelta(days=1)
+    mornings = [morning - timedelta(days=n) for n in range(count)][::-1]
+    return [(m - length, m) for m in mornings]
+
+
+async def write_sleep_records(phone, watch, count: int, *, end: Optional[datetime] = None,
+                              asleep: float = 330.0, bed=(23, 0), awake=(7, 0), motion=None,
+                              tries: int = 3, log=None) -> list:
+    """Have the firmware record *count* sleep sessions, one a night, the last by *end*.
+
+    Auto sleep goes on (:data:`AUTO_SLEEP_SWITCH`) with a *bed* to *awake* window, and
+    for each night the clock is set to ten seconds before bedtime: at the minute the
+    firmware's own window check turns sleep mode on and stores the session's start
+    (0x10). The wrist lies still (or does *motion*) for *asleep* seconds of watch time
+    while the sleep algorithm classifies it -- lying still, it says awake after a minute,
+    light after two and deep after five, so the default has all three. Then the clock is
+    moved half a minute past the awake time. That is a time change, and a time change
+    ends a session the way waking does (0x11 and the last state) but **stamped with the
+    time the clock was moved from**: a session is as long as the watch ran it, not a
+    night. The window ends at the awake minute, so no session starts again.
+    The switch mask and the window are put back afterwards and the clock left at *end*.
+    Returns the nights. *watch* is an ``EmulatedWatch``.
+    """
+    machine, sensor = watch.machine, watch.motion
+    end = end or datetime.now().replace(microsecond=0)
+    plan = nights(count, end, bed=bed, awake=awake)
+
+    async def clock(when: datetime) -> None:
+        if not await set_clock(phone, when):
+            raise RuntimeError(f"the watch did not acknowledge the clock set to {when}")
+
+    async def lands(before: int, seconds: float) -> bool:
+        until = machine.cycles + int(seconds * machine.CYCLES_PER_SECOND)
+        while machine.cycles < until and sleep_records_written(machine) <= before:
+            await asyncio.sleep(0.05)
+        return sleep_records_written(machine) > before
+
+    mask, window = await switches(phone), await sleep_window(phone)
+    if not await set_switches(phone, mask | AUTO_SLEEP_SWITCH):
+        raise RuntimeError("the watch did not acknowledge SWITCH_SETTING")
+    if not await set_sleep_window(phone, bytes([*bed, *awake, window[4]])):
+        raise RuntimeError("the watch did not acknowledge AUTO_SLEEP")
+    try:
+        for n, (night, morning) in enumerate(plan, 1):
+            for _attempt in range(tries):
+                before = sleep_records_written(machine)
+                await clock(night - timedelta(seconds=10))
+                if await lands(before, 20):
+                    break
+            else:
+                raise RuntimeError(f"sleep mode did not start at {night} in {tries} tries")
+            sensor.motion = motion
+            try:
+                await watch_seconds(machine, asleep)
+            finally:
+                sensor.motion = None
+            before = sleep_records_written(machine)
+            await clock(morning + timedelta(seconds=30))
+            if not await lands(before, 10):
+                raise RuntimeError(f"the night of {night:%Y-%m-%d} did not end")
+            await watch_seconds(machine, 2)
+            if log is not None:
+                log(f"{n}/{count} nights, {night:%Y-%m-%d %H:%M} to {morning:%H:%M}: "
+                    f"{sleep_records_written(machine)} sleep records so far")
+    finally:
+        await set_sleep_window(phone, window)
+        await set_switches(phone, mask)
+        await clock(end)
+    return plan

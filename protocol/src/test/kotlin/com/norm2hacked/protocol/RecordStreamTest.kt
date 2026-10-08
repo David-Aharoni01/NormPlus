@@ -2,6 +2,7 @@ package com.norm2hacked.protocol
 
 import com.norm2hacked.protocol.commands.HeartRateCommand
 import com.norm2hacked.protocol.commands.RecordStreams
+import com.norm2hacked.protocol.commands.SleepCommand
 import com.norm2hacked.protocol.commands.SportCommand
 import com.norm2hacked.protocol.commands.SyncCountCommand
 import kotlin.test.Test
@@ -14,7 +15,7 @@ import kotlin.test.assertTrue
  * The sync's reads (#85): one count, then each record type as one stream of frames.
  *
  * The frames here are real: the physical watch's, read on 2026-10-07 (920 sport records, 271
- * heart-rate), and the emulated watch's, written by its own firmware (#51,
+ * heart-rate), and the emulated watch's, written by its own firmware (#51, #88,
  * tools/tests/test_health_records.py).
  */
 class RecordStreamTest {
@@ -22,6 +23,7 @@ class RecordStreamTest {
     private fun hex(s: String) = s.replace(" ", "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     private fun sport(payload: String) = Packet(CommandCode.GET_SPORT_DATA, Action.CHECK_RESPONSE, hex(payload))
     private fun hr(payload: String) = Packet(CommandCode.GET_HEART_RATE_DATA, Action.CHECK_RESPONSE, hex(payload))
+    private fun sleep(payload: String) = Packet(CommandCode.GET_SLEEP_DATA, Action.CHECK_RESPONSE, hex(payload))
 
     // The physical watch's first sport record: a :59 tick, nothing walked.
     private val physicalSport = "01 00 14 c5 ac 6a 00 00 00 00 e8 80 00 00 00 00 00 00 00 00 00 00 00 09 e8 80 00 00"
@@ -71,10 +73,46 @@ class RecordStreamTest {
     }
 
     @Test
+    fun `sportTime is minutes, as the physical watch's busiest half hours say`() {
+        // Record 249: 911 steps and 650 m in a half hour, sportTime 11. Seconds it cannot be.
+        val rec = SportCommand.parse(sport(
+            "f9 00 cc 8d b3 6a 8f 03 00 00 88 0d 01 00 8a 02 00 00 0b 00 00 00 00 01 e8 80 00 00"))!!
+        assertEquals(911, rec.steps)
+        assertEquals(650.0f, rec.distanceMeters)
+        assertEquals(11, rec.activeMinutes)
+        assertEquals(1, SportCommand.parse(sport(emulatedWalk))!!.activeMinutes)
+    }
+
+    @Test
     fun `the physical watch's heart-rate record parses`() {
         val rec = HeartRateCommand.parse(hr("01 00 36 7f 2e 6a 4a"))!!
         assertEquals(0x6A2E7F36L * 1000, rec.timestampMs)
         assertEquals(0x4A, rec.bpm)
+    }
+
+    @Test
+    fun `the emulated watch's sleep session parses, 10 bytes a record`() {
+        // Auto sleep from 23:00 on a still wrist (#88): the start, "awake" a minute in, then
+        // the end and the last state together when the clock was moved. The firmware sends
+        // 10 bytes (its handler at 0x0003A2EC); GetSleepData reads the first 7.
+        val frames = listOf(
+            "01 00 c0 01 c4 6a 10 00 00 00",
+            "02 00 fb 01 c4 6a 02 00 00 00",
+            "03 00 1a 02 c4 6a 11 00 00 00",
+            "04 00 1a 02 c4 6a 02 00 00 00",
+        ).map { sleep(it) }
+        val stream = RecordStreams.assemble(frames, 4) { SleepCommand.parse(it) }
+        assertTrue(stream.complete)
+        assertEquals(listOf(0x10, 0x02, 0x11, 0x02), stream.records.map { it.stage })
+        assertEquals(listOf(0x6AC401C0L, 0x6AC401FBL, 0x6AC4021AL, 0x6AC4021AL).map { it * 1000 },
+            stream.records.map { it.timestampMs })
+    }
+
+    @Test
+    fun `the request that starts the sleep stream is the official app's`() {
+        // GetSleepData(cb, 1, 0, count).
+        assertContentEquals(hex("6F 56 70 01 00 00 8F"),
+            PacketBuilder.build(CommandCode.GET_SLEEP_DATA, Action.CHECK, RecordStreams.SINGLE_BYTE_REQUEST))
     }
 
     @Test

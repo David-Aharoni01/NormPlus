@@ -87,7 +87,7 @@ BleConstants          All UUIDs, MTU values, timeouts, frame markers.
 - `suspend fun writeToCharAwait(bytes, charUuid, mtu)` — chunked OTA write with per-chunk ACK
 - `fun drainOtaWriteChannel()` — call once before each new OTA session
 
-**BleWriteQueue:** All command writes (not OTA) go through the queue. It subscribes to `parsedFlow` **before** writing to prevent the race where the watch replies before the subscriber registers. Urgent requests (e.g., time sync) skip the normal queue. A streamed request (`sendAndStream`) holds the queue until its stream ends, so nothing is written to the watch in the middle of one -- the watch restarts a record stream on any new request for it -- and buffers responses without bound, because the GATT callback's packet channel drops frames when the collector behind it stalls.
+**BleWriteQueue:** All command writes (not OTA) go through the queue. It subscribes to `parsedFlow` **before** writing to prevent the race where the watch replies before the subscriber registers. Urgent requests (e.g., time sync) skip the normal queue. A streamed request (`sendAndStream`) holds the queue until its stream ends, so nothing is written to the watch in the middle of one -- the watch restarts a record stream on any new request for it -- and buffers responses without bound, because the GATT callback's packet channel drops frames when the collector behind it stalls. Around each stream the queue calls `BulkLink` (`BleManager.streamLink`, #86): the ATT MTU goes to 247 once per connection (one notification per sport frame instead of two), HIGH connection priority is requested and **re-asserted every 4 s** -- some 20 s after each connection the watch asks for a 120-180 ms interval, and only asking again wins the link back -- and at the end the link goes to LOW_POWER (100-125 ms, latency 2), the nearest public setting to what the watch asks for itself. 952 sport records: 139 s → 32 s.
 
 ### Connection lifecycle & the cold-connect penalty (IMPORTANT)
 
@@ -179,10 +179,10 @@ ota/                  (in :protocol)
 
 ### Data Layer (`data/`)
 
-Room database v4 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
+Room database v5 (`Norm2Database`). All timestamp index columns are **unique** — `OnConflictStrategy.IGNORE` on DAOs relies on this to prevent sync-retry duplicates.
 
 ```
-sport_sessions         timestampEpoch (UNIQUE)
+sport_sessions         timestampEpoch (UNIQUE); activeMinutes is the record's sportTime, in minutes (#89, v5)
 heart_rate_samples     timestampEpoch (UNIQUE)
 sleep_sessions         startEpoch (UNIQUE)
 sleep_stages           (sessionId, timestampEpoch) composite UNIQUE
@@ -411,7 +411,7 @@ New command codes added this cycle (`protocol/.../CommandCode.kt`): `INCOME_CALL
 - SET commands work — brightness, DND, vibration, language, and other settings apply on the watch
 - Command send/await pipeline with write serialization and MTU chunking
 - Packet framing/deframing (length-guided, handles 0x8F in payloads)
-- Room database v4 with unique constraints and 3 migrations
+- Room database v5 with unique constraints and 4 migrations
 - Notification forwarding with an explicit per-app whitelist (installed-app picker + listener-permission
   flow), junk-type filtering, RTL (Hebrew/Arabic), 300 ms coalescing/group-merge, and exact-repeat
   suppression
