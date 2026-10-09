@@ -298,3 +298,13 @@ tools/normplus/watch/native/*.so
 tools/normplus/watch/native/*.obj
 tools/normplus/watch/native/*.lib
 tools/normplus/watch/native/*.exp
+
+# Impeccable, the design workflow (#92): its scratch state stays local. config.json and
+# design.json (the token file that goes with DESIGN.md) are tracked.
+.impeccable/questions/
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/build/
+.impeccable/live/
+.impeccable/critique/
+.impeccable/config.local.json
