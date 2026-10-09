@@ -34,7 +34,7 @@ FIRMWARE = NORM / "assets" / "Apollo3_P03B_NORM2_F0.2B01.bin"
 FACTORY_NAND = NORM / "_nand"
 RESOURCES = NORM / "assets" / "Picture_P03B_NORM2_0.4.bin"
 #: The command names normwatch/normcmd display come from :protocol, their single source.
-COMMAND_CODES = REPO / "protocol/src/main/kotlin/com/norm2hacked/protocol/CommandCode.kt"
+COMMAND_CODES = REPO / "protocol/src/main/kotlin/com/normplus/protocol/CommandCode.kt"
 #: The Python test suite.
 TESTS = REPO / "tools" / "tests"
 

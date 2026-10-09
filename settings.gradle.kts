@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Norm2Hacked"
+rootProject.name = "NormPlus"
 include(":app")
 include(":protocol")

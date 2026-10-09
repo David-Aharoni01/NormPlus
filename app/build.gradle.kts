@@ -8,15 +8,15 @@ plugins {
 }
 
 android {
-    namespace = "com.norm2hacked"
+    namespace = "com.normplus"
     compileSdk = 35
 
     base {
-        archivesName = "normlink"
+        archivesName = "normplus"
     }
 
     defaultConfig {
-        applicationId = "com.norm2hacked"
+        applicationId = "com.normplus"
         minSdk = 30
         targetSdk = 35
         versionCode = 1
