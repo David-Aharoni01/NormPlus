@@ -60,7 +60,8 @@ private const val OLD = "Pre-redesign (#96): use MaterialTheme.colorScheme, Norm
 
 // A colour per metric is gone in the new world: every metric prints in ink.
 @Deprecated(OLD) val StepsBlue: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
-@Deprecated(OLD) val SleepPurple: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.sleepAwake
+/** Was the sleep accent (a label colour on the old dashboard); the stages use NormPlusTheme.colors. */
+@Deprecated(OLD) val SleepPurple: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
 @Deprecated(OLD) val SleepDeepPurple: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.sleepDeep
 @Deprecated(OLD) val SleepLightPurple: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.sleepLight
 @Deprecated(OLD) val CaloriesOrange: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
@@ -201,7 +202,7 @@ fun SleepChart(
 ) {
     if (segments.isEmpty()) return
     // SleepStage codes: 0 deep, 1 light, 2 awake (#90).
-    val stageColor = mapOf(0 to SleepDeepPurple, 1 to SleepLightPurple, 2 to SleepPurple)
+    val stageColor = mapOf(0 to SleepDeepPurple, 1 to SleepLightPurple, 2 to NormPlusTheme.colors.sleepAwake)
     val track = SurfaceVariant
     Canvas(modifier = modifier) {
         val minT = segments.minOf { it.startEpoch }.toFloat()

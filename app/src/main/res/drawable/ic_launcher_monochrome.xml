@@ -27,7 +27,7 @@
     <group
         android:pivotX="54"
         android:pivotY="58"
-        android:rotation="-58">
+        android:rotation="120">
         <path
             android:fillColor="#FFFFFFFF"
             android:pathData="M51.7,47.5 A2.3,2.3 0 0,1 56.3,47.5 L56.3,58 A2.3,2.3 0 0,1 51.7,58 Z"/>
@@ -36,10 +36,10 @@
     <group
         android:pivotX="54"
         android:pivotY="58"
-        android:rotation="60">
+        android:rotation="0">
         <path
             android:fillColor="#FFFFFFFF"
-            android:pathData="M52.4,42.6 A1.6,1.6 0 0,1 55.6,42.6 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
+            android:pathData="M52.4,44.4 A1.6,1.6 0 0,1 55.6,44.4 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
     </group>
 
     <path

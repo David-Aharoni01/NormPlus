@@ -31,24 +31,24 @@
             M59,37.4 h2.4 v1.1 h-2.4 Z M63,37.4 h2.4 v1.1 h-2.4 Z M67,37.4 h2.4 v1.1 h-2.4 Z
             M71,37.4 h2 v1.1 h-2 Z"/>
 
-    <!-- The hour hand, towards ten. -->
+    <!-- The hour hand, towards four. -->
     <group
         android:pivotX="54"
         android:pivotY="58"
-        android:rotation="-58">
+        android:rotation="120">
         <path
             android:fillColor="#1F2A44"
             android:pathData="M51.7,47.5 A2.3,2.3 0 0,1 56.3,47.5 L56.3,58 A2.3,2.3 0 0,1 51.7,58 Z"/>
     </group>
 
-    <!-- The minute hand, towards two. -->
+    <!-- The minute hand, at twelve: an L that reads as a clock, never as a tick. -->
     <group
         android:pivotX="54"
         android:pivotY="58"
-        android:rotation="60">
+        android:rotation="0">
         <path
             android:fillColor="#1F2A44"
-            android:pathData="M52.4,42.6 A1.6,1.6 0 0,1 55.6,42.6 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
+            android:pathData="M52.4,44.4 A1.6,1.6 0 0,1 55.6,44.4 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
     </group>
 
     <!-- The pivot, in calendar red. -->
