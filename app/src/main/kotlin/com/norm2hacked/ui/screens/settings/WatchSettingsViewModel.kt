@@ -3,6 +3,7 @@ package com.norm2hacked.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.norm2hacked.ble.BleManager
+import com.norm2hacked.data.preferences.WatchPreferences
 import com.norm2hacked.domain.model.AppPage
 import com.norm2hacked.domain.model.DndSettings
 import com.norm2hacked.domain.model.WatchSettings
@@ -33,15 +34,29 @@ data class SettingsUiState(
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
     val error: String? = null,
+    /** App-side, not the watch's: delete records from the watch after a complete sync (#91). */
+    val deleteAfterSync: Boolean = true,
 )
 
 @HiltViewModel
 class WatchSettingsViewModel @Inject constructor(
     private val bleManager: BleManager,
+    private val watchPreferences: WatchPreferences,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            watchPreferences.deleteAfterSync.collect { on -> _state.update { it.copy(deleteAfterSync = on) } }
+        }
+    }
+
+    /** Takes effect at once, connected or not: it is the phone's setting, saved in DataStore. */
+    fun setDeleteAfterSync(enabled: Boolean) {
+        viewModelScope.launch { watchPreferences.setDeleteAfterSync(enabled) }
+    }
 
     // Snapshot of what the watch currently has — we diff against this on save.
     private var originalSettings = WatchSettings()

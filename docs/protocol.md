@@ -88,6 +88,15 @@ Read on the physical watch on 2026-10-07 and pinned by `RecordStreamTest` and
   (`PBluetooth.requestMtu` has no caller).
 - `TOTAL_HEART_RATE_COUNT` (0x59) answers `[0f 01 00 00]`, four bytes; `HeartRateCount.smali`
   accepts exactly two, so the heart-rate count comes from 0x52.
+- **The deletes** (#91): `DELETE_SPORT_DATA` (0x53), `DELETE_HEART_RATE_DATA` (0x5A) and
+  `DELETE_SLEEP_DATA` (0x55), each SET `[00]` as `MBluetooth.delete*Data` builds them (`[01]` on
+  0x5A deletes moods; anything else there is answered status 1). Each erases its type's whole
+  ring (`0x0003DA14`) and is acknowledged `01 81 [cmd 00]` whatever happened. **Sport is
+  guarded**: it is erased only if its count is still the one the last `TOTAL_SPORT_SLEEP_COUNT`
+  reported (`0x00055C72` compares `[0x10006BCC+0x420]`, set by the count request after it has
+  written its own record, with the live count `+0x2F5`). A record that lands in between keeps
+  the whole ring. Heart rate and sleep are erased unconditionally. The watch goes on writing
+  half-hour records after a delete. Rehearsed on the emulated watch (`test_health_records`).
 - **Asking for the counts writes a record**: the watch stores the half hour so far as one more
   sport record before it answers (not on every ask -- two asks 11 s apart wrote one). Records
   are otherwise written at the :29 and :59 minute ticks, and the day's last at midnight stamped
