@@ -1,5 +1,10 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.dashboard
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
+import com.normplus.ui.legacy.LegacyMuted
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -49,14 +54,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.normplus.ble.BleConnectionState
-import com.normplus.ui.components.StatCard
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.CaloriesOrange
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.SleepPurple
-import com.normplus.ui.theme.StepsBlue
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.StatCard
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.CaloriesOrange
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.SleepPurple
+import com.normplus.ui.legacy.StepsBlue
+import com.normplus.ui.legacy.Teal
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,10 +86,10 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
             FloatingActionButton(
                 onClick = { viewModel.sync() },
                 containerColor = Teal,
-                contentColor = Color.Black,
+                contentColor = LegacyOnAccent,
             ) {
                 if (state.isSyncing) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.Black, strokeWidth = 2.dp)
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = LegacyOnAccent, strokeWidth = 2.dp)
                 } else {
                     Icon(Icons.Default.Sync, "Sync")
                 }
@@ -101,7 +106,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
                     state = pullRefreshState,
                     isRefreshing = state.isSyncing,
                     containerColor = Teal,
-                    color = Color.Black,
+                    color = LegacyOnAccent,
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
             },
@@ -123,7 +128,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column {
-                        Text("Norm 2", style = MaterialTheme.typography.headlineMedium, color = Color.White)
+                        Text("Norm 2", style = MaterialTheme.typography.headlineMedium, color = LegacyInk)
                         val connLabel = when (val cs = state.connectionState) {
                             is BleConnectionState.Ready -> cs.deviceName
                             is BleConnectionState.Scanning -> "Scanning…"
@@ -147,7 +152,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
                             Text(
                                 "${state.batteryPercent}%",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = if (state.batteryPercent < 20) HrRed else Color.White,
+                                color = if (state.batteryPercent < 20) HrRed else LegacyInk,
                                 modifier = Modifier.padding(start = 4.dp),
                             )
                         }
@@ -218,7 +223,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
                     Text(
                         "v${state.deviceVersion}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF404040),
+                        color = LegacyMuted,
                     )
                 }
 

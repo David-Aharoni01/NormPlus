@@ -1,5 +1,8 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.activity
 
+import com.normplus.ui.legacy.LegacyInk
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,18 +35,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.normplus.domain.model.SportType
-import com.normplus.ui.components.GpsPolyline
-import com.normplus.ui.components.LatLon
-import com.normplus.ui.components.LineChart
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.CaloriesOrange
-import com.normplus.ui.theme.DistanceGreen
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.StepsBlue
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.GpsPolyline
+import com.normplus.ui.legacy.LatLon
+import com.normplus.ui.legacy.LineChart
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.CaloriesOrange
+import com.normplus.ui.legacy.DistanceGreen
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.StepsBlue
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,9 +73,9 @@ fun WorkoutDetailScreen(
         // Back + header
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LegacyInk)
             }
-            Text("Workout", style = MaterialTheme.typography.titleLarge, color = Color.White)
+            Text("Workout", style = MaterialTheme.typography.titleLarge, color = LegacyInk)
         }
 
         // Hero
@@ -88,7 +91,7 @@ fun WorkoutDetailScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.DirectionsRun, contentDescription = null, tint = Teal, modifier = Modifier.size(32.dp))
                     Column(modifier = Modifier.padding(start = 12.dp)) {
-                        Text(SportType.label(workout.sportType), style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                        Text(SportType.label(workout.sportType), style = MaterialTheme.typography.headlineSmall, color = LegacyInk)
                         Text(
                             SimpleDateFormat("MMMM d, yyyy  h:mm a", Locale.getDefault()).format(Date(workout.startEpochMs)),
                             style = MaterialTheme.typography.bodyMedium, color = OnSurfaceMuted,

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.NormPlus" parent="android:Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:statusBarColor">@android:color/black</item>
-        <item name="android:navigationBarColor">@android:color/black</item>
+    <!-- The window behind Compose: the Day Sheet's ground, so a cold start shows the page's
+         own colour before the first frame (ui/theme/Color.kt). Night: values-night. -->
+    <style name="Theme.NormPlus" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_ground</item>
     </style>
 </resources>

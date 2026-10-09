@@ -1,5 +1,9 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.calibration
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -41,11 +45,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import com.normplus.protocol.commands.HandMode
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceHigh
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceHigh
+import com.normplus.ui.legacy.Teal
 
 private fun HandMode.label() = when (this) {
     HandMode.HOUR -> "hour"
@@ -70,9 +74,9 @@ fun HandsCalibrationScreen(viewModel: HandsCalibrationViewModel, onBack: () -> U
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LegacyInk)
             }
-            Text("Calibrate Watch Hands", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+            Text("Calibrate Watch Hands", style = MaterialTheme.typography.headlineSmall, color = LegacyInk)
         }
 
         when {
@@ -107,7 +111,7 @@ private fun CalibrationBody(state: CalibrationUiState, vm: HandsCalibrationViewM
         Text(
             "Move the ${hand.label()} hand to 12:00",
             style = MaterialTheme.typography.titleLarge,
-            color = Color.White,
+            color = LegacyInk,
             fontWeight = FontWeight.SemiBold,
         )
 
@@ -141,11 +145,11 @@ private fun CalibrationBody(state: CalibrationUiState, vm: HandsCalibrationViewM
             Button(
                 onClick = { if (state.isLast) vm.save() else vm.next() },
                 modifier = Modifier.weight(1f).height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
                 enabled = !state.saving,
             ) {
                 if (state.saving) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = LegacyOnAccent, strokeWidth = 2.dp)
                 } else {
                     Text(if (state.isLast) "Save & sync" else "Next hand", fontWeight = FontWeight.SemiBold)
                 }
@@ -164,7 +168,7 @@ private fun NudgeButton(
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.height(64.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = LegacyInk),
     ) { Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(28.dp)) }
 }
 
@@ -192,7 +196,7 @@ private fun HoldRotateButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        Text(label, color = LegacyInk, style = MaterialTheme.typography.titleMedium)
     }
 }
 
@@ -205,7 +209,7 @@ private fun DoneView(onBack: () -> Unit) {
     ) {
         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Teal, modifier = Modifier.size(56.dp))
         Spacer(Modifier.height(16.dp))
-        Text("Hands calibrated", style = MaterialTheme.typography.titleLarge, color = Color.White)
+        Text("Hands calibrated", style = MaterialTheme.typography.titleLarge, color = LegacyInk)
         Spacer(Modifier.height(8.dp))
         Text(
             "The watch was set to the current time and the hands are locked in.",
@@ -216,7 +220,7 @@ private fun DoneView(onBack: () -> Unit) {
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = onBack,
-            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
         ) { Text("Done", fontWeight = FontWeight.SemiBold) }
     }
 }

@@ -1,5 +1,8 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.activity
 
+import com.normplus.ui.legacy.LegacyInk
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,17 +40,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.normplus.domain.model.SportType
 import com.normplus.domain.model.WorkoutSummary
-import com.normplus.ui.components.BarChart
-import com.normplus.ui.components.LineChart
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.CaloriesOrange
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.SleepPurple
-import com.normplus.ui.theme.StepsBlue
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.BarChart
+import com.normplus.ui.legacy.LineChart
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.CaloriesOrange
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.SleepPurple
+import com.normplus.ui.legacy.StepsBlue
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -86,7 +89,7 @@ fun ActivityHistoryScreen(
             Text(
                 "Activity",
                 style = MaterialTheme.typography.headlineMedium,
-                color = Color.White,
+                color = LegacyInk,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Spacer(Modifier.height(16.dp))
@@ -174,7 +177,7 @@ fun ActivityHistoryScreen(
             Text(
                 "Workouts",
                 style = MaterialTheme.typography.titleLarge,
-                color = Color.White,
+                color = LegacyInk,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Spacer(Modifier.height(12.dp))
@@ -219,7 +222,7 @@ private fun WorkoutCard(workout: WorkoutSummary, onClick: () -> Unit) {
             Icon(Icons.Default.DirectionsRun, contentDescription = null, tint = Teal, modifier = Modifier.size(24.dp))
         }
         Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-            Text(SportType.label(workout.sportType), style = MaterialTheme.typography.titleMedium, color = Color.White)
+            Text(SportType.label(workout.sportType), style = MaterialTheme.typography.titleMedium, color = LegacyInk)
             val date = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(workout.startEpochMs))
             Text(date, style = MaterialTheme.typography.bodyMedium, color = OnSurfaceMuted)
         }

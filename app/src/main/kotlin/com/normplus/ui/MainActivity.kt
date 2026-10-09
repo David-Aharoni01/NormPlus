@@ -1,5 +1,8 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui
 
+import com.normplus.ui.legacy.LegacyMuted
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -37,10 +40,10 @@ import com.normplus.ble.BleService
 import com.normplus.data.preferences.WatchPreferences
 import com.normplus.ui.navigation.AppNavGraph
 import com.normplus.ui.navigation.Screen
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.Norm2Theme
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.theme.NormPlusTheme
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.Teal
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -82,7 +85,7 @@ class MainActivity : ComponentActivity() {
         startBleServiceIfPermitted()
 
         setContent {
-            Norm2Theme {
+            NormPlusTheme {
                 // Determine start destination asynchronously — never block the main thread.
                 var startDestination by remember { mutableStateOf<String?>(null) }
                 LaunchedEffect(Unit) {
@@ -137,8 +140,8 @@ private fun MainScaffold(startDestination: String) {
                             selectedIconColor = Teal,
                             selectedTextColor = Teal,
                             indicatorColor = Color.Transparent,
-                            unselectedIconColor = Color(0xFF606060),
-                            unselectedTextColor = Color(0xFF606060),
+                            unselectedIconColor = LegacyMuted,
+                            unselectedTextColor = LegacyMuted,
                         )
                     )
                     NavigationBarItem(
@@ -150,8 +153,8 @@ private fun MainScaffold(startDestination: String) {
                             selectedIconColor = Teal,
                             selectedTextColor = Teal,
                             indicatorColor = Color.Transparent,
-                            unselectedIconColor = Color(0xFF606060),
-                            unselectedTextColor = Color(0xFF606060),
+                            unselectedIconColor = LegacyMuted,
+                            unselectedTextColor = LegacyMuted,
                         )
                     )
                     NavigationBarItem(
@@ -163,8 +166,8 @@ private fun MainScaffold(startDestination: String) {
                             selectedIconColor = Teal,
                             selectedTextColor = Teal,
                             indicatorColor = Color.Transparent,
-                            unselectedIconColor = Color(0xFF606060),
-                            unselectedTextColor = Color(0xFF606060),
+                            unselectedIconColor = LegacyMuted,
+                            unselectedTextColor = LegacyMuted,
                         )
                     )
                 }

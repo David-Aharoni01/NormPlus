@@ -1,5 +1,9 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.settings
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
@@ -54,12 +58,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.ErrorRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.ErrorRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 
 /**
  * Notification whitelist picker — an Android-Settings-style installed-app list where the user
@@ -102,9 +106,9 @@ fun NotificationRulesScreen(viewModel: NotificationRulesViewModel, onBack: () ->
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LegacyInk)
                 }
-                Text("Notification Apps", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                Text("Notification Apps", style = MaterialTheme.typography.headlineSmall, color = LegacyInk)
             }
 
             LazyColumn(modifier = Modifier.padding(horizontal = 16.dp)) {
@@ -138,7 +142,7 @@ fun NotificationRulesScreen(viewModel: NotificationRulesViewModel, onBack: () ->
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Show system apps", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                            Text("Show system apps", style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
                             Text(
                                 if (state.enabledCount == 0) "No apps forwarding yet"
                                 else "${state.enabledCount} app${if (state.enabledCount == 1) "" else "s"} forwarding",
@@ -149,7 +153,7 @@ fun NotificationRulesScreen(viewModel: NotificationRulesViewModel, onBack: () ->
                         Switch(
                             checked = state.showSystemApps,
                             onCheckedChange = viewModel::setShowSystemApps,
-                            colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = Teal),
+                            colors = SwitchDefaults.colors(checkedThumbColor = LegacyOnAccent, checkedTrackColor = Teal),
                         )
                     }
                     Spacer(Modifier.height(4.dp))
@@ -202,7 +206,7 @@ private fun ListenerPermissionCard(onGrantClick: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.NotificationsOff, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Notification access is off", style = MaterialTheme.typography.titleSmall, color = Color.White)
+            Text("Notification access is off", style = MaterialTheme.typography.titleSmall, color = LegacyInk)
         }
         Spacer(Modifier.height(6.dp))
         Text(
@@ -215,7 +219,7 @@ private fun ListenerPermissionCard(onGrantClick: () -> Unit) {
         Button(
             onClick = onGrantClick,
             modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
         ) { Text("Open Notification Access", style = MaterialTheme.typography.bodyMedium) }
     }
 }
@@ -238,8 +242,8 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
         },
         shape = RoundedCornerShape(12.dp),
         colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = Color.White,
-            unfocusedTextColor = Color.White,
+            focusedTextColor = LegacyInk,
+            unfocusedTextColor = LegacyInk,
             focusedBorderColor = Teal,
             unfocusedBorderColor = SurfaceVariant,
             cursorColor = Teal,
@@ -276,7 +280,7 @@ private fun AppRuleCard(
                 Text(
                     row.label,
                     style = MaterialTheme.typography.titleSmall,
-                    color = Color.White,
+                    color = LegacyInk,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -292,7 +296,7 @@ private fun AppRuleCard(
             Switch(
                 checked = row.enabled,
                 onCheckedChange = onEnabledChange,
-                colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = Teal),
+                colors = SwitchDefaults.colors(checkedThumbColor = LegacyOnAccent, checkedTrackColor = Teal),
             )
         }
 
@@ -337,10 +341,10 @@ private fun AppIcon(row: AppRuleRow) {
 @Composable
 private fun RuleToggle(label: String, checked: Boolean, onChanged: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
         Switch(
             checked = checked, onCheckedChange = onChanged,
-            colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = Teal),
+            colors = SwitchDefaults.colors(checkedThumbColor = LegacyOnAccent, checkedTrackColor = Teal),
         )
     }
 }

@@ -1,5 +1,10 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.settings
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
+import com.normplus.ui.legacy.LegacyMuted
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,13 +51,13 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.normplus.domain.model.AppPage
 import com.normplus.protocol.commands.SwitchSettingCommand
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceHigh
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceHigh
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 import kotlin.math.roundToInt
 
 @Composable
@@ -85,7 +90,7 @@ fun WatchSettingsScreen(
             item {
                 Spacer(Modifier.height(16.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Settings", style = MaterialTheme.typography.headlineMedium, color = Color.White)
+                    Text("Settings", style = MaterialTheme.typography.headlineMedium, color = LegacyInk)
                     if (state.isLoading) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Teal, strokeWidth = 2.dp)
                     }
@@ -180,7 +185,7 @@ fun WatchSettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text("Step Goal: ${"%,d".format(state.settings.stepGoal)}",
-                        style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
                     Slider(
                         value = state.settings.stepGoal / 20000f,
                         onValueChange = { viewModel.update { copy(stepGoal = (it * 20000).roundToInt().coerceAtLeast(1000)) } },
@@ -198,7 +203,7 @@ fun WatchSettingsScreen(
                         "Cont.Long", "Cont.Short", "5×Long", "Sound", "2×Sound", "Cont.Sound",
                         "Shock+Sound", "Cont.Shock+Sound", "Mute")
                     Text("Pattern: ${modes.getOrElse(state.settings.vibrationMode) { "Unknown" }}",
-                        style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
                     Slider(
                         value = state.settings.vibrationMode / 14f,
                         onValueChange = { viewModel.update { copy(vibrationMode = (it * 14).roundToInt()) } },
@@ -225,14 +230,14 @@ fun WatchSettingsScreen(
                             Text(
                                 "${index + 1}. ${AppPage.label(pageId)}",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White,
+                                color = LegacyInk,
                                 modifier = Modifier.padding(start = 8.dp),
                             )
                         }
                     }
                     Spacer(Modifier.height(4.dp))
                     Text("(Drag reordering requires touch gesture — tap up/down arrows to reorder for now)",
-                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF505050))
+                        style = MaterialTheme.typography.labelSmall, color = LegacyMuted)
                 }
                 Spacer(Modifier.height(12.dp))
             }
@@ -308,11 +313,11 @@ fun WatchSettingsScreen(
                 Button(
                     onClick = { viewModel.save() },
                     modifier = Modifier.fillMaxWidth().height(52.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
                     enabled = !state.isSaving,
                 ) {
                     if (state.isSaving) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = LegacyOnAccent, strokeWidth = 2.dp)
                     } else {
                         Text("Save Changes", style = MaterialTheme.typography.titleMedium)
                     }
@@ -345,10 +350,10 @@ internal fun SettingCard(content: @Composable () -> Unit) {
 @Composable
 private fun SwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
         Switch(
             checked = checked, onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = Teal),
+            colors = SwitchDefaults.colors(checkedThumbColor = LegacyOnAccent, checkedTrackColor = Teal),
         )
     }
 }
@@ -356,7 +361,7 @@ private fun SwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean
 @Composable
 private fun SliderRow(label: String, value: Float, onValueChange: (Float) -> Unit, valueLabel: String? = null) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
         if (valueLabel != null) Text(valueLabel, style = MaterialTheme.typography.bodyMedium, color = OnSurfaceMuted)
     }
     Slider(
