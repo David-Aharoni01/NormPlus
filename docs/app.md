@@ -352,20 +352,141 @@ and `runCatching` around the fire-and-forget write so a link flap can't crash th
 
 ### UI Layer (`ui/`)
 
-Jetpack Compose + Material Design 3. Each screen has a ViewModel that calls either `BleManager` directly or a use case.
+Jetpack Compose + Material 3, in the **Day Sheet** world (#92; the brief is on #95, the
+theme decisions on #96): a tear-off block calendar. Today is the top sheet, its steps set
+huge like the date; the facts of the day are its almanac lines; a goal day prints in
+calendar red. Material 3 supplies the navigation, the components and system Back; the world
+supplies type, palette, density and that one signature move. Each screen has a ViewModel that
+calls `BleManager` directly or a use case.
 
 ```
-screens/
-  dashboard/          Steps, calories, HR, sleep summary for today
-  activity/           Workout list + detail (GPS, duration, avg HR)
-  firmware/           OTA file picker, progress bar, update type selector
-  pairing/            BLE scan results, tap to pair
-  settings/           Watch config (brightness, DND, language, units, vibration, etc.)
-                      + notification rules (per-app toggles)
-components/
-  StatCard.kt         Reusable metric tile (value + unit + icon)
-  Charts.kt           Heart rate sparkline, activity chart
+ui/
+  theme/        the theme: NormPlusTheme, colour roles, type, shapes, spacing, motion
+  components/   the shared components every screen is built from (below)
+  legacy/       DEPRECATED: what the pre-redesign screens still use; deleted with the last one
+  screens/      one package per screen, each rebuilt by its own issue (#97-#107)
+  navigation/   AppNavGraph
 ```
+
+#### The theme (`ui/theme/`)
+
+`NormPlusTheme { }` wraps the app (MainActivity). Light and dark follow the system; there is
+no Dynamic Color. Read everything from it:
+
+| What | Where |
+|---|---|
+| Material colour roles (primary = the ink-blue for filled buttons, surface = sheet white, background = the newsprint ground, error = the failure red) | `MaterialTheme.colorScheme` |
+| The Day Sheet's own colours: `plate` / `onPlate` (the shell and the one reversed plate), `sheet`, `sheetEdge`, `sheetBelow`, `redLetter`, `needsFixing` (amber), the chart and sleep-stage inks | `NormPlusTheme.colors` |
+| Material type roles, on Roboto Flex (display roles in the condensed heavy cut) | `MaterialTheme.typography` |
+| `numeral`, `numeralMedium`, `numeralSmall` (the condensed date figures), `dateLine` (tracked capitals), `almanacLabel` / `almanacValue`, `status`, `chartLabel` | `NormPlusTheme.type` |
+| Spacing and sizes: `gutter` (16 dp side margin), `sheetPadding`, `s`/`m`/`l`/`xl`…, `touchTarget` (48 dp), `hairline`, `icon` | `NormPlusTheme.spacing` |
+| Material shapes (tightened: paper is cut square), and `sheet`, `plate`, `notice`, `bar` | `MaterialTheme.shapes`, `NormPlusTheme.shapes` |
+| Shared axis X between days, fade-through between tabs; `NormPlusTheme.animationsRemoved` | `NormMotion` |
+
+Roboto Flex is bundled (`res/font/roboto_flex.ttf`, the variable font from `google/fonts`,
+SIL OFL 1.1, licence in `assets/licenses/roboto_flex_OFL.txt`); its width, weight, optical
+size and figure-height axes make both cuts. Every style asks for tabular figures.
+
+**Rules for every screen:**
+- **No colour, size or font is written in a screen.** No `Color(…)`, no `Color.White`, no
+  literal `dp`/`sp`, no `FontFamily`: roles from the table above, or a component. If a screen
+  needs something the theme lacks, add it to the theme (or a component) in the same change,
+  named for its job.
+- **Calendar red is the red-letter colour only**: the goal-met numeral, "GOAL REACHED", a goal
+  day's bar. Never decoration, never an error. Every red numeral comes with the words and a
+  TalkBack sentence (`DayFigure`, `SheetEdge` and `GoalReachedLabel` do it).
+- **One reversed plate per screen** (`Plate`): Today's backing, the watch card on Watch, the
+  confirm step of the firmware flow. Never two.
+- **Errors are an icon plus words in a container** (`Notice`, `StateMark(NotSent)`,
+  `ConnectionBanner(Failed)`), never a bare red figure.
+- **A figure the watch has not reported is absent, never zero**: `DayFigure(steps = null)`,
+  `AlmanacEntry(absent = true)`, a `null` bar.
+- **48 dp touch targets**, at least (Material buttons, list items and icon buttons already
+  are; anything custom uses `NormPlusTheme.spacing.touchTarget`).
+- **Edge-to-edge**: the activity draws behind the system bars; every screen applies the
+  insets (Scaffold's `innerPadding`, `navigationBarsPadding`, IME insets on text fields). The
+  shell is ink-blue, so the status bar's icons are light (#97 sets `SystemBarStyle.dark`).
+- **RTL-safe**: `start`/`end`, never `left`/`right`; `AutoMirrored` icons for anything with a
+  direction; `placeRelative` in custom layouts. The charts and the progress line mirror
+  themselves. Labels in any script keep their own direction (the notification-app list).
+- **TalkBack**: every control and icon is labelled or marked decorative; a composite reads as
+  one sentence (`clearAndSetSemantics { contentDescription = … }`); headings are `heading()`;
+  changing state is a polite live region (the marks and banners are already).
+- **Remove animations**: motion goes through `NormMotion`, which is a cut when
+  `NormPlusTheme.animationsRemoved`; nothing else moves.
+
+#### The shared components (`ui/components/`)
+
+| Component | For |
+|---|---|
+| `DaySheet` | A day's sheet: square top, one perforated hairline, no texture/curl/shadow/tear. Prints in the page's colours even on a plate |
+| `SheetEdge` | The edge of the sheet beneath (yesterday's under Today's), red on a goal day, opens that day |
+| `DateLine` | "THURSDAY · 9 OCTOBER", tracked capitals; TalkBack hears the plain date |
+| `DateNumeral` | A figure in the condensed heavy cut, red in its red-letter state, shrinks to fit (40,000 at font scale 1.3) |
+| `DayFigure` | The sheet's head: the steps numeral, "of 8,000 steps", the progress line, "GOAL REACHED"; one TalkBack sentence |
+| `GoalReachedLabel`, `ProgressLine` | The red-letter words; the one thin progress line |
+| `Almanac`, `AlmanacEntry` | The almanac lines: two aligned columns, one TalkBack stop each |
+| `Plate` | The one reversed ink-blue plate; Material components inside come out reversed |
+| `SendState`, `StateMark`, `MarkGlyph` | The one set of state marks: sending, sent, not sent, waiting |
+| `SettingsSection`, `SettingRow`, `SettingsDivider` | Grouped settings, each row with its own send state, Retry, "as of", disabled reason |
+| `NormTopAppBar`, `QuietStatusLine`, `StatusMark` | The ink-blue top app bar with the quiet status line (charging, syncing) |
+| `ConnectionBanner`, `BannerTone` | The banner under the top app bar: the state and its one fix |
+| `ShellDefaults` | The navigation bar's colours |
+| `FixItCard`, `Notice`, `NoticeTone` | A blocker with its one-tap fix (amber); a failure (error red) |
+| `BarChart`, `ChartBar` | One bar per record (half hour or day), goal line, ranges with an average tick, single readings; gaps empty, zeros as stubs |
+| `SleepStackChart`, `SleepNight`, `SleepStageBand`, `StageSpan`, `SleepStage`, `SleepLegend` | Sleep stacked by stage per night; a night as a stage band with a lane per stage |
+| `FlowScaffold` | A full-screen flow (first run, calibration, firmware): Close, the step, actions along the bottom |
+| `countText`, `durationText`, `rememberClockFormatter`, `dateLineText` | How numbers, durations, clock times and dates print, the same everywhere |
+
+#### Strings
+
+Every screen keeps its words in its **own** `res/values/strings_<screen>.xml` (English;
+`strings_today.xml`, `strings_watch.xml`, …), so screens rebuilt in parallel never edit the
+same file. Prefix the names with the screen (`today_sync_action`). Use plurals for counts.
+The components' words are in `strings_components.xml`; `strings.xml` keeps the app's name.
+
+#### Screenshot tests (Paparazzi)
+
+Every shared component and every rebuilt screen is rendered on the PC, without a device, in
+light, dark, and light at font scale 1.3, and compared with its golden image in
+`app/src/test/snapshots/images/` (tracked; our own renders) on **every**
+`./gradlew :app:testDebugUnitTest`. A render that drifts from its golden fails the build; the
+diff lands in `app/build/paparazzi/failures/`.
+
+A screen's tests go in `app/src/test/kotlin/com/normplus/ui/screens/<screen>/`, beside the
+components' (`ui/components/*SnapshotTest.kt` are the examples):
+
+```kotlin
+@RunWith(Parameterized::class)
+class TodaySnapshotTest(variant: Variant) {
+    companion object {
+        @JvmStatic @Parameterized.Parameters(name = "{0}")
+        fun variants() = Variant.entries          // light, dark, largefont
+    }
+
+    @get:Rule val paparazzi = normPaparazzi(variant, component = false)   // the whole Pixel 8 screen
+
+    @Test fun goalMet() = paparazzi.snapshot {
+        NormPlusTheme(animationsRemoved = true) { TodayContent(state = TodayUiState(/* … */)) }
+    }
+}
+```
+
+Render the screen's **stateless content** composable with a hand-made UI state, one test per
+state the issue lists (no ViewModel, no Hilt, no BLE in a snapshot). Then:
+
+```bash
+./gradlew :app:recordPaparazziDebug --tests "com.normplus.ui.screens.today.*"   # write its goldens
+./gradlew :app:testDebugUnitTest                                                 # verify everything
+```
+
+Look at every new golden before committing it: a golden is a claim that the render is right.
+A change that is meant to move an existing component re-records its goldens in the same
+commit. Paparazzi runs on this Windows machine; one Gradle build at a time (memory).
+
+The old screens (`screens/`, until each is rebuilt) still compile against `ui/legacy/`, whose
+colour names now resolve to the theme's roles, so they show in the new palette. A rebuilt
+screen imports nothing from `legacy`; the package is deleted with the last old screen.
 
 Navigation graph: `ui/navigation/AppNavGraph.kt`.
 

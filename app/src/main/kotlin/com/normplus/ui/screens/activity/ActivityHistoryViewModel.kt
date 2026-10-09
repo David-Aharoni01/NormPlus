@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.activity
 
 import androidx.lifecycle.ViewModel
@@ -7,7 +9,7 @@ import com.normplus.data.db.dao.SleepDao
 import com.normplus.data.db.dao.SportDao
 import com.normplus.data.db.dao.WorkoutDao
 import com.normplus.domain.model.WorkoutSummary
-import com.normplus.ui.components.SleepSegment
+import com.normplus.ui.legacy.SleepSegment
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow

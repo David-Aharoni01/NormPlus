@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The Norm+ icon for themed icons (Android 13+), our own drawing (#96): the same sheet, hands
+    and pivot as ic_launcher_foreground, in one ink. The system tints it; only alpha counts.
+    The sheet is drawn as its outline so the hands stay on it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- The sheet's outline. -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.6"
+        android:strokeLineJoin="round"
+        android:pathData="M35.3,32.3 L72.7,32.3 L72.7,75 Q72.7,75.7 72,75.7 L36,75.7 Q35.3,75.7 35.3,75 Z"/>
+
+    <!-- The perforation. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M37.5,38.4 h2.4 v1.3 h-2.4 Z M41.5,38.4 h2.4 v1.3 h-2.4 Z M45.5,38.4 h2.4 v1.3 h-2.4 Z
+            M49.5,38.4 h2.4 v1.3 h-2.4 Z M53.5,38.4 h2.4 v1.3 h-2.4 Z M57.5,38.4 h2.4 v1.3 h-2.4 Z
+            M61.5,38.4 h2.4 v1.3 h-2.4 Z M65.5,38.4 h2.4 v1.3 h-2.4 Z M69.5,38.4 h1.9 v1.3 h-1.9 Z"/>
+
+    <group
+        android:pivotX="54"
+        android:pivotY="58"
+        android:rotation="120">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M51.7,47.5 A2.3,2.3 0 0,1 56.3,47.5 L56.3,58 A2.3,2.3 0 0,1 51.7,58 Z"/>
+    </group>
+
+    <group
+        android:pivotX="54"
+        android:pivotY="58"
+        android:rotation="0">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M52.4,44.4 A1.6,1.6 0 0,1 55.6,44.4 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
+    </group>
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,54.6 A3.4,3.4 0 1,1 53.99,54.6 Z"/>
+</vector>

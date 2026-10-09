@@ -1,5 +1,9 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.pairing
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
 import android.bluetooth.BluetoothDevice
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -50,11 +54,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.normplus.ble.BleConnectionState
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 
 @Composable
 fun PairingScreen(
@@ -101,7 +105,7 @@ fun PairingScreen(
         }
 
         Spacer(Modifier.height(32.dp))
-        Text("Connect to Norm 2", style = MaterialTheme.typography.headlineMedium, color = Color.White)
+        Text("Connect to Norm 2", style = MaterialTheme.typography.headlineMedium, color = LegacyInk)
         Spacer(Modifier.height(8.dp))
 
         val statusText = when (val cs = state.connectionState) {
@@ -137,12 +141,12 @@ fun PairingScreen(
             Row {
                 Button(
                     onClick = { viewModel.bind() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
                 ) { Text("Try again") }
                 Spacer(Modifier.size(12.dp))
                 Button(
                     onClick = { viewModel.continueWithoutBind() },
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceVariant, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceVariant, contentColor = LegacyInk),
                 ) { Text("Continue anyway") }
             }
         }
@@ -192,8 +196,8 @@ fun PairingScreen(
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Teal,
                 unfocusedBorderColor = SurfaceVariant,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
+                focusedTextColor = LegacyInk,
+                unfocusedTextColor = LegacyInk,
                 cursorColor = Teal,
             ),
         )
@@ -202,7 +206,7 @@ fun PairingScreen(
             onClick = { if (macInput.isNotBlank()) viewModel.connectByQrOrMac(macInput) },
             modifier = Modifier.fillMaxWidth(),
             enabled = macInput.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
         ) {
             Text("Connect")
         }
@@ -230,7 +234,7 @@ private fun DeviceItem(device: BluetoothDevice, onClick: () -> Unit) {
         }
         Column(modifier = Modifier.padding(start = 12.dp)) {
             @Suppress("MissingPermission")
-            Text(device.name ?: "Unknown Device", style = MaterialTheme.typography.titleMedium, color = Color.White)
+            Text(device.name ?: "Unknown Device", style = MaterialTheme.typography.titleMedium, color = LegacyInk)
             Text(device.address, style = MaterialTheme.typography.bodyMedium, color = OnSurfaceMuted)
         }
     }

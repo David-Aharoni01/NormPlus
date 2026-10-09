@@ -1,5 +1,9 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.firmware
 
+import com.normplus.ui.legacy.LegacyInk
+import com.normplus.ui.legacy.LegacyOnAccent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -46,14 +50,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.normplus.protocol.ota.OtaProgress
 import com.normplus.protocol.ota.OtaStep
-import com.normplus.ui.theme.Background
-import com.normplus.ui.theme.ErrorRed
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.SuccessGreen
-import com.normplus.ui.theme.Surface
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.Background
+import com.normplus.ui.legacy.ErrorRed
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.SuccessGreen
+import com.normplus.ui.legacy.Surface
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 
 @Composable
 fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
@@ -89,9 +93,9 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LegacyInk)
                 }
-                Text("Firmware", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                Text("Firmware", style = MaterialTheme.typography.headlineSmall, color = LegacyInk)
             }
 
             Spacer(Modifier.height(8.dp))
@@ -107,7 +111,7 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
                         Text("Watch", style = MaterialTheme.typography.labelLarge, color = OnSurfaceMuted)
                         Text(
                             if (state.watchVersion.isNotEmpty()) state.watchVersion else "—",
-                            style = MaterialTheme.typography.headlineSmall, color = Color.White,
+                            style = MaterialTheme.typography.headlineSmall, color = LegacyInk,
                         )
                     }
                     Column(horizontalAlignment = Alignment.End) {
@@ -130,7 +134,7 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
                 Button(
                     onClick = { viewModel.flashBundled() },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = LegacyOnAccent),
                     enabled = !state.isFlashing,
                 ) { Text("Re-flash Original Resources", style = MaterialTheme.typography.titleMedium) }
             }
@@ -152,7 +156,7 @@ fun FirmwareScreen(viewModel: FirmwareViewModel, onBack: () -> Unit) {
                 Button(
                     onClick = { viewModel.flashCustom() },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = HrRed, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = HrRed, contentColor = LegacyOnAccent),
                     enabled = state.customFileUri != null && !state.isFlashing,
                 ) { Text("Flash Custom Firmware", style = MaterialTheme.typography.titleMedium) }
             }
@@ -175,7 +179,7 @@ private fun FirmwareSection(title: String, content: @Composable () -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Surface).padding(20.dp)
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = Color.White)
+        Text(title, style = MaterialTheme.typography.titleMedium, color = LegacyInk)
         Spacer(Modifier.height(12.dp))
         content()
     }
@@ -200,7 +204,7 @@ private fun OtaProgressCard(progress: OtaProgress) {
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Surface).padding(20.dp)
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Update Progress", style = MaterialTheme.typography.titleMedium, color = Color.White)
+            Text("Update Progress", style = MaterialTheme.typography.titleMedium, color = LegacyInk)
             when {
                 progress.isDone -> Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(24.dp))
                 progress.isFailed -> Icon(Icons.Default.Error, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(24.dp))

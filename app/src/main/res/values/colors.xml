@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Deep navy — pairs with the white watch body and teal accent in the launcher icon -->
-    <color name="launcher_background">#0D1B2A</color>
+    <!-- The launcher icon's backing: the Day Sheet's ink-blue (ui/theme/Color.kt, InkBlue). -->
+    <color name="ic_launcher_background">#1F2A44</color>
+    <!-- The window's ground before Compose draws: newsprint (Color.kt, Newsprint). -->
+    <color name="window_ground">#E9E9E6</color>
 </resources>

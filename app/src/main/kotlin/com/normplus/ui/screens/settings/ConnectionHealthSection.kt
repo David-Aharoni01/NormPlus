@@ -1,5 +1,8 @@
+@file:Suppress("DEPRECATION") // pre-redesign screen: ui/legacy until its rebuild (#96)
+
 package com.normplus.ui.screens.settings
 
+import com.normplus.ui.legacy.LegacyInk
 import android.content.Intent
 import android.text.format.DateUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,11 +38,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.normplus.ui.theme.HrRed
-import com.normplus.ui.theme.OnSurfaceMuted
-import com.normplus.ui.theme.SuccessGreen
-import com.normplus.ui.theme.SurfaceVariant
-import com.normplus.ui.theme.Teal
+import com.normplus.ui.legacy.HrRed
+import com.normplus.ui.legacy.OnSurfaceMuted
+import com.normplus.ui.legacy.SuccessGreen
+import com.normplus.ui.legacy.SurfaceVariant
+import com.normplus.ui.legacy.Teal
 
 /**
  * "Connection health" card for the settings screen: is the always-on service actually running, is
@@ -164,7 +167,7 @@ private fun StatusRow(label: String, value: String, ok: Boolean) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = Color.White)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = LegacyInk)
         Text(
             value,
             style = MaterialTheme.typography.bodyMedium,
@@ -196,7 +199,7 @@ private fun IssueRow(
             Text(
                 text,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White,
+                color = LegacyInk,
                 modifier = Modifier.padding(start = 8.dp),
             )
         }
