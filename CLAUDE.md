@@ -205,7 +205,7 @@ normcmd BATTERY_POWER CHECK --mac
 ./gradlew :protocol:test
 
 # Run a single test class
-./gradlew :protocol:test --tests "com.norm2hacked.protocol.PacketTest"
+./gradlew :protocol:test --tests "com.normplus.protocol.PacketTest"
 
 # Run lint
 ./gradlew lint

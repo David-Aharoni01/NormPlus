@@ -1,4 +1,4 @@
-# Norm2Hacked
+# Norm+
 
 Reverse-engineering workspace for the **Norm 2 smartwatch** — a custom Android companion
 app built on a BLE protocol library, and an emulator that runs the watch's own firmware on
@@ -142,7 +142,7 @@ Before launching our app the original normconnect app should be disabled:
 adb shell pm disable-user --user 0 com.normconnectappv2.watch
 ```
 
-The APK lands at `app\build\outputs\apk\debug\app-debug.apk`. Launch it from the device, or
+The APK lands at `app\build\outputs\apk\debug\normplus-debug.apk`. Launch it from the device, or
 open the project in Android Studio and Run.
 
 ---
@@ -151,7 +151,7 @@ open the project in Android Studio and Run.
 
 ```powershell
 .\gradlew :protocol:test                                  # all protocol unit tests
-.\gradlew :protocol:test --tests "com.norm2hacked.protocol.PacketTest"   # a single class
+.\gradlew :protocol:test --tests "com.normplus.protocol.PacketTest"   # a single class
 .\gradlew :app:testDebugUnitTest                         # the app's unit tests
 normtest                                                 # the Python tools' tests (~5 min)
 ```

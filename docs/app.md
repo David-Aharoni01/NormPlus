@@ -10,7 +10,7 @@ Pure Kotlin/JVM, zero Android or platform dependencies, so it unit-tests on the 
 Used by `:app` (the Windows `normlink-cli` was its second user until it was removed).
 
 ```
-protocol/src/main/kotlin/com/norm2hacked/
+protocol/src/main/kotlin/com/normplus/
   ble/BleConstants.kt          UUIDs, MTU values, timeouts, frame markers
   protocol/
     Logger.kt                  Logging abstraction (Android wires Log.*, plain JVM gets stdout/stderr)
@@ -272,7 +272,7 @@ path (`MessagePushRepositoryHelper.smali:152-165`). **Do not use it as an id, sl
   removal. This replaced the old fixed 30 s dedup window.
 
 Pure + unit-tested: `NotificationMergePolicy.merge`, `NotificationMergeBuffer`,
-`RecentNotificationCache` (`app/src/test/kotlin/com/norm2hacked/notification/`).
+`RecentNotificationCache` (`app/src/test/kotlin/com/normplus/notification/`).
 
 **Dead ends — do NOT try** (all ruled out from smali):
 - Re-pushing `0x76` with empty title/content to "blank out" the old one — no identity field, so it
@@ -343,7 +343,7 @@ The legacy `NotificationPushCommand` (0x79 MessageBT) is kept but unused. The fo
 package (no self-feedback). Byte-exact test in `protocol/.../NotificationPushTest.kt`.
 
 **Pipeline plumbing that was also needed** (all in place): listener permission (granted in tests via
-`adb shell cmd notification allow_listener com.norm2hacked/.notification.NotificationForwarder`);
+`adb shell cmd notification allow_listener com.normplus/.notification.NotificationForwarder`);
 MTU-chunking via `BleWriteQueue`; the `[0x03]` "process now" trigger to `0x8002` after the write;
 and `runCatching` around the fire-and-forget write so a link flap can't crash the forwarder's scope.
 
