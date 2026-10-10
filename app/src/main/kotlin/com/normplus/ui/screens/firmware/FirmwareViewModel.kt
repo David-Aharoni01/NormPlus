@@ -28,6 +28,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+/** What the update would send (#106). */
+enum class FirmwareTarget {
+    /** The watch's own resource image, type 4: the way back. */
+    OriginalResources,
+    /** A `.bin` chosen on Technical (#107). */
+    CustomFile,
+}
+
 data class FirmwareUiState(
     val watchVersion: String = "",
     val isLoading: Boolean = false,
@@ -36,7 +44,21 @@ data class FirmwareUiState(
     val customFileUri: Uri? = null,
     val customFileName: String? = null,
     val error: String? = null,
-)
+    /** The update chosen for review; null on the first step. */
+    val target: FirmwareTarget? = null,
+    /** "I understand the watch shows nothing until this finishes" is ticked. */
+    val acknowledged: Boolean = false,
+    val connected: Boolean = false,
+    /** Seconds to wait before an update may start, after the watch (re)connected; 0 when it may. */
+    val settleSeconds: Int = 0,
+    /** Whether this build carries the original resource image (it comes from the NORM submodule). */
+    val bundledAvailable: Boolean = true,
+    /** Time remaining while sending, from how fast the pieces are going; null before that. */
+    val remainingSeconds: Int? = null,
+) {
+    /** Start: a target, the box ticked, the watch connected and past its first seconds, nothing running. */
+    val canStart: Boolean get() = target != null && acknowledged && connected && settleSeconds == 0 && !isFlashing
+}
 
 @HiltViewModel
 class FirmwareViewModel @Inject constructor(
@@ -58,6 +80,59 @@ class FirmwareViewModel @Inject constructor(
 
     init {
         loadWatchVersion()
+        _state.update {
+            it.copy(bundledAvailable = runCatching { context.assets.list("firmware")?.contains(BUNDLED_RESOURCES) == true }.getOrDefault(false))
+        }
+        // Not within ~10 s of the watch starting (CLAUDE.md OTA rules, #57). The app cannot see
+        // the watch boot, so the guard counts from the moment the link became ready: a watch that
+        // just started has just connected.
+        viewModelScope.launch {
+            var countdown: kotlinx.coroutines.Job? = null
+            var sawItDown = false
+            bleManager.connectionState.collect { s ->
+                val connected = s.isConnected
+                if (!connected) sawItDown = true
+                if (connected == _state.value.connected) return@collect
+                _state.update { it.copy(connected = connected) }
+                countdown?.cancel()
+                if (connected) {
+                    countdown = launch {
+                        // Count from when the link became ready (BleService saves it), not from
+                        // when this screen opened: a watch connected long ago needs no wait.
+                        // Seen connecting here: the full wait, whatever the saved time says yet.
+                        val since = if (sawItDown) 0L else (System.currentTimeMillis() - watchPreferences.lastConnectedEpoch.first()) / 1000
+                        val wait = (SETTLE_SECONDS - since).coerceIn(0, SETTLE_SECONDS.toLong()).toInt()
+                        for (left in wait downTo 1) {
+                            _state.update { it.copy(settleSeconds = left) }
+                            kotlinx.coroutines.delay(1_000)
+                        }
+                        _state.update { it.copy(settleSeconds = 0) }
+                    }
+                } else {
+                    _state.update { it.copy(settleSeconds = 0) }
+                }
+            }
+        }
+    }
+
+    /** The update to review: the original resources, or a custom file handed over from Technical. */
+    fun choose(target: FirmwareTarget?) {
+        _state.update { it.copy(target = target, acknowledged = false, error = null, progress = null) }
+    }
+
+    fun acknowledge(ticked: Boolean) {
+        _state.update { it.copy(acknowledged = ticked) }
+    }
+
+    /** Starts the chosen update; [FirmwareUiState.canStart] gates it here as well as on the button. */
+    fun start() {
+        val s = _state.value
+        if (!s.canStart) return
+        when (s.target) {
+            FirmwareTarget.OriginalResources -> flashBundled()
+            FirmwareTarget.CustomFile -> flashCustom()
+            null -> Unit
+        }
     }
 
     private fun loadWatchVersion() {
@@ -103,12 +178,25 @@ class FirmwareViewModel @Inject constructor(
     private fun flash(name: String, read: () -> ByteArray) {
         if (_state.value.isFlashing) return
         viewModelScope.launch {
-            _state.update { it.copy(isFlashing = true, error = null, progress = OtaProgress(OtaStep.UPGRADE_MODE)) }
+            _state.update { it.copy(isFlashing = true, error = null, remainingSeconds = null, progress = OtaProgress(OtaStep.UPGRADE_MODE)) }
+            var sendStart = 0L
+            var sendStartPiece = 0
             try {
                 if (!bleManager.connectionState.value.isConnected) throw OtaException("The watch is not connected")
                 val image = withContext(Dispatchers.IO) { OtaImage.parse(read()) }
                 ApolloOtaSession(otaTransport).flash(image, ApolloOta.updateTypeFor(name)).collect { progress ->
-                    _state.update { it.copy(progress = progress) }
+                    // Time remaining from how fast the pieces are going so far; none before sending.
+                    var remaining: Int? = null
+                    if (progress.step == OtaStep.DATA_STREAM && progress.packetsTotal > 0) {
+                        val now = System.currentTimeMillis()
+                        if (sendStart == 0L) { sendStart = now; sendStartPiece = progress.packetsCurrent }
+                        val done = progress.packetsCurrent - sendStartPiece
+                        val elapsed = now - sendStart
+                        if (done > 0 && elapsed > 2_000) {
+                            remaining = (((progress.packetsTotal - progress.packetsCurrent) * elapsed / done) / 1000).toInt()
+                        }
+                    }
+                    _state.update { it.copy(progress = progress, remainingSeconds = remaining) }
                     if (progress.isDone) {
                         _state.update { it.copy(isFlashing = false) }
                         loadWatchVersion()
@@ -122,5 +210,7 @@ class FirmwareViewModel @Inject constructor(
 
     private companion object {
         const val BUNDLED_RESOURCES = "Picture_P03B_NORM2_0.4.bin"
+        /** Seconds after the link becomes ready before an update may start (#57). */
+        const val SETTLE_SECONDS = 10
     }
 }

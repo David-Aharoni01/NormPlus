@@ -578,7 +578,7 @@ that replaces them:
 | `screens/settings/WatchSettingsScreen.kt`, `WatchSettingsViewModel.kt`, `ConnectionHealthSection.kt`, `ConnectionHealthViewModel.kt` (deleted) | #102 |
 | `screens/settings/NotificationRulesScreen.kt`, `NotificationRulesViewModel.kt` (deleted) | #104 |
 | `screens/calibration/HandsCalibrationScreen.kt` (deleted; its ViewModel stays) | #105 |
-| `screens/firmware/FirmwareScreen.kt` (its ViewModel may stay; the custom-file part goes to #107) | #106 |
+| `screens/firmware/FirmwareScreen.kt` (deleted; its ViewModel stays; the custom-file picker goes to #107) | #106 |
 | `ui/legacy/` | whichever issue deletes the last old screen |
 
 **Permissions.** Nothing is asked at launch any more (#98). The first run asks for each
