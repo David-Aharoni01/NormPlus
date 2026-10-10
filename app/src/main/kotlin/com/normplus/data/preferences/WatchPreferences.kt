@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -109,5 +110,21 @@ class WatchPreferences @Inject constructor(
 
     suspend fun saveLastConnectedEpoch(epoch: Long) {
         context.dataStore.edit { it[KEY_LAST_CONNECTED] = epoch }
+    }
+
+    // ── The step goal Norm+ keeps (#95 §7.2) ──────────────────────────────────
+    // Norm+ keeps the goal and sends it to the watch on connect (#102 sets and sends it);
+    // Today, History and Day detail measure against it. Until it is set, the default the
+    // app has always sent (WatchSettings.stepGoal).
+    private val KEY_STEP_GOAL = intPreferencesKey("step_goal")
+
+    val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: DEFAULT_STEP_GOAL }
+
+    suspend fun saveStepGoal(steps: Int) {
+        context.dataStore.edit { it[KEY_STEP_GOAL] = steps }
+    }
+
+    companion object {
+        const val DEFAULT_STEP_GOAL = 10_000
     }
 }
