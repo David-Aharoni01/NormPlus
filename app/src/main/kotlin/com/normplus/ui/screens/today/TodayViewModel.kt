@@ -37,6 +37,9 @@ import javax.inject.Inject
 
 private const val TAG = "TodayVM"
 
+/** Until the preference is read: the goal WatchPreferences.stepGoal defaults to. */
+private const val DEFAULT_GOAL = 10_000
+
 /**
  * Everything Today prints (#99). Figures the watch has not reported are null: absent, never
  * zero.
@@ -50,7 +53,7 @@ private const val TAG = "TodayVM"
 @Immutable
 data class TodayUiState(
     val date: LocalDate,
-    val goal: Int = WatchPreferences.DEFAULT_STEP_GOAL,
+    val goal: Int = DEFAULT_GOAL,
     val steps: Int? = null,
     val calories: Int? = null,
     val distanceMeters: Int? = null,
@@ -93,7 +96,7 @@ class TodayViewModel @Inject constructor(
         statusSource.status,
         stored,
         prefs.todaySummary.map { TodaySummary.decode(it) }.catchAs(null),
-        prefs.stepGoal.catchAs(WatchPreferences.DEFAULT_STEP_GOAL),
+        prefs.stepGoal.catchAs(DEFAULT_GOAL),
         combine(prefs.units.catchAs("METRIC"), dismissedShortfall) { u, d -> u to d },
     ) { status, db, storedSummary, goal, (units, dismissed) ->
         val summary = TodayFacts.summaryFor(db.date, storedSummary, zone)
@@ -170,17 +173,19 @@ class TodayViewModel @Inject constructor(
             val today = LocalDate.now()
             runCatching {
                 val day = TodayFacts.dayWindow(today, zone)
-                val night = TodayFacts.lastNightWindow(today, zone)
                 val yesterday = TodayFacts.dayWindow(today.minusDays(1), zone)
 
-                val sessions = sleepDao.querySessions(night.first, night.last).first()
+                // Last night: the sessions that end today (a night counts on the day it ends, as
+                // in History, #100). A session starts at most 14 h before it ends (brief §5), so
+                // looking from the start of yesterday finds every one.
+                val sessions = sleepDao.querySessions(yesterday.first, day.last).first()
+                    .filter { it.endEpoch in day }
                 val sleep = if (sessions.isEmpty()) null else {
-                    val breakdown = sleepDao.querySleepBreakdown(night.first, night.last)
-                    SleepSummary(
-                        asleepMinutes = breakdown?.totalMinutes ?: 0,
-                        deepMinutes = breakdown?.let { it.deepSec / 60 },
-                        startEpochMs = sessions.minOf { it.startEpoch },
-                        endEpochMs = sessions.maxOf { it.endEpoch },
+                    val stages = sessions.flatMap { sleepDao.queryStages(it.id).first() }
+                    TodayFacts.sleepOf(
+                        starts = sessions.map { it.startEpoch },
+                        ends = sessions.map { it.endEpoch },
+                        stages = stages.map { it.stage to it.durationSeconds },
                     )
                 }
                 val heart = heartRateDao.queryByRange(day.first, day.last).first().lastOrNull()

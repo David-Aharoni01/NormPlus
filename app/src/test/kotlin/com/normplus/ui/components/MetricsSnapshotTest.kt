@@ -9,7 +9,10 @@ import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.Route
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import com.normplus.ui.snapshot.ComponentFrame
 import com.normplus.ui.snapshot.Variant
 import com.normplus.ui.snapshot.normPaparazzi
@@ -82,6 +85,24 @@ class MetricsSnapshotTest(variant: Variant) {
                 )
                 MetricTile("Sleep", Icons.Rounded.Bedtime, null, "Sleep, none recorded", absentText = "No sleep recorded")
                 MetricTile("Heart rate", Icons.Rounded.Favorite, null, "Heart rate, no reading yet", absentText = "No reading yet")
+            }
+        }
+    }
+
+    /** Right to left (#99): the tiles mirror, and each figure keeps its own direction ("72 bpm"). */
+    @Test
+    fun tilesRightToLeft() = paparazzi.snapshot {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            ComponentFrame {
+                Column(verticalArrangement = Arrangement.spacedBy(NormPlusTheme.spacing.m)) {
+                    StepsHeroCard(6412, 8000, Icons.AutoMirrored.Rounded.DirectionsWalk, Modifier.fillMaxWidth())
+                    MetricGrid {
+                        MetricTile("Sleep", Icons.Rounded.Bedtime, durationFigure(408), "Sleep, 6 hours 48 minutes", detail = "deep 1 h 32 m")
+                        MetricTile("Heart rate", Icons.Rounded.Favorite, figure("72" to "bpm"), "Heart rate, 72 bpm", detail = "at 14:05")
+                        MetricTile("Calories", Icons.Rounded.LocalFireDepartment, figure("1,840" to "kcal"), "Calories, 1,840 kcal")
+                        MetricTile("Distance", Icons.Rounded.Route, figure("4.6" to "km"), "Distance, 4.6 km", detail = "active 52 min")
+                    }
+                }
             }
         }
     }

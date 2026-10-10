@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -50,6 +51,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
@@ -100,12 +102,22 @@ fun FitText(text: AnnotatedString, style: TextStyle, modifier: Modifier = Modifi
     val measurer = rememberTextMeasurer()
     val ink = if (color != Color.Unspecified) color else LocalContentColor.current
     val last = remember { arrayOfNulls<TextLayoutResult>(1) }
+    // A figure keeps its own direction ("72 bpm" stays "72 bpm" in a right-to-left layout,
+    // #99) and sits at the start of its width: the right edge in right to left.
+    val ownDirection = style.copy(textDirection = TextDirection.Content)
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Layout(
         content = {},
         modifier = modifier
             .semantics { this.text = text }
-            .drawBehind { last[0]?.let { drawText(it, color = ink) } },
+            .drawBehind {
+                last[0]?.let {
+                    val x = if (rtl) size.width - it.size.width else 0f
+                    translate(left = x) { drawText(it, color = ink) }
+                }
+            },
     ) { _, constraints ->
+        val style = ownDirection
         val natural = measurer.measure(text, style, maxLines = 1, softWrap = false)
         val available = constraints.maxWidth
         val fitted = if (available == Constraints.Infinity || natural.size.width <= available || natural.size.width == 0) {
@@ -331,6 +343,8 @@ fun MetricTile(
 ) {
     val spacing = NormPlusTheme.spacing
     val scheme = MaterialTheme.colorScheme
+    // Its words keep their own direction, as the figure does (#99): "11:41 PM–6:29 AM" stays whole.
+    val ownDirection = TextStyle(textDirection = TextDirection.Content)
     NormCard(
         modifier = modifier.clearAndSetSemantics {
             contentDescription = spoken
@@ -346,7 +360,7 @@ fun MetricTile(
         } else {
             Text(
                 absentText ?: stringResource(R.string.figure_absent),
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.merge(ownDirection),
                 color = scheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = spacing.m),
             )
@@ -354,7 +368,7 @@ fun MetricTile(
         if (detail != null) {
             Text(
                 detail,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.merge(ownDirection),
                 color = scheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = spacing.s),
             )

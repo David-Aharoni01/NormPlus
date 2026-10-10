@@ -4,7 +4,6 @@ import androidx.compose.runtime.Immutable
 import com.normplus.status.SyncState
 import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.ZoneId
 
 /*
@@ -112,18 +111,20 @@ object TodayFacts {
     /** A live reading older than this is shown "as of" its time, even while connected. */
     const val LIVE_FOR_MS = 15 * 60_000L
 
-    /** Sleep before this hour of a day belongs to that day's night; after it, to the next. */
-    private val NIGHT_BOUNDARY: LocalTime = LocalTime.NOON
-
     /**
-     * The window "last night" falls in, for [date]: sessions starting from noon the day before to
-     * noon on [date]. The watch's auto sleep ends a session in the morning (#88), and up to three
-     * sessions make one night (brief §5).
+     * Last night from its sessions (up to three make one night, brief §5): asleep is deep plus
+     * light, the official app's total (SleepBreakdown); from the first start to the last end.
+     * [stages] are (SleepStage code, seconds): 0 deep, 1 light, 2 awake (#90).
      */
-    fun lastNightWindow(date: LocalDate, zone: ZoneId): LongRange {
-        val start = date.minusDays(1).atTime(NIGHT_BOUNDARY).atZone(zone).toInstant().toEpochMilli()
-        val end = date.atTime(NIGHT_BOUNDARY).atZone(zone).toInstant().toEpochMilli()
-        return start until end
+    fun sleepOf(starts: List<Long>, ends: List<Long>, stages: List<Pair<Int, Int>>): SleepSummary {
+        val deep = stages.filter { it.first == 0 }.sumOf { it.second }
+        val light = stages.filter { it.first == 1 }.sumOf { it.second }
+        return SleepSummary(
+            asleepMinutes = (deep + light) / 60,
+            deepMinutes = deep / 60,
+            startEpochMs = starts.minOrNull(),
+            endEpochMs = ends.maxOrNull(),
+        )
     }
 
     /** The bounds of [date] in [zone], as epoch milliseconds: start inclusive, end exclusive. */

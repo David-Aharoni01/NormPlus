@@ -72,10 +72,13 @@ class TodayFactsTest {
     }
 
     @Test
-    fun `last night runs from noon to noon`() {
-        val w = TodayFacts.lastNightWindow(day, zone)
-        assertEquals(at(day.minusDays(1), 12, 0), w.first)
-        assertEquals(at(day, 12, 0) - 1, w.last)
+    fun `last night is deep plus light, from the first start to the last end`() {
+        val sleep = TodayFacts.sleepOf(
+            starts = listOf(300L, 100L),
+            ends = listOf(900L, 250L),
+            stages = listOf(0 to 3600, 1 to 1800, 2 to 600, 1 to 1200),
+        )
+        assertEquals(SleepSummary(asleepMinutes = 110, deepMinutes = 60, startEpochMs = 100L, endEpochMs = 900L), sleep)
     }
 
     @Test

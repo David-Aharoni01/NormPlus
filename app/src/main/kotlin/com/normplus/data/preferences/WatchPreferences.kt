@@ -118,11 +118,12 @@ class WatchPreferences @Inject constructor(
     private val KEY_TODAY_SUMMARY = stringPreferencesKey("today_summary")
 
     /**
-     * The step goal Norm+ keeps (brief §7.2): Today measures against it, and the Watch tab sets
-     * it and sends it to the watch on connect (#102). Until it is set, the official app's own
-     * default, 7,000 (SPDefaultPrivateValue.smali: DEFAULT_GOAL_STEP = 0x1b58).
+     * The step goal Norm+ keeps (brief §7.2): Today and History measure against it, and the
+     * Watch tab sets it and sends it to the watch on connect (#102). Default 10,000, as
+     * WatchSettings.stepGoal (#100's key and default; the official app's own is 7,000,
+     * SPDefaultPrivateValue.DEFAULT_GOAL_STEP = 0x1b58).
      */
-    val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: DEFAULT_STEP_GOAL }
+    val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: 10_000 }
 
     suspend fun saveStepGoal(steps: Int) {
         context.dataStore.edit { it[KEY_STEP_GOAL] = steps }
@@ -138,8 +139,4 @@ class WatchPreferences @Inject constructor(
         context.dataStore.edit { it[KEY_TODAY_SUMMARY] = encoded }
     }
 
-    companion object {
-        /** The official app's default step goal (SPDefaultPrivateValue.DEFAULT_GOAL_STEP, 0x1b58). */
-        const val DEFAULT_STEP_GOAL = 7_000
-    }
 }

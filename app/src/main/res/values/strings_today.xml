@@ -18,10 +18,11 @@
     <string name="today_heart_rate_absent">No reading yet</string>
     <string name="today_not_reported">Not reported yet</string>
 
-    <!-- The tiles' detail lines: "deep 1 h 32 m · 23:41–06:29", "at 14:05", "active 52 min". -->
+    <!-- The tiles' detail lines: "deep 1 h 32 m", then "23:41–06:29", "at 14:05", "active 52 min". -->
     <string name="today_sleep_deep">deep %1$s</string>
     <string name="today_sleep_span">%1$s–%2$s</string>
-    <string name="today_detail_join">%1$s · %2$s</string>
+    <!-- Two lines, so a time range never breaks inside a time. -->
+    <string name="today_detail_join">%1$s\n%2$s</string>
     <string name="today_heart_rate_at">at %1$s</string>
     <!-- The watch's own summary carries the reading but not its time. -->
     <string name="today_heart_rate_on_watch">latest on your watch</string>
