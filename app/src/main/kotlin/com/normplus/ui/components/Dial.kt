@@ -393,7 +393,6 @@ private const val NEIGHBOUR_ALPHA = 0.5f
 @Composable
 fun PageDots(count: Int, current: Int, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
-    val c = NormPlusTheme.colors
     Row(modifier.clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(DotGap), verticalAlignment = Alignment.CenterVertically) {
         repeat(count) { i ->
             val active = i == current
@@ -401,7 +400,7 @@ fun PageDots(count: Int, current: Int, modifier: Modifier = Modifier) {
             Box(
                 Modifier
                     .size(width, DotSize)
-                    .background(if (active) scheme.primary else c.dialBezelEdge.copy(alpha = 0.9f), NormPlusTheme.shapes.pill),
+                    .background(if (active) scheme.primary else scheme.outline, NormPlusTheme.shapes.pill),
             )
         }
     }
