@@ -87,7 +87,8 @@ fun TechnicalContent(state: TechnicalUiState, status: WatchStatus, actions: Tech
             SettingsSection(stringResource(R.string.technical_section_watch)) {
                 Raw(stringResource(R.string.technical_address), state.address ?: stringResource(R.string.technical_none))
                 SettingsDivider()
-                Raw(stringResource(R.string.technical_version), state.version.ifEmpty { stringResource(R.string.technical_not_read) })
+                // The stored string can carry NULs from the version reply (#2): show what prints, or say it isn't read.
+                Raw(stringResource(R.string.technical_version), state.version.filter { it >= ' ' }.trim().ifEmpty { stringResource(R.string.technical_not_read) })
             }
             SettingsSection(stringResource(R.string.technical_section_sync)) {
                 SettingRow(stringResource(R.string.technical_last_sync), supporting = syncWords(status, clock))

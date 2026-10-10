@@ -23,6 +23,7 @@
     <string name="figure_spoken_absent">Steps not reported yet. Goal %1$s steps</string>
     <!-- Shown in place of a figure the watch has not reported. Never a zero. -->
     <string name="figure_absent">–</string>
+    <string name="figure_not_reported">Not reported yet</string>
 
     <!-- The units set small beside a figure: "6 h 48 m". -->
     <string name="unit_hours_short">h</string>

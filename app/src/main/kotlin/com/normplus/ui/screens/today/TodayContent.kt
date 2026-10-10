@@ -104,6 +104,7 @@ fun TodayContent(
             }
             item(key = "steps") {
                 val note = when {
+                    state.stepsFromRecords -> stringResource(R.string.today_steps_from_records)
                     state.asOfEpochMs != null -> stringResource(R.string.today_as_of, clock(state.asOfEpochMs))
                     state.nothingSynced -> stringResource(R.string.today_nothing_yet)
                     else -> null

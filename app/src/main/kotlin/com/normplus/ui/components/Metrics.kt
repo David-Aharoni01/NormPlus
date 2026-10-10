@@ -246,12 +246,12 @@ fun HeroMetricCard(
     ) {
         CardTitle(label, icon)
         Row(Modifier.padding(top = spacing.l)) {
-            FitText(
-                AnnotatedString(figure ?: stringResource(R.string.figure_absent)),
-                NormPlusTheme.type.heroFigure,
-                color = if (figure == null) scheme.onSurfaceVariant else scheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
+            if (figure != null) {
+                FitText(AnnotatedString(figure), NormPlusTheme.type.heroFigure, color = scheme.onSurface, modifier = Modifier.weight(1f))
+            } else {
+                // An absent figure says so in words: a lone dash at hero size reads as a glitch.
+                Text(stringResource(R.string.figure_not_reported), style = MaterialTheme.typography.headlineMedium, color = scheme.onSurfaceVariant)
+            }
         }
         Text(
             supporting,
