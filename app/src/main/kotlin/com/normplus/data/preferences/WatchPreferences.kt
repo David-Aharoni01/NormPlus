@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -109,5 +110,36 @@ class WatchPreferences @Inject constructor(
 
     suspend fun saveLastConnectedEpoch(epoch: Long) {
         context.dataStore.edit { it[KEY_LAST_CONNECTED] = epoch }
+    }
+
+    // ── Today (#99) ───────────────────────────────────────────────────────────
+
+    private val KEY_STEP_GOAL = intPreferencesKey("step_goal")
+    private val KEY_TODAY_SUMMARY = stringPreferencesKey("today_summary")
+
+    /**
+     * The step goal Norm+ keeps (brief §7.2): Today measures against it, and the Watch tab sets
+     * it and sends it to the watch on connect (#102). Until it is set, the official app's own
+     * default, 7,000 (SPDefaultPrivateValue.smali: DEFAULT_GOAL_STEP = 0x1b58).
+     */
+    val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: DEFAULT_STEP_GOAL }
+
+    suspend fun saveStepGoal(steps: Int) {
+        context.dataStore.edit { it[KEY_STEP_GOAL] = steps }
+    }
+
+    /**
+     * The last reading of the watch's own today summary (0x57), encoded by
+     * `TodaySummary.encode()`, so Today shows it "as of" its time while the watch is away.
+     */
+    val todaySummary: Flow<String?> = context.dataStore.data.map { it[KEY_TODAY_SUMMARY] }
+
+    suspend fun saveTodaySummary(encoded: String) {
+        context.dataStore.edit { it[KEY_TODAY_SUMMARY] = encoded }
+    }
+
+    companion object {
+        /** The official app's default step goal (SPDefaultPrivateValue.DEFAULT_GOAL_STEP, 0x1b58). */
+        const val DEFAULT_STEP_GOAL = 7_000
     }
 }
