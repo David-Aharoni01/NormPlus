@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The watch's screens order (#103). The stub's words (#97); #103 replaces them. -->
+<resources>
+    <string name="watchscreens_title">Watch screens</string>
+    <string name="watchscreens_placeholder">The order of your watch\'s screens can\'t be changed here yet.</string>
+</resources>

@@ -9,11 +9,10 @@ import com.normplus.data.db.dao.SleepDao
 import com.normplus.data.db.dao.SportDao
 import com.normplus.data.preferences.WatchPreferences
 import com.normplus.domain.model.DailyStats
-import com.normplus.domain.usecase.SyncHealthDataUseCase
-import com.normplus.domain.usecase.SyncProgress
+import com.normplus.status.SyncState
+import com.normplus.status.WatchStatusSource
 import com.normplus.protocol.Action
 import com.normplus.protocol.CommandCode
-import com.normplus.protocol.commands.BatteryCommand
 import com.normplus.protocol.commands.DeviceDisplayCommand
 import com.normplus.protocol.commands.DeviceVersionCommand
 import com.normplus.protocol.commands.SwitchSettingCommand
@@ -52,7 +51,7 @@ data class DashboardUiState(
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val bleManager: BleManager,
-    private val syncUseCase: SyncHealthDataUseCase,
+    private val statusSource: WatchStatusSource,
     private val sportDao: SportDao,
     private val heartRateDao: HeartRateDao,
     private val sleepDao: SleepDao,
@@ -77,6 +76,29 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             watchPreferences.lastSyncEpoch.collect { epoch ->
                 _state.update { it.copy(lastSyncEpoch = epoch) }
+            }
+        }
+        // The battery and the sync are the shared status's (#97): read once for the whole app,
+        // the sync run where every screen can see its progress.
+        viewModelScope.launch {
+            var wasSyncing = false
+            statusSource.status.collect { status ->
+                val sync = status.sync
+                _state.update {
+                    it.copy(
+                        batteryPercent = status.battery?.percent ?: 0,
+                        isCharging = status.battery?.charging ?: false,
+                        isSyncing = sync is SyncState.Running,
+                        syncLabel = if (sync is SyncState.Running && sync.total > 0) "${sync.done}/${sync.total}" else "",
+                    )
+                }
+                if (wasSyncing && sync is SyncState.Finished) {
+                    sync.problems.firstOrNull()?.let { p -> _state.update { it.copy(error = p.detail) } }
+                    // Refresh DB-derived totals, and the live watch summary.
+                    loadCachedData()
+                    refreshWatchStats()
+                }
+                wasSyncing = sync is SyncState.Running
             }
         }
     }
@@ -106,12 +128,7 @@ class DashboardViewModel @Inject constructor(
     private fun refreshWatchStats() {
         viewModelScope.launch {
             runCatching {
-                // Source: BluetoothCommandManager.smali getBatteryPower → BatteryPower(callback, 1, 0)
-                //   content = intToByteArray(0, 1) = [0x00], contentLen = 1
-                // Packet: [6F 08 70 01 00 00 8F]
-                val battPkt = bleManager.sendAndAwait(CommandCode.BATTERY_POWER, Action.CHECK, byteArrayOf(0x00))
-                val batt = BatteryCommand.parse(battPkt)
-                _state.update { it.copy(batteryPercent = batt.percent, isCharging = batt.charging) }
+                // The battery is read by WatchStatusSource on every connection (#97).
 
                 // Source: MBluetooth.smali getDeviceFunctionInfo → DeviceVersion(callback, 1, 6)
                 //   payload = [0x06] (type 6 = full version info string)
@@ -190,27 +207,9 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    /** Pull to refresh and the old Sync button: the shared sync (WatchStatusSource, #97). */
     fun sync() {
-        if (_state.value.isSyncing) return
-        viewModelScope.launch {
-            _state.update { it.copy(isSyncing = true, error = null) }
-            syncUseCase.syncAll().collect { progress ->
-                when (progress) {
-                    is SyncProgress.Running -> _state.update {
-                        it.copy(syncLabel = if (progress.total > 0)
-                            "${progress.label} ${progress.current}/${progress.total}" else progress.label)
-                    }
-                    is SyncProgress.Done -> {
-                        _state.update { it.copy(isSyncing = false, syncLabel = "") }
-                        // Refresh DB-derived totals; also re-attempt the live watch summary
-                        // (DeviceDisplay) for when that command starts returning data.
-                        loadCachedData()
-                        refreshWatchStats()
-                    }
-                    is SyncProgress.Error -> _state.update { it.copy(isSyncing = false, error = progress.message) }
-                    else -> Unit
-                }
-            }
-        }
+        _state.update { it.copy(error = null) }
+        statusSource.sync()
     }
 }

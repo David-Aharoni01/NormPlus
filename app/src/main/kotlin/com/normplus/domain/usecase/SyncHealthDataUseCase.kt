@@ -30,11 +30,29 @@ import javax.inject.Inject
 
 private const val TAG = "SyncUseCase"
 
+/** Which part of a sync is running, so the app can name it in its own words (#97). */
+enum class SyncStage { Counting, Sport, HeartRate, Sleep }
+
 sealed class SyncProgress {
     data object Idle : SyncProgress()
-    data class Running(val label: String, val current: Int, val total: Int) : SyncProgress()
+    data class Running(
+        val label: String,
+        val current: Int,
+        val total: Int,
+        val stage: SyncStage = SyncStage.Counting,
+    ) : SyncProgress()
     data object Done : SyncProgress()
-    data class Error(val message: String) : SyncProgress()
+
+    /**
+     * A part of the sync that failed; the sync goes on with the next part. [received] and
+     * [expected] are set when a record stream stopped short ("900 of 922 records").
+     */
+    data class Error(
+        val message: String,
+        val stage: SyncStage? = null,
+        val received: Int? = null,
+        val expected: Int? = null,
+    ) : SyncProgress()
 }
 
 /**
@@ -56,7 +74,7 @@ class SyncHealthDataUseCase @Inject constructor(
     fun syncAll(): Flow<SyncProgress> = flow {
         Log.i(TAG, "syncAll: starting")
 
-        emit(SyncProgress.Running("Counting records…", 0, 0))
+        emit(SyncProgress.Running("Counting records…", 0, 0, SyncStage.Counting))
         // One TOTAL_SPORT_SLEEP_COUNT for all three counts (SyncCountCommand.parseCounts). It has
         // to be one: asking makes the watch write the half hour so far as another sport record,
         // so a second ask could count one more record than the first stream delivers.
@@ -67,7 +85,7 @@ class SyncHealthDataUseCase @Inject constructor(
             )
         }.onFailure {
             Log.e(TAG, "Counting records failed: ${it.message}", it)
-            emit(SyncProgress.Error("Counting records failed: ${it.message}"))
+            emit(SyncProgress.Error("Counting records failed: ${it.message}", SyncStage.Counting))
         }.getOrNull()
 
         if (counts != null) {
@@ -105,7 +123,7 @@ class SyncHealthDataUseCase @Inject constructor(
         val sportRead = runCatching { syncSportData(counts.sport) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "Sport sync failed: ${it.message}", it)
-                emit(SyncProgress.Error("Sport sync failed: ${it.message}"))
+                emit(SyncProgress.Error("Sport sync failed: ${it.message}", SyncStage.Sport))
             }.getOrDefault(false)
         // Straight after the read, as the official app does: the watch's own guard covers it.
         if (delete && sportRead) deleteFromWatch("sport", CommandCode.DELETE_SPORT_DATA)
@@ -113,12 +131,12 @@ class SyncHealthDataUseCase @Inject constructor(
         val hrRead = runCatching { syncHeartRate(counts.heartRate) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "HR sync failed: ${it.message}", it)
-                emit(SyncProgress.Error("HR sync failed: ${it.message}"))
+                emit(SyncProgress.Error("HR sync failed: ${it.message}", SyncStage.HeartRate))
             }.getOrDefault(false)
         val sleepRead = runCatching { syncSleep(counts.sleep) { emit(it) } }
             .onFailure {
                 Log.e(TAG, "Sleep sync failed: ${it.message}", it)
-                emit(SyncProgress.Error("Sleep sync failed: ${it.message}"))
+                emit(SyncProgress.Error("Sleep sync failed: ${it.message}", SyncStage.Sleep))
             }.getOrDefault(false)
 
         if (!delete) {
@@ -167,6 +185,7 @@ class SyncHealthDataUseCase @Inject constructor(
      */
     private suspend fun <T> readStream(
         label: String,
+        stage: SyncStage,
         cmd: CommandCode,
         request: ByteArray,
         count: Int,
@@ -175,11 +194,11 @@ class SyncHealthDataUseCase @Inject constructor(
     ): RecordStream<T> {
         val packets = mutableListOf<Packet>()
         val started = System.currentTimeMillis()
-        onProgress(SyncProgress.Running(label, 0, count))
+        onProgress(SyncProgress.Running(label, 0, count, stage))
         bleManager.sendAndStream(cmd, Action.CHECK, request, isLast = RecordStreams.isLast(count))
             .collect { pkt ->
                 packets += pkt
-                onProgress(SyncProgress.Running(label, minOf(packets.size, count), count))
+                onProgress(SyncProgress.Running(label, minOf(packets.size, count), count, stage))
             }
         val stream = RecordStreams.assemble(packets, count, parse)
         Log.i(TAG, "$label: ${stream.records.size} of $count record(s) in ${System.currentTimeMillis() - started}ms" +
@@ -189,7 +208,8 @@ class SyncHealthDataUseCase @Inject constructor(
             onProgress(SyncProgress.Error(
                 "$label sync incomplete: ${stream.records.size} of $count records" +
                     (if (stream.missing.isNotEmpty()) ", ${stream.missing.size} never came" else "") +
-                    (if (stream.unparsed > 0) ", ${stream.unparsed} unreadable" else "")))
+                    (if (stream.unparsed > 0) ", ${stream.unparsed} unreadable" else ""),
+                stage = stage, received = stream.records.size, expected = count))
         }
         return stream
     }
@@ -200,7 +220,7 @@ class SyncHealthDataUseCase @Inject constructor(
         if (count == 0) return false
 
         // Source: MBluetooth.getSportData → GetSportData(callback, 2, 0, count) → payload=[0x00, 0x00]
-        val stream = readStream("Sport data", CommandCode.GET_SPORT_DATA, RecordStreams.SPORT_REQUEST,
+        val stream = readStream("Sport data", SyncStage.Sport, CommandCode.GET_SPORT_DATA, RecordStreams.SPORT_REQUEST,
             count, onProgress) { pkt ->
             SportCommand.parse(pkt) ?: run {
                 Log.w(TAG, "  sport[${RecordStreams.index(pkt)}]: parse returned null, payload=${pkt.payload.toHex()}")
@@ -229,7 +249,7 @@ class SyncHealthDataUseCase @Inject constructor(
         if (count == 0) return false
 
         // Source: MBluetooth.getHeartRateData → GetHeartRateData(callback, 1, 0, count) → payload=[0x00]
-        val stream = readStream("Heart rate", CommandCode.GET_HEART_RATE_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
+        val stream = readStream("Heart rate", SyncStage.HeartRate, CommandCode.GET_HEART_RATE_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
             count, onProgress) { pkt ->
             HeartRateCommand.parse(pkt) ?: run {
                 Log.w(TAG, "  hr[${RecordStreams.index(pkt)}]: parse returned null, payload=${pkt.payload.toHex()}")
@@ -253,7 +273,7 @@ class SyncHealthDataUseCase @Inject constructor(
         // Source: MBluetooth.getSleepData → GetSleepData(callback, 1, 0, count) → payload=[0x00].
         // Streamed by the emulated watch's own firmware (#88, RecordStreamTest); the physical
         // watch has had none yet. While a session is still on, the count says 0.
-        val stream = readStream("Sleep data", CommandCode.GET_SLEEP_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
+        val stream = readStream("Sleep data", SyncStage.Sleep, CommandCode.GET_SLEEP_DATA, RecordStreams.SINGLE_BYTE_REQUEST,
             count, onProgress) { pkt ->
             SleepCommand.parse(pkt) ?: run {
                 Log.w(TAG, "  sleep[${RecordStreams.index(pkt)}]: parse returned null, payload=${pkt.payload.toHex()}")

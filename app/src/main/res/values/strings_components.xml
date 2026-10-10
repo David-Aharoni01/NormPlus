@@ -10,6 +10,7 @@
     <string name="action_retry">Retry</string>
     <string name="action_dismiss">Dismiss</string>
     <string name="action_close">Close</string>
+    <string name="action_back">Back</string>
 
     <!-- The hero card and the goal. -->
     <string name="metric_steps">Steps</string>

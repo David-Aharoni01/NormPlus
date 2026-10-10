@@ -1,5 +1,6 @@
 package com.normplus.ui.components
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -24,15 +26,20 @@ import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItemColors
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,6 +53,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.normplus.R
+import com.normplus.ui.theme.NormMotion
 import com.normplus.ui.theme.NormPlusTheme
 
 /*
@@ -105,7 +113,9 @@ fun StatusPill(text: String, kind: StatusKind, modifier: Modifier = Modifier) {
             StatusKind.Offline -> Icon(Icons.Rounded.LinkOff, null, Modifier.size(size), tint = content)
             StatusKind.Neutral -> Unit
         }
-        PillText(text)
+        // Two lines at most, not one: at font scale 1.3 a sync's progress ("… · 412 of 922")
+        // would otherwise lose the very figures it is there to show.
+        Text(text, style = NormPlusTheme.type.pill, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -167,6 +177,119 @@ fun LargeTitleHeader(
 
 /** Title row plus breathing room: Material's 152 dp less the space the pill takes below it. */
 private val HeaderExpandedHeight = 120.dp
+
+/**
+ * What the banner says, as the shell resolved it: [ConnectionBanner]'s arguments. The shell
+ * provides it through [LocalShellStatus] (#97); a screen never builds one.
+ */
+@Immutable
+data class BannerContent(
+    val message: String,
+    val tone: BannerTone,
+    val hint: String? = null,
+    val actionLabel: String? = null,
+    val onAction: (() -> Unit)? = null,
+)
+
+/** What the status pill says, as the shell resolved it: [StatusPill]'s arguments. */
+@Immutable
+data class PillContent(val text: String, val kind: StatusKind)
+
+/**
+ * The watch's status as every header prints it (#97): the quiet [pill] while all is well, and
+ * the [banner] in its place whenever something needs fixing. Both null: nothing to say (the
+ * first run, the screenshot tests of a bare component).
+ */
+@Immutable
+data class ShellStatus(val pill: PillContent? = null, val banner: BannerContent? = null) {
+    val isEmpty: Boolean get() = pill == null && banner == null
+}
+
+/**
+ * The status the shell resolved for the whole app. [LargeTitleHeader]s built by the shell,
+ * [ScreenScaffold] and [FlowScaffold] read it, so no screen has to remember to print it.
+ */
+val LocalShellStatus = compositionLocalOf { ShellStatus() }
+
+/**
+ * The status under a title: the [ShellStatus.banner] when there is one, the quiet
+ * [ShellStatus.pill] otherwise. The pill grows into the banner and shrinks back with a short
+ * crossfade; a cut with animations removed.
+ */
+@Composable
+fun ShellStatusSlot(modifier: Modifier = Modifier, status: ShellStatus = LocalShellStatus.current) {
+    val removed = NormPlusTheme.animationsRemoved
+    AnimatedContent(
+        targetState = status,
+        modifier = modifier,
+        contentKey = { it.banner != null },
+        transitionSpec = { NormMotion.statusSwap(removed) },
+        label = "status",
+    ) { shown ->
+        val banner = shown.banner
+        when {
+            banner != null -> BannerFrom(banner)
+            shown.pill != null -> StatusPill(shown.pill.text, shown.pill.kind)
+        }
+    }
+}
+
+/** Just the banner, when there is one (a flow's header, under its step). */
+@Composable
+fun ShellBanner(modifier: Modifier = Modifier, banner: BannerContent? = LocalShellStatus.current.banner) {
+    if (banner != null) BannerFrom(banner, modifier)
+}
+
+@Composable
+private fun BannerFrom(content: BannerContent, modifier: Modifier = Modifier) = ConnectionBanner(
+    message = content.message,
+    tone = content.tone,
+    modifier = modifier,
+    hint = content.hint,
+    actionLabel = content.actionLabel,
+    onAction = content.onAction,
+)
+
+/**
+ * A screen below a tab (Day detail, Notification apps, Watch screens, Technical): the
+ * large-title header with Back, the screen's title and the watch's status under it (the pill,
+ * or the banner when something needs fixing), collapsing as the content scrolls; then the
+ * content. Edge-to-edge: the header takes the status bar's inset, and [content]'s padding
+ * holds the rest, the navigation bar's included (apply it, or pass it to a list's
+ * contentPadding).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScreenScaffold(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {},
+    snackbarHost: @Composable () -> Unit = {},
+    content: @Composable (PaddingValues) -> Unit,
+) {
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val status = LocalShellStatus.current
+    Scaffold(
+        modifier = modifier.nestedScroll(scroll.nestedScrollConnection),
+        topBar = {
+            LargeTitleHeader(
+                title = title,
+                scrollBehavior = scroll,
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                    }
+                },
+                actions = actions,
+                status = if (status.isEmpty) null else ({ ShellStatusSlot(status = status) }),
+            )
+        },
+        snackbarHost = snackbarHost,
+        containerColor = MaterialTheme.colorScheme.background,
+        content = content,
+    )
+}
 
 /** How a [ConnectionBanner] reads. */
 enum class BannerTone {

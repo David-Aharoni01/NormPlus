@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Day detail (#101). The stub's words (#97); #101 replaces them. -->
+<resources>
+    <string name="daydetail_title">Day</string>
+    <string name="daydetail_placeholder">This day\'s details are being rebuilt.</string>
+</resources>

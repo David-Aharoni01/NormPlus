@@ -29,7 +29,7 @@ class WatchPreferences @Inject constructor(
     // ── Always-on / uptime prefs ──────────────────────────────────────────────
     // Whether the connection service may (re)start itself unattended — on boot, after an app
     // update, on a START_STICKY restart, or from the periodic watchdog. Cleared by the
-    // notification's "Disconnect" action so a deliberate stop actually stays stopped, and set
+    // notification's "Stop" action so a deliberate stop actually stays stopped, and set
     // again the next time the user opens the app.
     private val KEY_AUTOSTART = booleanPreferencesKey("autostart_enabled")
     // The user dismissed the battery-optimization exemption prompt — never nag again.
@@ -40,6 +40,9 @@ class WatchPreferences @Inject constructor(
 
     suspend fun getDeviceMac(): String? =
         context.dataStore.data.firstOrNull()?.get(KEY_MAC)
+
+    /** The saved watch's address: null before the first run saves one, and after it is forgotten. */
+    val deviceMac: Flow<String?> = context.dataStore.data.map { it[KEY_MAC] }
 
     suspend fun saveDeviceMac(mac: String) {
         context.dataStore.edit { it[KEY_MAC] = mac }

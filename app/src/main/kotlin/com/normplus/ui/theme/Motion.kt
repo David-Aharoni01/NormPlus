@@ -15,6 +15,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -32,7 +34,9 @@ import androidx.compose.ui.unit.dp
 /**
  * Dark Dial's motion grammar, and nothing beyond it: fade-through between top-level tabs,
  * Material's shared axis (X) between days, the dial's pager and the sweep of its hands, and a
- * progress bar filling. With the system's Remove animations setting on, every one of them
+ * progress bar filling; the status pill growing into the banner ([statusSwap]); and Material's
+ * predictive back preview when going back to the screen beneath ([backPreviewExit]). With the
+ * system's Remove animations setting on, every one of them
  * becomes a cut ([EnterTransition.None] / [ExitTransition.None], [snap]), not a faster
  * animation.
  *
@@ -100,6 +104,40 @@ object NormMotion {
         if (animationsRemoved) snap() else tween(STATE_CHANGE_MILLIS, easing = Standard)
 
     const val STATE_CHANGE_MILLIS = 450
+    /**
+     * The status under a title changing between the quiet pill and the banner: a short
+     * crossfade while the header makes room. A cut with animations removed.
+     */
+    fun statusSwap(animationsRemoved: Boolean): ContentTransform {
+        if (animationsRemoved) {
+            return ContentTransform(EnterTransition.None, ExitTransition.None, sizeTransform = SizeTransform(clip = false) { _, _ -> snap() })
+        }
+        return ContentTransform(
+            targetContentEnter = fadeIn(tween(STATUS_SWAP_MILLIS, delayMillis = STATUS_SWAP_MILLIS / 3, easing = Standard)),
+            initialContentExit = fadeOut(tween(STATUS_SWAP_MILLIS / 3, easing = Standard)),
+            sizeTransform = SizeTransform(clip = false) { _, _ -> tween(STATUS_SWAP_MILLIS, easing = Standard) },
+        )
+    }
+
+    const val STATUS_SWAP_MILLIS = 240
+
+    /** Material's predictive back: the screen being left shrinks to this as the gesture is drawn. */
+    const val BACK_PREVIEW_SCALE = 0.9f
+    const val BACK_MILLIS = 300
+    private const val BACK_FADE_MILLIS = 100
+
+    /**
+     * Back from a screen to the one beneath it (#97), as Material's predictive back shows it:
+     * while the back gesture is drawn the screen shrinks toward [BACK_PREVIEW_SCALE], and once
+     * the gesture is let go it fades, over the screen beneath, which does not move. A NavHost
+     * seeks this with the gesture; a Back button plays it. Going forward to a screen is a cut:
+     * the grammar has no motion for it. A cut with animations removed.
+     */
+    fun backPreviewExit(animationsRemoved: Boolean): ExitTransition {
+        if (animationsRemoved) return ExitTransition.None
+        return scaleOut(tween(BACK_MILLIS, easing = Standard), targetScale = BACK_PREVIEW_SCALE) +
+            fadeOut(tween(BACK_FADE_MILLIS, delayMillis = BACK_MILLIS - BACK_FADE_MILLIS, easing = Standard))
+    }
 
     /** For a NavHost: the enter half of [sharedAxisX]. */
     fun sharedAxisXEnter(forward: Boolean, animationsRemoved: Boolean, density: Density, layoutDirection: LayoutDirection) =

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Technical (#107). The stub's words (#97); #107 replaces them. -->
+<resources>
+    <string name="technical_title">Technical</string>
+    <string name="technical_placeholder">The technical details are moving here. Until then they are on Watch, under Connection health.</string>
+</resources>
