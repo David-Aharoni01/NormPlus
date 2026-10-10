@@ -300,18 +300,21 @@ The whitelist is *necessary, not sufficient*: `NotificationFilter` + the 30s ded
   the forwarder auto-inserted `enabled=1` for every app it ever saw, so those rows can't be
   distinguished from a real user choice; carrying them over would whitelist everything. Rows are
   kept (labels + vibrate/mute preferences survive), so re-enabling an app restores its settings.
-- **Picker** (`ui/screens/settings/NotificationRulesScreen.kt` + `NotificationRulesViewModel.kt`,
-  backed by `data/apps/InstalledAppsRepository.kt`). Settings-style installed-app list: icon +
-  label + package + switch, search, "show system apps" toggle, enabled apps pinned to the top.
-  Labels load first on `Dispatchers.IO`, then icons stream in in batches of 32 pre-rasterised to
-  the row size — all into a `StateFlow`, never in composition, so 200+ rows scroll smoothly.
+- **Picker**: Notification apps (`ui/screens/notificationapps/`, #104), backed by
+  `data/apps/InstalledAppsRepository.kt`. Installed-app list: one card per app (icon, label in its
+  own direction, switch; an enabled app opens to "Skip repeats of identical text"), search on
+  label or package name, "Show system apps" (an enabled system app is never hidden), the count
+  forwarding, enabled apps pinned to the top (`appRows`, unit-tested), skeleton cards while
+  loading. Labels load first on `Dispatchers.IO`, then icons stream in in batches of 32
+  pre-rasterised to the row size, all into a `StateFlow`, never in composition, so 400 rows
+  scroll smoothly.
 - **Package visibility:** `AndroidManifest.xml` declares `<queries><intent>` for `ACTION_MAIN` +
   `CATEGORY_LAUNCHER` — **not** `QUERY_ALL_PACKAGES` (Play-policy-restricted and unnecessary).
   Non-launchable apps aren't offered; an app that already has a rule is always re-added by package
   name so an old rule can never become unreachable.
-- **Listener permission flow** (the old TODO): an inline card on this screen when
-  `NotificationManagerCompat.getEnabledListenerPackages` doesn't contain us, with a button opening
-  `Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS`; re-checked on `ON_RESUME`.
+- **Listener permission flow**: the shared status's `Blocker.NotificationAccessOff`
+  (`NotificationListenerHealth`), shown first on Notification apps as a fix-it whose action opens
+  the listener's own settings page; sampled again when the app comes back to the front.
 
 #### Notification forwarding — WORKING (commonprotocol MessageNewBT)
 
@@ -573,7 +576,7 @@ that replaces them:
 | `screens/dashboard/` | #99 |
 | `screens/activity/` (the activity history, and the now unreachable `WorkoutDetailScreen` and its ViewModel) | #100 |
 | `screens/settings/WatchSettingsScreen.kt`, `WatchSettingsViewModel.kt`, `ConnectionHealthSection.kt`, `ConnectionHealthViewModel.kt` | #102 |
-| `screens/settings/NotificationRulesScreen.kt`, `NotificationRulesViewModel.kt` | #104 |
+| `screens/settings/NotificationRulesScreen.kt`, `NotificationRulesViewModel.kt` (deleted) | #104 |
 | `screens/calibration/HandsCalibrationScreen.kt` (its ViewModel may stay) | #105 |
 | `screens/firmware/FirmwareScreen.kt` (its ViewModel may stay; the custom-file part goes to #107) | #106 |
 | `ui/legacy/` | whichever issue deletes the last old screen |
