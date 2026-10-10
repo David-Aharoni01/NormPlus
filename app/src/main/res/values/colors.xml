@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The launcher icon's backing: the Day Sheet's ink-blue (ui/theme/Color.kt, InkBlue). -->
-    <color name="ic_launcher_background">#1F2A44</color>
-    <!-- The window's ground before Compose draws: newsprint (Color.kt, Newsprint). -->
-    <color name="window_ground">#E9E9E6</color>
+    <!-- The launcher icon's ground: Dark Dial's near-black (ui/theme/Color.kt, Ground). The
+         icon's glow is drawn over it in drawable/ic_launcher_background.xml. -->
+    <color name="ic_launcher_background">#0B0C0F</color>
+    <!-- The window's ground before Compose draws: the light scheme's ground (Color.kt, PaleGround). -->
+    <color name="window_ground">#F2F2F5</color>
 </resources>

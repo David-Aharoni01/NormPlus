@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The window behind Compose: the Day Sheet's ground, so a cold start shows the page's
+    <!-- The window behind Compose: Dark Dial's ground, so a cold start shows the page's
          own colour before the first frame (ui/theme/Color.kt). Night: values-night. -->
     <style name="Theme.NormPlus" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/window_ground</item>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The dark ground (ui/theme/Color.kt, NightGround). -->
-    <color name="window_ground">#0D0E11</color>
+    <!-- The dark ground (ui/theme/Color.kt, Ground). -->
+    <color name="window_ground">#0B0C0F</color>
 </resources>

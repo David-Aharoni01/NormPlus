@@ -4,7 +4,7 @@ package com.normplus.ui.legacy
  * DEPRECATED: everything the pre-redesign screens still need, in one place, so the app
  * builds and runs while the screens are rebuilt one issue at a time (#97-#107, under #92).
  *
- * - The old colour names now resolve to the Day Sheet theme's roles, so the old screens
+ * - The old colour names now resolve to the Dark Dial theme's roles, so the old screens
  *   render in the new palette, in light and in dark, instead of near-black and teal.
  *   LegacyInk, LegacyOnAccent and LegacyMuted stand in for the Color.White, Color.Black and
  *   greys the old screens wrote inline.
@@ -48,17 +48,18 @@ private const val OLD = "Pre-redesign (#96): use MaterialTheme.colorScheme, Norm
 // ── The old colour names, mapped onto the new roles ───────────────────────────
 
 @Deprecated(OLD) val Background: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.background
-@Deprecated(OLD) val Surface: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surface
-@Deprecated(OLD) val SurfaceVariant: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surfaceContainerHigh
-@Deprecated(OLD) val SurfaceHigh: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.outlineVariant
+/** Was the old cards' fill: a Dark Dial card. */
+@Deprecated(OLD) val Surface: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.card
+@Deprecated(OLD) val SurfaceVariant: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.raised
+@Deprecated(OLD) val SurfaceHigh: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.outline
 @Deprecated(OLD) val OnSurface: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurface
 @Deprecated(OLD) val OnSurfaceMuted: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
 
-/** The old accent. The new world's accent for controls is the ink-blue. */
+/** The old accent. The new world's accent is signal violet. */
 @Deprecated(OLD) val Teal: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
 @Deprecated(OLD) val TealDark: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primaryContainer
 
-// A colour per metric is gone in the new world: every metric prints in ink.
+// A colour per metric is gone in the new world: every metric takes the one accent.
 @Deprecated(OLD) val StepsBlue: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
 /** Was the sleep accent (a label colour on the old dashboard); the stages use NormPlusTheme.colors. */
 @Deprecated(OLD) val SleepPurple: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
@@ -70,7 +71,7 @@ private const val OLD = "Pre-redesign (#96): use MaterialTheme.colorScheme, Norm
 
 /** The old screens used it for warnings and destructive actions: that is the error role now. */
 @Deprecated(OLD) val HrRed: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.error
-@Deprecated(OLD) val SuccessGreen: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+@Deprecated(OLD) val SuccessGreen: Color @Composable @ReadOnlyComposable get() = NormPlusTheme.colors.fine
 @Deprecated(OLD) val ErrorRed: Color @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.error
 
 /** Was Color.White: text and icons. */

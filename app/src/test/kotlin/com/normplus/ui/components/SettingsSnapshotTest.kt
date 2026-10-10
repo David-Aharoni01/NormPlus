@@ -2,6 +2,10 @@ package com.normplus.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import com.normplus.ui.snapshot.ComponentFrame
 import com.normplus.ui.snapshot.Variant
@@ -28,12 +32,10 @@ class SettingsSnapshotTest(variant: Variant) {
     fun stateMarks() = paparazzi.snapshot {
         ComponentFrame {
             Column(verticalArrangement = Arrangement.spacedBy(NormPlusTheme.spacing.l)) {
-                DaySheet(perforated = false) {
-                    Column(verticalArrangement = Arrangement.spacedBy(NormPlusTheme.spacing.m)) {
-                        SendState.entries.forEach { StateMark(it) }
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(NormPlusTheme.spacing.s)) {
+                    SendState.entries.forEach { StateMark(it) }
                 }
-                Plate {
+                NormCard {
                     Column(verticalArrangement = Arrangement.spacedBy(NormPlusTheme.spacing.m)) {
                         SendState.entries.forEach { StateMark(it) }
                     }
@@ -58,6 +60,8 @@ class SettingsSnapshotTest(variant: Variant) {
                     SettingRow("Screen timeout", supporting = "10 seconds", asOf = "09:12")
                 }
                 SettingsSection("Health") {
+                    SettingRow("Step goal", supporting = "8,000 steps", trailing = { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null) })
+                    SettingsDivider()
                     SettingRow("Heart-rate monitor", supporting = "Every 30 minutes", enabled = false, trailing = { Switch(true, {}, enabled = false) })
                 }
             }

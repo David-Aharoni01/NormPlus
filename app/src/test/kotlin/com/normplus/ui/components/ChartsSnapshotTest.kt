@@ -22,7 +22,7 @@ import kotlin.math.sin
 
 /**
  * The charts with made-up records (shaped like `normwatch records` data): every record a bar,
- * gaps left empty, zeros as stubs, goal days in red against the goal line.
+ * gaps left empty, zeros as stubs, goal days green against the goal line.
  */
 @RunWith(Parameterized::class)
 class ChartsSnapshotTest(variant: Variant) {
@@ -61,7 +61,7 @@ class ChartsSnapshotTest(variant: Variant) {
         Sheets {
             OnSheet("Steps, week") {
                 BarChart(
-                    bars = steps.map { s -> s?.let { ChartBar(it.toFloat(), redLetter = it >= 8000) } },
+                    bars = steps.map { s -> s?.let { ChartBar(it.toFloat(), goalMet = it >= 8000) } },
                     contentDescription = "Steps by day",
                     goal = 8000f,
                     goalLabel = "8,000",
@@ -75,7 +75,7 @@ class ChartsSnapshotTest(variant: Variant) {
     fun stepsByMonthAndQuarter() = paparazzi.snapshot {
         fun days(n: Int) = (0 until n).map { d ->
             if (d % 17 == 5) null
-            else (6000 + sin(d * 1.7) * 3500 + (d % 5) * 400).toFloat().let { ChartBar(it, redLetter = it >= 8000f) }
+            else (6000 + sin(d * 1.7) * 3500 + (d % 5) * 400).toFloat().let { ChartBar(it, goalMet = it >= 8000f) }
         }
         Sheets {
             OnSheet("Steps, month") {
@@ -146,9 +146,9 @@ class ChartsSnapshotTest(variant: Variant) {
 
     @Composable
     private fun OnSheet(title: String, content: @Composable () -> Unit) {
-        DaySheet(Modifier.fillMaxWidth(), perforated = false) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(NormPlusTheme.spacing.m))
+        NormCard(Modifier.fillMaxWidth()) {
+            Text(title, style = NormPlusTheme.type.cardTitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(NormPlusTheme.spacing.l))
             content()
         }
     }

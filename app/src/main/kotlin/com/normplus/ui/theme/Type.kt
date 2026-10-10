@@ -9,23 +9,24 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.normplus.R
 
 /*
  * One family, Roboto Flex (res/font/roboto_flex.ttf, the variable font from google/fonts,
- * SIL OFL 1.1, the licence in assets/licenses/). Its axes make the two cuts the world asks
- * for out of the one file:
+ * SIL OFL 1.1, the licence in assets/licenses/). Dark Dial asks three things of it:
  *
- *  - the condensed heavy cut, for date numerals and big figures (wdth 30, wght 800, the
- *    tallest figures YTFI 788, optical size 144 for display sizes and 28 for row numerals);
- *  - the normal cut for everything else (wdth 100), at two optical sizes: 14 for text and
- *    labels, 28 for headlines and titles.
+ *  - big bold titles: the heavy weights at a display optical size (opsz 36), so the large
+ *    title on every screen is tight and dark;
+ *  - large bold figures: the same weights at opsz 72 for tiles and opsz 144 for the hero
+ *    figure, where Roboto Flex draws its finest display shapes;
+ *  - plain text for everything else, at the text optical size (opsz 14).
  *
- * Dark mode lowers the grade (GRAD -25): light ink on a dark sheet reads heavier than the
- * same weight printed dark on white, and grade thins the strokes without changing a single
- * advance width, so nothing reflows between the schemes.
+ * Android applies no optical size of its own, so each family names its opsz.
+ *
+ * Dark mode lowers the grade (GRAD -25): light words on a dark ground read heavier than the
+ * same weight dark on white, and grade thins the strokes without changing a single advance
+ * width, so nothing reflows between the schemes.
  *
  * Figures: Roboto Flex's default figures are already tabular (its GSUB carries `pnum`, not
  * `tnum`). Every style still asks for `tnum`, so the intent survives a change of face.
@@ -35,68 +36,43 @@ import com.normplus.R
 
 private const val FIGURES = "tnum"
 private const val TEXT_OPSZ = 14f
-private const val HEADLINE_OPSZ = 28f
-private const val NUMERAL_DISPLAY_OPSZ = 144f
-private const val NUMERAL_TEXT_OPSZ = 28f
-private const val CONDENSED_WIDTH = 30f
-private const val TALL_FIGURES = 788f       // YTFI, the axis maximum
+private const val TITLE_OPSZ = 36f
+private const val FIGURE_OPSZ = 72f
+private const val HERO_OPSZ = 144f
 internal const val DARK_GRADE = -25
 internal const val LIGHT_GRADE = 0
 
 @OptIn(ExperimentalTextApi::class) // Font(resId, variationSettings): stable on API 26+, still marked
-private fun flex(
-    weight: Int,
-    opsz: Float,
-    grade: Int,
-    width: Float = 100f,
-    figureHeight: Float? = null,
-): Font {
-    val settings = buildList {
-        add(FontVariation.weight(weight))
-        add(FontVariation.width(width))
-        add(FontVariation.grade(grade))
-        add(FontVariation.Setting("opsz", opsz))
-        if (figureHeight != null) add(FontVariation.Setting("YTFI", figureHeight))
-    }
-    return Font(
-        resId = R.font.roboto_flex,
-        weight = FontWeight(weight),
-        variationSettings = FontVariation.Settings(*settings.toTypedArray()),
-    )
-}
+private fun flex(weight: Int, opsz: Float, grade: Int): Font = Font(
+    resId = R.font.roboto_flex,
+    weight = FontWeight(weight),
+    variationSettings = FontVariation.Settings(
+        FontVariation.weight(weight),
+        FontVariation.grade(grade),
+        FontVariation.Setting("opsz", opsz),
+    ),
+)
 
-/** The four font families, built once per grade. */
+/** The four families, built once per grade. */
 internal class FlexFamilies(grade: Int) {
     val text = FontFamily(
         flex(400, TEXT_OPSZ, grade), flex(500, TEXT_OPSZ, grade),
         flex(600, TEXT_OPSZ, grade), flex(700, TEXT_OPSZ, grade),
     )
-    val headline = FontFamily(
-        flex(400, HEADLINE_OPSZ, grade), flex(500, HEADLINE_OPSZ, grade),
-        flex(600, HEADLINE_OPSZ, grade), flex(700, HEADLINE_OPSZ, grade),
+    val title = FontFamily(
+        flex(600, TITLE_OPSZ, grade), flex(700, TITLE_OPSZ, grade), flex(800, TITLE_OPSZ, grade),
     )
-    val numeralDisplay = FontFamily(
-        flex(800, NUMERAL_DISPLAY_OPSZ, grade, CONDENSED_WIDTH, TALL_FIGURES),
-    )
-    val numeralText = FontFamily(
-        flex(700, NUMERAL_TEXT_OPSZ, grade, CONDENSED_WIDTH, TALL_FIGURES),
-        flex(800, NUMERAL_TEXT_OPSZ, grade, CONDENSED_WIDTH, TALL_FIGURES),
-    )
+    val figure = FontFamily(flex(700, FIGURE_OPSZ, grade), flex(800, FIGURE_OPSZ, grade))
+    val hero = FontFamily(flex(800, HERO_OPSZ, grade))
 }
 
-/** A numeral set solid: the line box is the figure, trimmed above the cap and below the baseline. */
+/** A figure set solid: the line box is the figure, trimmed above the cap and below the baseline. */
 private val Solid = LineHeightStyle(
     alignment = LineHeightStyle.Alignment.Center,
     trim = LineHeightStyle.Trim.Both,
 )
 
-private fun style(
-    family: FontFamily,
-    weight: Int,
-    size: Int,
-    lineHeight: Int,
-    tracking: Double,
-) = TextStyle(
+private fun style(family: FontFamily, weight: Int, size: Int, lineHeight: Int, tracking: Double) = TextStyle(
     fontFamily = family,
     fontWeight = FontWeight(weight),
     fontSize = size.sp,
@@ -106,56 +82,63 @@ private fun style(
 )
 
 internal fun normTypography(f: FlexFamilies) = Typography(
-    // Display roles are figures here (Material: "short, important text or numerals"),
-    // so they take the condensed heavy cut.
-    displayLarge = style(f.numeralDisplay, 800, 57, 64, 0.0),
-    displayMedium = style(f.numeralDisplay, 800, 45, 52, 0.0),
-    displaySmall = style(f.numeralText, 800, 36, 44, 0.0),
-    headlineLarge = style(f.headline, 600, 32, 40, -0.25),
-    headlineMedium = style(f.headline, 600, 28, 36, -0.15),
-    headlineSmall = style(f.headline, 600, 24, 32, 0.0),
-    titleLarge = style(f.headline, 600, 22, 28, 0.0),
+    // Display roles are figures here (Material: "short, important text or numerals").
+    displayLarge = style(f.hero, 800, 57, 64, -1.0),
+    displayMedium = style(f.figure, 800, 45, 52, -0.5),
+    displaySmall = style(f.figure, 800, 36, 44, -0.25),
+    // Headlines and the large title roles: the heavy display cut.
+    headlineLarge = style(f.title, 800, 32, 40, -0.5),
+    headlineMedium = style(f.title, 800, 28, 36, -0.25),
+    headlineSmall = style(f.title, 700, 24, 32, 0.0),
+    titleLarge = style(f.title, 700, 22, 28, 0.0),
     titleMedium = style(f.text, 600, 16, 24, 0.1),
     titleSmall = style(f.text, 600, 14, 20, 0.1),
-    bodyLarge = style(f.text, 400, 16, 24, 0.3),
+    bodyLarge = style(f.text, 400, 16, 24, 0.2),
     bodyMedium = style(f.text, 400, 14, 20, 0.2),
     bodySmall = style(f.text, 400, 12, 16, 0.3),
     labelLarge = style(f.text, 600, 14, 20, 0.1),
-    labelMedium = style(f.text, 500, 12, 16, 0.4),
+    labelMedium = style(f.text, 600, 12, 16, 0.3),
     labelSmall = style(f.text, 500, 11, 16, 0.4),
 )
 
 /**
- * The Day Sheet's own type, beyond the Material roles. Read as `NormPlusTheme.type`.
+ * Dark Dial's own type, beyond the Material roles. Read as `NormPlusTheme.type`.
  *
- * @property numeral the day's figure on a sheet, condensed and huge (Today's steps).
- *   [com.normplus.ui.components.DateNumeral] shrinks it to fit, so 40,000 fits at font scale 1.3.
- * @property numeralMedium a big figure that is not the day's (the watch card's battery).
- * @property numeralSmall the date numeral at the head of a History row or a sheet's edge.
- * @property dateLine tracked capitals for the date: "THURSDAY · 9 OCTOBER".
- * @property almanacLabel / [almanacValue] the almanac lines under the figure.
- * @property status the quiet status line under a top app bar's title.
+ * @property screenTitle the large bold title at the head of every screen ("Today").
+ * @property screenTitleCollapsed the same title once the header has collapsed on scroll.
+ * @property heroFigure the hero card's figure (Today's steps). [FitText][com.normplus.ui.components.FitText]
+ *   shrinks it to fit, so 40,000 fits at font scale 1.3.
+ * @property tileFigure a metric tile's figure ("72", "6 h 48 m").
+ * @property figureUnit the unit set beside a figure ("bpm", "h"), smaller and quieter.
+ * @property cardTitle the label at the head of a card ("Steps", "Sleep").
+ * @property sectionTitle the heading over a group of settings ("Notifications").
+ * @property pill the words in a status pill, a state mark or a banner's action.
  * @property chartLabel axis and goal labels on a chart.
+ * @property dialText words drawn on the watch's display; the dial scales them to its size.
  */
 @Immutable
 data class NormType(
-    val numeral: TextStyle,
-    val numeralMedium: TextStyle,
-    val numeralSmall: TextStyle,
-    val dateLine: TextStyle,
-    val almanacLabel: TextStyle,
-    val almanacValue: TextStyle,
-    val status: TextStyle,
+    val screenTitle: TextStyle,
+    val screenTitleCollapsed: TextStyle,
+    val heroFigure: TextStyle,
+    val tileFigure: TextStyle,
+    val figureUnit: TextStyle,
+    val cardTitle: TextStyle,
+    val sectionTitle: TextStyle,
+    val pill: TextStyle,
     val chartLabel: TextStyle,
+    val dialText: TextStyle,
 )
 
 internal fun normType(f: FlexFamilies) = NormType(
-    numeral = style(f.numeralDisplay, 800, 120, 120, 0.0).copy(lineHeightStyle = Solid),
-    numeralMedium = style(f.numeralDisplay, 800, 64, 64, 0.0).copy(lineHeightStyle = Solid),
-    numeralSmall = style(f.numeralText, 800, 30, 32, 0.0).copy(lineHeightStyle = Solid),
-    dateLine = style(f.text, 600, 13, 16, 0.0).copy(letterSpacing = 0.16.em),
-    almanacLabel = style(f.text, 500, 13, 20, 0.2),
-    almanacValue = style(f.text, 400, 14, 20, 0.1),
-    status = style(f.text, 500, 13, 16, 0.2),
+    screenTitle = style(f.title, 800, 34, 40, -0.5),
+    screenTitleCollapsed = style(f.title, 800, 22, 28, -0.2),
+    heroFigure = style(f.hero, 800, 64, 64, -1.0).copy(lineHeightStyle = Solid),
+    tileFigure = style(f.figure, 800, 28, 32, -0.4).copy(lineHeightStyle = Solid),
+    figureUnit = style(f.text, 600, 15, 20, 0.1),
+    cardTitle = style(f.text, 600, 15, 20, 0.1),
+    sectionTitle = style(f.title, 700, 18, 24, 0.0),
+    pill = style(f.text, 600, 14, 20, 0.1),
     chartLabel = style(f.text, 500, 11, 14, 0.3),
+    dialText = style(f.text, 600, 14, 18, 0.2),
 )

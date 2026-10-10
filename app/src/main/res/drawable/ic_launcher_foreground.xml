@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The Norm+ launcher icon's foreground (#96), our own drawing: the top sheet of a tear-off
-    day pad, with its stub and one perforated hairline, and on it a pair of watch hands (the
-    Norm 2 has real ones) meeting at a calendar-red pivot, the red-letter mark.
+    The Norm+ launcher icon's foreground (#96), our own drawing: the watch as the Watch tab
+    draws it. A violet ring, a grey bezel, the black display, and the two physical hands (the
+    Norm 2 has no second hand) at twelve and four, an L that reads as a clock and never as a
+    tick, round a violet pivot.
 
-    108 dp canvas; everything stays inside the 66 dp safe circle (21..87), so no launcher mask
-    cuts it: the sheet's farthest corner is 30.5 dp from the centre.
+    108 dp canvas; everything stays inside the 66 dp safe circle (r 33 about 54,54): the
+    ring's outer edge is at r 31.2, so no launcher mask cuts it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -13,46 +14,37 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- The sheet: square at the bound top, the lightest round below. -->
+    <!-- The violet ring. -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,31 L74,31 L74,75 Q74,77 72,77 L36,77 Q34,77 34,75 Z"/>
+        android:strokeColor="#A68BFF"
+        android:strokeWidth="2.4"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 A30,30 0 1,1 53.99,24 Z"/>
 
-    <!-- The stub above the perforation, a shade of the backing on the paper. -->
+    <!-- The bezel, its lighter edge, and the display. -->
+    <path android:fillColor="#3A3C42" android:pathData="M54,27.5 A26.5,26.5 0 1,1 53.99,27.5 Z"/>
     <path
-        android:fillColor="#E1E5EE"
-        android:pathData="M34,31 L74,31 L74,37.4 L34,37.4 Z"/>
-
-    <!-- The perforation: one dashed hairline across the sheet. -->
-    <path
-        android:fillColor="#7C88A6"
-        android:pathData="M35,37.4 h2.4 v1.1 h-2.4 Z M39,37.4 h2.4 v1.1 h-2.4 Z M43,37.4 h2.4 v1.1 h-2.4 Z
-            M47,37.4 h2.4 v1.1 h-2.4 Z M51,37.4 h2.4 v1.1 h-2.4 Z M55,37.4 h2.4 v1.1 h-2.4 Z
-            M59,37.4 h2.4 v1.1 h-2.4 Z M63,37.4 h2.4 v1.1 h-2.4 Z M67,37.4 h2.4 v1.1 h-2.4 Z
-            M71,37.4 h2 v1.1 h-2 Z"/>
+        android:strokeColor="#55585F"
+        android:strokeWidth="0.8"
+        android:fillColor="#00000000"
+        android:pathData="M54,27.9 A26.1,26.1 0 1,1 53.99,27.9 Z"/>
+    <path android:fillColor="#000000" android:pathData="M54,31 A23,23 0 1,1 53.99,31 Z"/>
 
     <!-- The hour hand, towards four. -->
-    <group
-        android:pivotX="54"
-        android:pivotY="58"
-        android:rotation="120">
+    <group android:pivotX="54" android:pivotY="54" android:rotation="120">
         <path
-            android:fillColor="#1F2A44"
-            android:pathData="M51.7,47.5 A2.3,2.3 0 0,1 56.3,47.5 L56.3,58 A2.3,2.3 0 0,1 51.7,58 Z"/>
+            android:fillColor="#E9EAEE"
+            android:pathData="M51.9,40.5 A2.1,2.1 0 0,1 56.1,40.5 L56.1,57 A2.1,2.1 0 0,1 51.9,57 Z"/>
     </group>
 
-    <!-- The minute hand, at twelve: an L that reads as a clock, never as a tick. -->
-    <group
-        android:pivotX="54"
-        android:pivotY="58"
-        android:rotation="0">
+    <!-- The minute hand, at twelve. -->
+    <group android:pivotX="54" android:pivotY="54" android:rotation="0">
         <path
-            android:fillColor="#1F2A44"
-            android:pathData="M52.4,44.4 A1.6,1.6 0 0,1 55.6,44.4 L55.6,58 A1.6,1.6 0 0,1 52.4,58 Z"/>
+            android:fillColor="#E9EAEE"
+            android:pathData="M52.6,35 A1.4,1.4 0 0,1 55.4,35 L55.4,57.5 A1.4,1.4 0 0,1 52.6,57.5 Z"/>
     </group>
 
-    <!-- The pivot, in calendar red. -->
-    <path
-        android:fillColor="#D62828"
-        android:pathData="M54,54.6 A3.4,3.4 0 1,1 53.99,54.6 Z"/>
+    <!-- The pivot: a cap in the hands' colour with a violet centre. -->
+    <path android:fillColor="#E9EAEE" android:pathData="M54,50.6 A3.4,3.4 0 1,1 53.99,50.6 Z"/>
+    <path android:fillColor="#A68BFF" android:pathData="M54,52.5 A1.5,1.5 0 1,1 53.99,52.5 Z"/>
 </vector>
