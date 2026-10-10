@@ -1,6 +1,106 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Day detail (#101). The stub's words (#97); #101 replaces them. -->
+<!-- Day detail (#101): a past day, from History's rows and Today's Yesterday row. See docs/app.md, "UI Layer". -->
 <resources>
+    <!-- The title: Today, Yesterday, or the short date. -->
     <string name="daydetail_title">Day</string>
-    <string name="daydetail_placeholder">This day\'s details are being rebuilt.</string>
+    <string name="daydetail_today">Today</string>
+    <string name="daydetail_yesterday">Yesterday</string>
+    <string name="daydetail_title_pattern" translatable="false">EEE d MMM</string>
+    <string name="daydetail_title_year_pattern" translatable="false">EEE d MMM yyyy</string>
+    <!-- The date line under the title, for a day in another year. -->
+    <string name="daydetail_date_year_pattern" translatable="false">EEEE · d MMMM yyyy</string>
+
+    <!-- Moving between days: the header's buttons, and what the swipe does. -->
+    <string name="daydetail_previous">Previous day</string>
+    <string name="daydetail_next">Next day</string>
+
+    <!-- The hero card, for a day that is over: the goal, and how far short of it. -->
+    <string name="daydetail_of_goal_short">of %1$s · %2$s short</string>
+    <!-- Today's date: the records so far, as of the last sync. -->
+    <string name="daydetail_so_far">So far, from the sync at %1$s</string>
+    <string name="daydetail_so_far_none">So far. Nothing synced today yet.</string>
+
+    <!-- The tiles' labels. -->
+    <string name="daydetail_sleep">Sleep</string>
+    <string name="daydetail_heart_rate">Heart rate</string>
+    <string name="daydetail_calories">Calories</string>
+    <string name="daydetail_distance">Distance</string>
+
+    <!-- Units set small beside a figure. -->
+    <string name="daydetail_unit_steps">steps</string>
+    <string name="daydetail_unit_bpm">bpm</string>
+    <string name="daydetail_unit_kcal">kcal</string>
+    <string name="daydetail_unit_km">km</string>
+    <string name="daydetail_unit_mi">mi</string>
+
+    <!-- In place of a figure with no record behind it. Never a zero. -->
+    <string name="daydetail_sleep_absent">No sleep recorded</string>
+    <string name="daydetail_heart_rate_absent">No readings</string>
+    <string name="daydetail_not_synced">Not synced</string>
+
+    <!-- The tiles' detail lines. -->
+    <string name="daydetail_sleep_deep">deep %1$s</string>
+    <string name="daydetail_span">%1$s–%2$s</string>
+    <!-- Two lines, so a time range never breaks inside a time. -->
+    <string name="daydetail_detail_join">%1$s\n%2$s</string>
+    <string name="daydetail_heart_rate_average">average</string>
+    <string name="daydetail_heart_rate_range">%1$s–%2$s bpm</string>
+    <string name="daydetail_heart_rate_at">at %1$s</string>
+    <string name="daydetail_active">active %1$s</string>
+
+    <!-- TalkBack reads each tile and card as one sentence. -->
+    <string name="daydetail_spoken">%1$s, %2$s</string>
+    <string name="daydetail_spoken_with_detail">%1$s, %2$s, %3$s</string>
+    <string name="daydetail_spoken_span">from %1$s to %2$s</string>
+    <string name="daydetail_spoken_asleep">%1$s asleep</string>
+    <string name="daydetail_spoken_heart_average">average %1$s bpm, from %2$s to %3$s</string>
+
+    <!-- Steps by the half hour. -->
+    <string name="daydetail_steps_chart">Steps by the half hour</string>
+    <string name="daydetail_busiest">in the busiest half hour, %1$s · %2$s</string>
+    <string name="daydetail_steps_chart_empty">No steps were synced for this day.</string>
+    <string name="daydetail_steps_chart_spoken">Steps by the half hour. %1$s in all. Busiest half hour %2$s, %3$s.</string>
+    <string name="daydetail_steps_chart_spoken_still">Steps by the half hour. %1$s in all, none in any one half hour.</string>
+    <plurals name="daydetail_steps">
+        <item quantity="one">%1$s step</item>
+        <item quantity="other">%1$s steps</item>
+    </plurals>
+    <plurals name="daydetail_half_hours">
+        <item quantity="one">%1$d half hour recorded</item>
+        <item quantity="other">%1$d half hours recorded</item>
+    </plurals>
+
+    <!-- The day's heart-rate readings. -->
+    <string name="daydetail_heart_chart">Heart-rate readings</string>
+    <string name="daydetail_heart_chart_empty">Your watch measured no heart rate this day.</string>
+    <plurals name="daydetail_readings">
+        <item quantity="one">%1$d reading</item>
+        <item quantity="other">%1$d readings</item>
+    </plurals>
+    <string name="daydetail_heart_summary">%1$s · average %2$s bpm</string>
+    <string name="daydetail_heart_chart_spoken">Heart-rate readings. %1$s, from %2$s to %3$s bpm, average %4$s bpm.</string>
+
+    <!-- The night's sleep. -->
+    <string name="daydetail_sleep_card">The night\'s sleep</string>
+    <string name="daydetail_sleep_card_empty">No sleep was recorded for the night that ended this day.</string>
+    <string name="daydetail_asleep">asleep</string>
+    <string name="daydetail_asleep_note">Asleep counts deep and light sleep.</string>
+    <string name="daydetail_stage_deep">Deep</string>
+    <string name="daydetail_stage_light">Light</string>
+    <string name="daydetail_stage_awake">Awake</string>
+    <plurals name="daydetail_sessions">
+        <item quantity="one">%1$d session</item>
+        <item quantity="other">%1$d sessions</item>
+    </plurals>
+    <string name="daydetail_sessions_separator">" · "</string>
+    <string name="daydetail_band_spoken">Sleep from %1$s to %2$s: %3$s asleep, deep %4$s, light %5$s, awake %6$s.</string>
+    <string name="daydetail_sleep_card_spoken">The night\'s sleep, %1$s asleep, %2$s. Deep %3$s, light %4$s, awake %5$s.</string>
+
+    <!-- A day with nothing synced. -->
+    <string name="daydetail_empty_title">Nothing synced for this day</string>
+    <string name="daydetail_empty_body">Days fill in from your watch\'s records when it syncs. This one has no steps, heart rate or sleep.</string>
+
+    <!-- Reading the day failed. -->
+    <string name="daydetail_failed_title">This day couldn\'t be read</string>
+    <string name="daydetail_failed_body">Something went wrong reading the synced records.</string>
 </resources>
