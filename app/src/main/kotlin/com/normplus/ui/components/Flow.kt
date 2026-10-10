@@ -14,24 +14,24 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import com.normplus.R
 import com.normplus.ui.theme.NormPlusTheme
 
 /**
  * A full-screen flow: first run, hands calibration, the firmware update, the custom-file
- * update. The shell's top app bar with a Close action and the step in its status line
- * ("Step 2 of 4", "Minute hand"); the step's content, scrolling; its actions in a bar along
- * the bottom, the way on at the end ([Button]) and the way back before it ([TextButton]).
+ * update. The large-title header with a Close action and the step in a neutral pill under
+ * the title ("Step 2 of 4", "Minute hand"); the step's content, scrolling; its pill actions
+ * along the bottom, the way on at the end ([PillTone.Primary]) and the way back before it.
  *
  * Closing is the screen's decision: a flow that must not be left half-done (an update that is
  * sending) asks first, and also catches system Back with a BackHandler.
@@ -47,34 +47,31 @@ fun FlowScaffold(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val spacing = NormPlusTheme.spacing
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
-        modifier = modifier,
+        modifier = modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            NormTopAppBar(
+            LargeTitleHeader(
                 title = title,
-                status = step,
+                scrollBehavior = scroll,
                 navigationIcon = {
                     IconButton(onClick = onClose) {
                         Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_close))
                     }
                 },
+                status = step?.let { { StatusPill(it, StatusKind.Neutral) } },
             )
         },
         bottomBar = {
-            Surface(color = MaterialTheme.colorScheme.background) {
-                Column {
-                    HorizontalDivider(thickness = spacing.hairline, color = MaterialTheme.colorScheme.outlineVariant)
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = spacing.gutter, vertical = spacing.m),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.s, Alignment.End),
-                        verticalAlignment = Alignment.CenterVertically,
-                        content = actions,
-                    )
-                }
-            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = spacing.gutter, vertical = spacing.m),
+                horizontalArrangement = Arrangement.spacedBy(spacing.s, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+                content = actions,
+            )
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -83,7 +80,7 @@ fun FlowScaffold(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = spacing.gutter, vertical = spacing.xl),
+                .padding(horizontal = spacing.gutter, vertical = spacing.l),
             verticalArrangement = Arrangement.spacedBy(spacing.l),
             content = content,
         )

@@ -9,10 +9,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.Icon
@@ -33,6 +35,8 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import com.normplus.R
 import com.normplus.ui.theme.NormPlusTheme
@@ -53,13 +57,13 @@ enum class SendState {
 }
 
 /**
- * The mark for [state]: a glyph and its word. Each glyph has its own shape (a turning arc, a
- * tick, a clock, an exclamation in a container), so the mark never depends on colour. "Not
- * sent" is an error, so it sits in the error container with its icon, like every error.
- * Changes are announced politely to TalkBack.
+ * The mark for [state]: a small tinted pill with a glyph and its word, the same anatomy as
+ * the status pill. Sending is violet with a turning arc, sent green with a tick, not sent red
+ * with an exclamation, waiting grey with a clock: each glyph has its own shape, so the mark
+ * never depends on colour. Changes are announced politely to TalkBack.
  *
  * @param showLabel false only where the row already says it in words (the glyph is then still
- *   described to TalkBack).
+ *   described to TalkBack, and the pill shrinks to the glyph).
  */
 @Composable
 fun StateMark(state: SendState, modifier: Modifier = Modifier, showLabel: Boolean = true) {
@@ -71,63 +75,43 @@ fun StateMark(state: SendState, modifier: Modifier = Modifier, showLabel: Boolea
             SendState.Waiting -> R.string.mark_waiting
         },
     )
-    val semantics = Modifier.clearAndSetSemantics {
-        contentDescription = label
-        liveRegion = LiveRegionMode.Polite
-    }
-    val spacing = NormPlusTheme.spacing
-    if (state == SendState.NotSent) {
-        Surface(
-            modifier = modifier.then(semantics),
-            shape = MaterialTheme.shapes.extraSmall,
-            color = MaterialTheme.colorScheme.errorContainer,
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        ) {
-            MarkRow(state, label, showLabel, Modifier.padding(PaddingValues(horizontal = spacing.s, vertical = spacing.xxs)))
-        }
-    } else {
-        MarkRow(state, label, showLabel, modifier.then(semantics))
+    val (container, content) = markColors(state)
+    TintedPill(
+        container = container,
+        content = content,
+        modifier = modifier.clearAndSetSemantics {
+            contentDescription = label
+            liveRegion = LiveRegionMode.Polite
+        },
+        small = true,
+    ) {
+        MarkGlyph(state, NormPlusTheme.spacing.markIcon, tint = content)
+        if (showLabel) PillText(label, NormPlusTheme.type.pill.copy(fontSize = MaterialTheme.typography.labelMedium.fontSize))
     }
 }
 
 @Composable
-private fun MarkRow(state: SendState, label: String, showLabel: Boolean, modifier: Modifier) {
-    val spacing = NormPlusTheme.spacing
-    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(spacing.xs), verticalAlignment = Alignment.CenterVertically) {
-        MarkGlyph(state, spacing.markIcon)
-        if (showLabel) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                color = when (state) {
-                    SendState.NotSent -> MaterialTheme.colorScheme.onErrorContainer
-                    SendState.Sent -> MaterialTheme.colorScheme.onSurface
-                    else -> quiet
-                },
-            )
-        }
+private fun markColors(state: SendState): Pair<Color, Color> {
+    val scheme = MaterialTheme.colorScheme
+    val c = NormPlusTheme.colors
+    return when (state) {
+        SendState.Sending -> scheme.primaryContainer to (if (NormPlusTheme.isDark) scheme.primary else scheme.onPrimaryContainer)
+        SendState.Sent -> c.fineContainer to c.fine
+        SendState.NotSent -> scheme.errorContainer to scheme.onErrorContainer
+        SendState.Waiting -> c.raised to scheme.onSurfaceVariant
     }
 }
 
-/** The glyph alone, for places that share the marks' vocabulary (the status line's sync). */
+/** The glyph alone, for places that share the marks' vocabulary (the status pill's sync). */
 @Composable
 fun MarkGlyph(state: SendState, size: Dp = NormPlusTheme.spacing.markIcon, tint: Color = Color.Unspecified) {
-    val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+    val scheme = MaterialTheme.colorScheme
+    fun ink(default: Color) = if (tint != Color.Unspecified) tint else default
     when (state) {
-        SendState.Sending -> SendingGlyph(size, if (tint != Color.Unspecified) tint else MaterialTheme.colorScheme.primary)
-        SendState.Sent -> Icon(
-            Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(size),
-            tint = if (tint != Color.Unspecified) tint else MaterialTheme.colorScheme.primary,
-        )
-        SendState.NotSent -> Icon(
-            Icons.Rounded.ErrorOutline, contentDescription = null, modifier = Modifier.size(size),
-            tint = if (tint != Color.Unspecified) tint else MaterialTheme.colorScheme.error,
-        )
-        SendState.Waiting -> Icon(
-            Icons.Rounded.Schedule, contentDescription = null, modifier = Modifier.size(size),
-            tint = if (tint != Color.Unspecified) tint else quiet,
-        )
+        SendState.Sending -> SendingGlyph(size, ink(scheme.primary))
+        SendState.Sent -> Icon(Icons.Rounded.CheckCircle, null, Modifier.size(size), tint = ink(NormPlusTheme.colors.fine))
+        SendState.NotSent -> Icon(Icons.Rounded.ErrorOutline, null, Modifier.size(size), tint = ink(scheme.error))
+        SendState.Waiting -> Icon(Icons.Rounded.Schedule, null, Modifier.size(size), tint = ink(scheme.onSurfaceVariant))
     }
 }
 
@@ -137,8 +121,8 @@ fun MarkGlyph(state: SendState, size: Dp = NormPlusTheme.spacing.markIcon, tint:
  * simply stops turning.
  */
 @Composable
-private fun SendingGlyph(size: Dp, tint: Color) {
-    val stroke = NormPlusTheme.spacing.hairline * 1.75f
+internal fun SendingGlyph(size: Dp, tint: Color) {
+    val stroke = NormPlusTheme.spacing.hairline * 2f
     val angle = if (NormPlusTheme.animationsRemoved) {
         0f
     } else {
@@ -168,3 +152,40 @@ private fun SendingGlyph(size: Dp, tint: Color) {
 }
 
 private const val TURN_MILLIS = 1100
+
+/**
+ * The tinted pill every small state shares: the status pill, the state marks, "Goal
+ * reached". A glyph and words on the state's container, in the state's colour.
+ */
+@Composable
+internal fun TintedPill(
+    container: Color,
+    content: Color,
+    modifier: Modifier = Modifier,
+    small: Boolean = false,
+    body: @Composable RowScope.() -> Unit,
+) {
+    val spacing = NormPlusTheme.spacing
+    Surface(modifier = modifier, shape = NormPlusTheme.shapes.pill, color = container, contentColor = content) {
+        Row(
+            Modifier
+                .heightIn(min = if (small) spacing.l + spacing.s else spacing.xxl)
+                .padding(
+                    PaddingValues(
+                        start = if (small) spacing.s else spacing.m,
+                        end = if (small) spacing.s + spacing.xxs else spacing.l,
+                        top = spacing.xxs,
+                        bottom = spacing.xxs,
+                    ),
+                ),
+            horizontalArrangement = Arrangement.spacedBy(if (small) spacing.xs + spacing.xxs else spacing.s),
+            verticalAlignment = Alignment.CenterVertically,
+            content = body,
+        )
+    }
+}
+
+@Composable
+internal fun PillText(text: String, style: TextStyle = NormPlusTheme.type.pill) {
+    Text(text, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}

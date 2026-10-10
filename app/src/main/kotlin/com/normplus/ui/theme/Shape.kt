@@ -3,35 +3,42 @@ package com.normplus.ui.theme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Shapes
 import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /*
- * Paper is cut square. The Material shape scale is tightened so cards, menus, dialogs and
- * sheets read as printed stock rather than soft tiles; controls (buttons, chips, switches,
- * the navigation indicator) keep Material's own shapes, so they stay the controls people know.
+ * Dark Dial is round: cards at 20-28 dp, and full pills on buttons, chips and the navigation
+ * capsule. Material's own components take the scale below (cards medium, dialogs and sheets
+ * extra large, chips small), so a stock component already belongs; buttons, switches and the
+ * navigation indicator are pills in Material itself.
  */
+private val Pill = RoundedCornerShape(percent = 50)
+
 internal val NormShapes = Shapes(
-    extraSmall = RoundedCornerShape(2.dp),
-    small = RoundedCornerShape(4.dp),
-    medium = RoundedCornerShape(6.dp),
-    large = RoundedCornerShape(8.dp),
-    extraLarge = RoundedCornerShape(16.dp),
+    extraSmall = RoundedCornerShape(8.dp),          // text fields, menus, snackbars
+    small = Pill,                                   // chips
+    medium = RoundedCornerShape(20.dp),             // cards
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(28.dp),         // dialogs, bottom sheets
 )
 
 /**
- * The Day Sheet's own shapes. Read as `NormPlusTheme.shapes`.
+ * Dark Dial's own shapes. Read as `NormPlusTheme.shapes`.
  *
- * @property sheet a day sheet: square at the top where it is bound, the lightest round below.
- * @property plate the reversed ink-blue plate.
- * @property notice fix-it cards and error notices.
- * @property bar a chart's bar: square, as printed.
+ * @property hero the hero card (Today's steps): the roundest card.
+ * @property card a card: settings sections, charts, notices.
+ * @property tile a metric tile and a row card (Yesterday).
+ * @property banner the full-width state banner.
+ * @property pill a pill: buttons, the status pill, state marks, the navigation capsule.
+ * @property barCorner the round at the top of a chart's bar.
  */
 @Immutable
 data class NormShapeSet(
-    val sheet: Shape = RoundedCornerShape(bottomStart = 3.dp, bottomEnd = 3.dp),
-    val plate: Shape = RoundedCornerShape(6.dp),
-    val notice: Shape = RoundedCornerShape(6.dp),
-    val bar: Shape = RectangleShape,
+    val hero: Shape = RoundedCornerShape(28.dp),
+    val card: Shape = RoundedCornerShape(24.dp),
+    val tile: Shape = RoundedCornerShape(20.dp),
+    val banner: Shape = RoundedCornerShape(20.dp),
+    val pill: Shape = Pill,
+    val barCorner: Dp = 3.dp,
 )

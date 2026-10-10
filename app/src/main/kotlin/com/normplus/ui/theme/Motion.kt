@@ -8,7 +8,9 @@ import android.provider.Settings
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,9 +30,11 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 
 /**
- * The Day Sheet's motion grammar, and nothing beyond it: Material's shared axis (X) between
- * days, fade-through between top-level tabs. With the system's Remove animations setting on,
- * both become a cut ([EnterTransition.None] / [ExitTransition.None]), not a faster animation.
+ * Dark Dial's motion grammar, and nothing beyond it: fade-through between top-level tabs,
+ * Material's shared axis (X) between days, the dial's pager and the sweep of its hands, and a
+ * progress bar filling. With the system's Remove animations setting on, every one of them
+ * becomes a cut ([EnterTransition.None] / [ExitTransition.None], [snap]), not a faster
+ * animation.
  *
  * Read whether animations are removed as `NormPlusTheme.animationsRemoved`.
  */
@@ -79,6 +83,23 @@ object NormMotion {
         val exit = fadeOut(tween(FADE_THROUGH_OUT_MILLIS, easing = EmphasizedAccelerate))
         return enter togetherWith exit
     }
+
+    /** The hands' sweep to a new time: a stepper's quick, settling move. */
+    const val HAND_SWEEP_MILLIS = 600
+
+    /** The dial's hands moving to a new angle (a new minute, or calibration's nudges). */
+    fun <T> handSweep(animationsRemoved: Boolean): AnimationSpec<T> =
+        if (animationsRemoved) snap() else tween(HAND_SWEEP_MILLIS, easing = EmphasizedDecelerate)
+
+    /** The dial's pager moving to a page programmatically (Earlier / Later). */
+    fun <T> dialPage(animationsRemoved: Boolean): AnimationSpec<T> =
+        if (animationsRemoved) snap() else tween(SHARED_AXIS_MILLIS, easing = Standard)
+
+    /** A progress bar filling, a page dot stretching: small state changes. */
+    fun <T> stateChange(animationsRemoved: Boolean): AnimationSpec<T> =
+        if (animationsRemoved) snap() else tween(STATE_CHANGE_MILLIS, easing = Standard)
+
+    const val STATE_CHANGE_MILLIS = 450
 
     /** For a NavHost: the enter half of [sharedAxisX]. */
     fun sharedAxisXEnter(forward: Boolean, animationsRemoved: Boolean, density: Density, layoutDirection: LayoutDirection) =

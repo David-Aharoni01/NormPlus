@@ -17,7 +17,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /*
- * How the Day Sheet prints numbers, times, durations and dates. Every screen formats through
+ * How Norm+ prints numbers, times, durations and dates. Every screen formats through
  * these, so a figure looks the same on Today, in History and on Watch.
  */
 
@@ -53,7 +53,7 @@ fun rememberClockFormatter(): (epochMillis: Long) -> String {
     }
 }
 
-/** A duration as the almanac prints it: "6 h 48 m", or "48 m" under an hour. */
+/** A duration in running text: "6 h 48 m", or "48 m" under an hour ([durationFigure] for a figure). */
 @Composable
 @ReadOnlyComposable
 fun durationText(minutes: Int): String {
@@ -63,7 +63,7 @@ fun durationText(minutes: Int): String {
     else stringResource(R.string.duration_minutes, m)
 }
 
-/** The date line's words, before they are set in capitals: "Thursday · 9 October". */
+/** A date line: "Thursday · 9 October" (the dial's, a day's header). */
 @Composable
 fun dateLineText(date: LocalDate): String {
     val locale = currentLocale()

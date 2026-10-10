@@ -11,23 +11,29 @@
     <string name="action_dismiss">Dismiss</string>
     <string name="action_close">Close</string>
 
-    <!-- The red-letter day. -->
+    <!-- The hero card and the goal. -->
+    <string name="metric_steps">Steps</string>
     <string name="goal_reached">Goal reached</string>
-    <string name="figure_of_goal_steps">of %1$s steps</string>
-    <!-- TalkBack reads the figure as one sentence. -->
+    <string name="figure_of_goal">of %1$s</string>
+    <string name="figure_of_goal_to_go">of %1$s · %2$s to go</string>
+    <!-- TalkBack reads the hero card as one sentence. -->
     <string name="figure_spoken">%1$s of %2$s steps</string>
     <string name="figure_spoken_goal_reached">%1$s of %2$s steps, goal reached</string>
     <string name="figure_spoken_absent">Steps not reported yet. Goal %1$s steps</string>
     <!-- Shown in place of a figure the watch has not reported. Never a zero. -->
     <string name="figure_absent">–</string>
 
-    <!-- The date line, as a java.time pattern; the component sets it in capitals. -->
+    <!-- The units set small beside a figure: "6 h 48 m". -->
+    <string name="unit_hours_short">h</string>
+    <string name="unit_minutes_short">m</string>
+
+    <!-- Dates, as java.time patterns. -->
     <string name="date_line_pattern" translatable="false">EEEE · d MMMM</string>
     <string name="date_spoken_pattern" translatable="false">EEEE d MMMM</string>
 
-    <!-- Durations, as the almanac prints them. No-break spaces keep "6 h 48 m" on one line. -->
-    <string name="duration_hours_minutes">%1$d\u00A0h\u00A0%2$02d\u00A0m</string>
-    <string name="duration_minutes">%1$d\u00A0m</string>
+    <!-- Durations in running text. No-break spaces keep "6 h 48 m" on one line. -->
+    <string name="duration_hours_minutes">%1$d h %2$02d m</string>
+    <string name="duration_minutes">%1$d m</string>
 
     <!-- Settings rows. -->
     <string name="setting_needs_watch">Connect your watch to change this</string>
@@ -38,7 +44,27 @@
     <string name="sleep_light">Light</string>
     <string name="sleep_awake">Awake</string>
 
-    <!-- The quiet status line's marks, for TalkBack. -->
+    <!-- The status pill's glyphs, for TalkBack. -->
     <string name="status_charging">Charging</string>
     <string name="status_syncing">Syncing</string>
+    <string name="status_offline">Not connected</string>
+
+    <!-- The watch's screens, as the dial and its thumbnails name them (AppSettingCommand). -->
+    <string name="watch_screen_face">Watch face</string>
+    <string name="watch_screen_activity">Activity</string>
+    <string name="watch_screen_alarm">Alarm</string>
+    <string name="watch_screen_heart_rate">Heart rate</string>
+    <string name="watch_screen_music">Music</string>
+    <string name="watch_screen_reminders">Reminders</string>
+    <string name="watch_screen_sleep">Sleep</string>
+    <string name="watch_screen_stopwatch">Stopwatch</string>
+    <string name="watch_screen_timer">Timer</string>
+    <string name="watch_screen_weather">Weather</string>
+    <string name="watch_screen_workouts">Workouts</string>
+    <!-- The face's date line on the dial, as a java.time pattern; set in capitals. -->
+    <string name="dial_date_pattern" translatable="false">EEE d MMM</string>
+    <string name="dial_face_spoken">Your watch, showing %1$s</string>
+    <string name="dial_face_spoken_date">Your watch, showing %1$s, %2$s</string>
+    <string name="dial_screen_spoken">Your watch, %1$s screen</string>
+    <string name="watch_screen_thumbnail_spoken">%1$d, %2$s</string>
 </resources>

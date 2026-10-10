@@ -16,9 +16,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -54,15 +57,15 @@ private val MinStub = 2.dp
  * One record's bar. A plain bar runs from [low] (0) to [high]. A range (heart rate's daily
  * low to high) draws thin, with [mark] (the average) as a tick across it.
  *
- * @property redLetter the day met its goal: the bar prints in calendar red. The goal line it
- *   crosses is the non-colour cue.
+ * @property goalMet the day met its goal: the bar prints green. The goal line it crosses is the
+ *   non-colour cue, and the day's row says "Goal reached" in words.
  */
 @Immutable
 data class ChartBar(
     val high: Float,
     val low: Float = 0f,
     val mark: Float? = null,
-    val redLetter: Boolean = false,
+    val goalMet: Boolean = false,
 ) {
     internal val isRange: Boolean get() = low > 0f || mark != null
 }
@@ -95,6 +98,7 @@ fun BarChart(
     val measurer = rememberTextMeasurer()
     val labelStyle = NormPlusTheme.type.chartLabel.copy(color = c.chartGoal)
     val hairline = NormPlusTheme.spacing.hairline
+    val cornerDp = NormPlusTheme.shapes.barCorner
     val highest = bars.filterNotNull().maxOfOrNull { it.high } ?: 0f
     val top = scaleMax ?: (max(highest, goal ?: 0f) * 1.1f)
     val bottom = scaleMin
@@ -107,26 +111,32 @@ fun BarChart(
             fun y(v: Float) = plotBottom - ((v - bottom) / span).coerceIn(0f, 1f) * (plotBottom - plotTop)
             val slot = size.width / max(1, bars.size)
             val barW = min(slot * 0.62f, MaxBarWidth.toPx()).coerceAtLeast(1f)
+            val corner = cornerDp.toPx()
             fun centre(i: Int) = ((i + 0.5f) * slot).let { if (rtl) size.width - it else it }
 
             baseline(c.chartAxis, hairline.toPx())
             bars.forEachIndexed { i, bar ->
                 if (bar == null) return@forEachIndexed
-                val ink = if (bar.redLetter) c.redLetter else c.chartBar
+                val ink = if (bar.goalMet) c.chartGoalMet else c.chartBar
                 if (bar.isRange && bar.high == bar.low) {
-                    // A single reading: a square dot at its value.
-                    val d = max(barW * 0.7f, 3.dp.toPx())
-                    drawRect(ink, topLeft = Offset(centre(i) - d / 2f, y(bar.high) - d / 2f), size = Size(d, d))
+                    // A single reading: a dot at its value.
+                    val d = max(barW * 0.7f, 4.dp.toPx())
+                    drawCircle(ink, radius = d / 2f, center = Offset(centre(i), y(bar.high)))
                     return@forEachIndexed
                 }
                 val w = if (bar.isRange) max(2.dp.toPx(), barW * 0.4f) else barW
                 val yHigh = y(bar.high)
                 val yLow = y(bar.low)
                 val h = max(yLow - yHigh, MinStub.toPx())
-                drawRect(ink, topLeft = Offset(centre(i) - w / 2f, yLow - h), size = Size(w, h))
+                val rounding = if (bar.isRange) w / 2f else min(corner, w / 2f)
+                drawTopRounded(ink, Offset(centre(i) - w / 2f, yLow - h), Size(w, h), rounding, roundBottom = bar.isRange)
                 bar.mark?.let { m ->
-                    val tickW = max(barW, w + 6.dp.toPx())
-                    drawRect(print, topLeft = Offset(centre(i) - tickW / 2f, y(m) - 1.dp.toPx()), size = Size(tickW, 2.dp.toPx()))
+                    val tickW = max(barW, w + 8.dp.toPx())
+                    val tickH = 2.5.dp.toPx()
+                    drawRoundRect(
+                        print, topLeft = Offset(centre(i) - tickW / 2f, y(m) - tickH / 2f), size = Size(tickW, tickH),
+                        cornerRadius = CornerRadius(tickH / 2f),
+                    )
                 }
             }
             if (goal != null) {
@@ -154,7 +164,7 @@ data class SleepNight(val deepMinutes: Int, val lightMinutes: Int, val awakeMinu
 
 /**
  * Sleep per night, stacked by stage: deep at the base, light on it, awake on top, each
- * separated by a hairline of the sheet so the stages part without colour.
+ * separated by a gap so the stages part without colour.
  *
  * @param nights one per day, in order; null for a night with no session.
  */
@@ -170,6 +180,7 @@ fun SleepStackChart(
     val c = NormPlusTheme.colors
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val hairline = NormPlusTheme.spacing.hairline
+    val cornerDp = NormPlusTheme.shapes.barCorner
     val top = (scaleMaxMinutes ?: ((nights.maxOfOrNull { it?.totalMinutes ?: 0 } ?: 0) * 1.1f).toInt()).coerceAtLeast(1)
     Column(modifier.clearAndSetSemantics { this.contentDescription = contentDescription }) {
         Canvas(Modifier.fillMaxWidth().height(height)) {
@@ -177,19 +188,21 @@ fun SleepStackChart(
             val perMinute = plotBottom / top
             val slot = size.width / max(1, nights.size)
             val barW = min(slot * 0.62f, MaxBarWidth.toPx()).coerceAtLeast(1f)
-            val gap = hairline.toPx()
+            val gap = 2.dp.toPx()
+            val corner = cornerDp.toPx()
             baseline(c.chartAxis, hairline.toPx())
             nights.forEachIndexed { i, night ->
                 if (night == null) return@forEachIndexed
                 val x = ((i + 0.5f) * slot).let { if (rtl) size.width - it else it } - barW / 2f
                 var yBase = plotBottom
-                listOf(night.deepMinutes to c.sleepDeep, night.lightMinutes to c.sleepLight, night.awakeMinutes to c.sleepAwake)
-                    .forEach { (minutes, ink) ->
-                        if (minutes <= 0) return@forEach
-                        val h = max(minutes * perMinute - gap, 1f)
-                        drawRect(ink, topLeft = Offset(x, yBase - h), size = Size(barW, h))
-                        yBase -= h + gap
-                    }
+                val stages = listOf(night.deepMinutes to c.sleepDeep, night.lightMinutes to c.sleepLight, night.awakeMinutes to c.sleepAwake)
+                val topmost = stages.indexOfLast { it.first > 0 }
+                stages.forEachIndexed { k, (minutes, ink) ->
+                    if (minutes <= 0) return@forEachIndexed
+                    val h = max(minutes * perMinute - gap, 1f)
+                    drawTopRounded(ink, Offset(x, yBase - h), Size(barW, h), if (k == topmost) min(corner, barW / 2f) else 0f)
+                    yBase -= h + gap
+                }
             }
         }
         if (axisLabels.isNotEmpty()) AxisLabels(axisLabels, underSlots = axisLabels.size == nights.size)
@@ -256,7 +269,11 @@ fun SleepStageBand(
                 val left = if (rtl) size.width - to else from
                 val w = max(to - from, 1f)
                 val inset = 2.dp.toPx()
-                drawRect(ink, topLeft = Offset(left, lane * laneIndex + inset), size = Size(w, lane - inset * 2))
+                val h = lane - inset * 2
+                drawRoundRect(
+                    ink, topLeft = Offset(left, lane * laneIndex + inset), size = Size(w, h),
+                    cornerRadius = CornerRadius(min(h / 4f, w / 2f)),
+                )
             }
         }
         if (startLabel != null || endLabel != null) {
@@ -290,10 +307,26 @@ private fun Swatch(ink: Color, edge: Color) {
     val hairline = NormPlusTheme.spacing.hairline
     Box(Modifier.size(10.dp)) {
         Canvas(Modifier.size(10.dp)) {
-            drawRect(ink)
-            drawRect(edge, style = Stroke(hairline.toPx()))
+            drawCircle(ink)
+            drawCircle(edge, style = Stroke(hairline.toPx()))
         }
     }
+}
+
+/** A bar with its top corners rounded (and its bottom ones too for a range). */
+private fun DrawScope.drawTopRounded(color: Color, topLeft: Offset, size: Size, radius: Float, roundBottom: Boolean = false) {
+    if (radius <= 0f) {
+        drawRect(color, topLeft, size)
+        return
+    }
+    val r = min(radius, size.height / 2f)
+    val rect = RoundRect(
+        left = topLeft.x, top = topLeft.y, right = topLeft.x + size.width, bottom = topLeft.y + size.height,
+        topLeftCornerRadius = CornerRadius(r), topRightCornerRadius = CornerRadius(r),
+        bottomLeftCornerRadius = if (roundBottom) CornerRadius(r) else CornerRadius.Zero,
+        bottomRightCornerRadius = if (roundBottom) CornerRadius(r) else CornerRadius.Zero,
+    )
+    drawPath(Path().apply { addRoundRect(rect) }, color)
 }
 
 private fun DrawScope.baseline(color: Color, stroke: Float) {
