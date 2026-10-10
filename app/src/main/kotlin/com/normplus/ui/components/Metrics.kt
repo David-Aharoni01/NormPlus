@@ -445,10 +445,12 @@ fun DayRow(
                 }
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(spacing.xxs)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, color = scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(summary, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // Each line keeps its own direction: English with figures stays "9,120 steps" in a
+                // right-to-left layout (#110). The chip sits under the words, never squeezing the title.
+                Text(title, style = MaterialTheme.typography.titleMedium.copy(textDirection = TextDirection.Content), color = scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(summary, style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Content), color = scheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (goalReached) GoalReachedChip(Modifier.padding(top = spacing.xxs))
             }
-            if (goalReached) GoalReachedChip()
             Icon(
                 Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                 contentDescription = null,
