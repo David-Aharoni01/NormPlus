@@ -108,7 +108,7 @@ fun FirstRunContent(state: FirstRunUiState, time: LocalTime, actions: FirstRunAc
     ) {
         when (state.step) {
             FirstRunStep.Welcome -> WelcomeStep(time)
-            FirstRunStep.Bluetooth -> BluetoothStep(state, actions)
+            FirstRunStep.Bluetooth -> BluetoothStep(state)
             FirstRunStep.Find -> FindStep(state, actions)
             FirstRunStep.Connect -> ConnectStep(state, actions)
             FirstRunStep.Bind -> BindStep(state, time, actions)
@@ -209,14 +209,14 @@ private fun ColumnScope.WelcomeStep(time: LocalTime) {
 }
 
 @Composable
-private fun BluetoothStep(state: FirstRunUiState, actions: FirstRunActions) {
+private fun BluetoothStep(state: FirstRunUiState) {
     Intro(stringResource(R.string.firstrun_bluetooth_headline), stringResource(R.string.firstrun_bluetooth_body))
     if (state.denied(Ask.Bluetooth)) {
-        FixItCard(
+        // Allow along the bottom asks again (or opens the app's settings once Android won't).
+        Notice(
             title = stringResource(R.string.firstrun_bluetooth_denied_title),
-            reason = stringResource(R.string.firstrun_bluetooth_denied_body),
-            actionLabel = stringResource(R.string.firstrun_bluetooth_action),
-            onAction = { actions.onAsk(Ask.Bluetooth) },
+            tone = NoticeTone.NeedsFixing,
+            body = stringResource(R.string.firstrun_bluetooth_denied_body),
         )
     }
 }
@@ -360,7 +360,7 @@ private fun ConnectStep(state: FirstRunUiState, actions: FirstRunActions) {
         is ConnectPhase.Pairing -> NormCard(Modifier.fillMaxWidth()) {
             Column(verticalArrangement = Arrangement.spacedBy(spacing.m)) {
                 Intro(stringResource(R.string.firstrun_connect_pair_headline, watchName), stringResource(R.string.firstrun_connect_pair_body))
-                ProgressBar(phase.secondsLeft / PAIRING_WINDOW_SECONDS.toFloat())
+                ProgressBar(phase.secondsLeft / PAIRING_WINDOW_SECONDS.toFloat(), Modifier.fillMaxWidth())
                 Text(
                     pluralStringResource(R.plurals.firstrun_connect_pair_seconds, phase.secondsLeft, phase.secondsLeft),
                     style = MaterialTheme.typography.labelLarge,

@@ -5,7 +5,7 @@
 
     <!-- 1. Welcome -->
     <string name="firstrun_welcome_title">Norm+</string>
-    <string name="firstrun_welcome_headline">An independent app for the Norm 2.</string>
+    <string name="firstrun_welcome_headline">An independent app for the Norm 2.</string>
     <string name="firstrun_welcome_body">Norm+ keeps your watch connected, brings your phone\'s notifications and calls to your wrist, and shows the steps, heart rate and sleep your watch has counted. It is not made by the watch\'s maker.</string>
     <string name="firstrun_welcome_action">Get started</string>
 
@@ -105,5 +105,4 @@
     <string name="firstrun_skip">Skip</string>
     <string name="firstrun_continue">Continue</string>
     <string name="firstrun_ask_again">Ask again</string>
-    <string name="firstrun_done">Go to Today</string>
 </resources>
