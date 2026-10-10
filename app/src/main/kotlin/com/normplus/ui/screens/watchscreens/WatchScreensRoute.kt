@@ -1,38 +1,36 @@
 package com.normplus.ui.screens.watchscreens
 
-import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import com.normplus.R
-import com.normplus.ui.components.ScreenScaffold
-import com.normplus.ui.theme.NormPlusTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.normplus.ui.components.rememberWatchTime
 
 /**
  * The order of the watch's own screens (#103), below Watch. It draws `ScreenScaffold` (the large
- * title with Back, and the status pill or the banner under it); a Done action goes in
- * its `actions`. The new order is sent once, on Done or on leaving.
+ * title with Back, and the status pill or the banner under it), with Done in its actions. The
+ * new order is sent once, on Done or on leaving with a change; a send that fails keeps the
+ * screen open with Retry, or Leave without sending.
  *
  * @param onBack back to Watch, after Done or system Back.
- *
- * Stub (#97): a placeholder.
  */
 @Composable
 fun WatchScreensRoute(onBack: () -> Unit) {
-    val spacing = NormPlusTheme.spacing
-    ScreenScaffold(title = stringResource(R.string.watchscreens_title), onBack = onBack) { padding ->
-        Text(
-            stringResource(R.string.watchscreens_placeholder),
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .consumeWindowInsets(padding)
-                .padding(horizontal = spacing.gutter, vertical = spacing.xl),
+    val viewModel: WatchScreensViewModel = hiltViewModel()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val now = rememberWatchTime()
+    val actions = remember(viewModel, onBack) {
+        WatchScreensActions(
+            onBack = { viewModel.send(onBack) },
+            onDone = { viewModel.send(onBack) },
+            onMove = viewModel::move,
+            onRetry = { viewModel.send(onBack) },
+            onLeaveWithoutSending = { viewModel.discard(); onBack() },
         )
     }
+    // Leaving with a change sends it first, as Done does.
+    BackHandler(enabled = state.changed) { actions.onBack() }
+    WatchScreensContent(state = state, time = now.toLocalTime(), date = now.toLocalDate(), actions = actions)
 }

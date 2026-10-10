@@ -413,7 +413,8 @@ private val DotGap = 7.dp
 /**
  * A watch screen as a round thumbnail, for the order of the watch's screens (#103): the
  * screen drawn small, its place in the order on a badge, its name under it. The selected one
- * is ringed in violet and its badge filled. Selectable when [onClick] is given.
+ * is ringed in violet and its badge filled. Selectable when [onClick] is given. [showName]
+ * false where the row beside it already names the screen (#103's list).
  */
 @Composable
 fun WatchScreenThumbnail(
@@ -425,6 +426,7 @@ fun WatchScreenThumbnail(
     date: LocalDate? = null,
     size: Dp = 76.dp,
     onClick: (() -> Unit)? = null,
+    showName: Boolean = true,
 ) {
     val spacing = NormPlusTheme.spacing
     val scheme = MaterialTheme.colorScheme
@@ -467,7 +469,7 @@ fun WatchScreenThumbnail(
                 }
             }
         }
-        Text(
+        if (showName) Text(
             name,
             style = MaterialTheme.typography.labelLarge,
             color = if (selected) scheme.onSurface else scheme.onSurfaceVariant,

@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The watch's screens order (#103). The stub's words (#97); #103 replaces them. -->
+<!-- The watch's screens order (#103). -->
 <resources>
     <string name="watchscreens_title">Watch screens</string>
-    <string name="watchscreens_placeholder">The order of your watch\'s screens can\'t be changed here yet.</string>
+    <string name="watchscreens_done">Done</string>
+    <string name="watchscreens_intro">Your watch shows these screens in this order when you swipe from the face. Drag a screen by its handle, or use the arrows. The new order goes to your watch when you tap Done.</string>
+    <string name="watchscreens_face_fixed">Always first</string>
+    <string name="watchscreens_offline">Your watch is not connected. You can arrange the screens now; Done sends them once it is back.</string>
+    <string name="watchscreens_read_failed">Couldn\'t read the order from your watch, so this may not be what it shows now.</string>
+    <string name="watchscreens_not_sent_title">The order wasn\'t sent</string>
+    <string name="watchscreens_not_sent_body">Your watch didn\'t take the new order. Try again, or leave it as it was.</string>
+    <string name="watchscreens_not_sent_offline">Your watch is not connected. Connect it and try again, or leave it as it was.</string>
+    <string name="watchscreens_retry">Try again</string>
+    <string name="watchscreens_leave">Leave without sending</string>
+    <!-- TalkBack actions and the arrow buttons' descriptions. -->
+    <string name="watchscreens_move_up">Move %1$s up</string>
+    <string name="watchscreens_move_down">Move %1$s down</string>
 </resources>
