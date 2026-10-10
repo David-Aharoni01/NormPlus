@@ -1,5 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Notification apps (#104). The stub's words (#97). -->
+<!-- Notification apps (#104): which apps may send their notifications to the watch. -->
 <resources>
     <string name="notificationapps_title">Notification apps</string>
+
+    <!-- The search field. -->
+    <string name="notificationapps_search">Search apps</string>
+    <string name="notificationapps_search_clear">Clear search</string>
+
+    <string name="notificationapps_show_system">Show system apps</string>
+    <string name="notificationapps_show_system_supporting">Apps that came with the phone</string>
+
+    <!-- The count heading over the list. -->
+    <plurals name="notificationapps_forwarding">
+        <item quantity="one">%1$d app forwarding</item>
+        <item quantity="other">%1$d apps forwarding</item>
+    </plurals>
+    <string name="notificationapps_forwarding_none">No apps forwarding yet</string>
+
+    <!-- An enabled app's own option. -->
+    <string name="notificationapps_skip_repeats">Skip repeats of identical text</string>
+    <string name="notificationapps_skip_repeats_supporting">Sent once until you clear it on the phone</string>
+    <!-- TalkBack: the app's switch, "WhatsApp, sends to your watch". -->
+    <string name="notificationapps_row_on">Sends to your watch</string>
+    <string name="notificationapps_row_off">Does not send</string>
+
+    <!-- Loading, empty and failed. -->
+    <string name="notificationapps_loading">Loading your apps</string>
+    <string name="notificationapps_no_match">Nothing matches “%1$s”</string>
+    <string name="notificationapps_no_match_hint">Search looks at app names and package names.</string>
+    <string name="notificationapps_no_match_system_hint">System apps are hidden. Show them to search those too.</string>
+    <string name="notificationapps_none">No apps found</string>
+    <string name="notificationapps_load_failed">Couldn’t read your apps</string>
+    <string name="notificationapps_load_failed_body">Android didn’t return the list of installed apps. Your choices are kept.</string>
+    <string name="notificationapps_save_failed">Couldn’t save the change for %1$s</string>
 </resources>
