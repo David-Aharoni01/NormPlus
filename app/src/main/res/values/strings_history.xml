@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- History (#100): steps, heart rate, sleep and calories by day. -->
+<resources>
+    <!-- The metric tabs and the ranges. -->
+    <string name="history_metric_steps">Steps</string>
+    <string name="history_metric_heart_rate">Heart rate</string>
+    <string name="history_metric_sleep">Sleep</string>
+    <string name="history_metric_calories">Calories</string>
+    <string name="history_metrics_label">Metric</string>
+    <string name="history_range_week">Week</string>
+    <string name="history_range_month">Month</string>
+    <string name="history_range_three_months">3 months</string>
+    <string name="history_range_label">Range</string>
+    <string name="history_range_caption">Last %1$d days</string>
+
+    <!-- The chart card's line about its range. -->
+    <string name="history_summary_steps">%1$s steps a day on average</string>
+    <string name="history_summary_calories">%1$s kcal a day on average</string>
+    <string name="history_summary_heart_rate">Average %1$s bpm · lowest %2$s, highest %3$s</string>
+    <string name="history_summary_sleep">%1$s asleep a night on average</string>
+    <!-- The same, as a figure with its words set small beside it. -->
+    <string name="history_unit_steps_a_day">steps a day</string>
+    <string name="history_unit_kcal_a_day">kcal a day</string>
+    <string name="history_unit_bpm_average">bpm average</string>
+    <string name="history_unit_asleep_a_night">asleep a night</string>
+    <string name="history_detail_heart_rate">Lowest %1$s · highest %2$s</string>
+    <plurals name="history_detail_average">
+        <item quantity="one">From %1$d day with records</item>
+        <item quantity="other">Average of %1$d days with records</item>
+    </plurals>
+    <plurals name="history_detail_average_nights">
+        <item quantity="one">From %1$d night with records</item>
+        <item quantity="other">Average of %1$d nights with records</item>
+    </plurals>
+    <plurals name="history_summary_goal_days">
+        <item quantity="one">Goal reached on %1$d of %2$d days</item>
+        <item quantity="other">Goal reached on %1$d of %2$d days</item>
+    </plurals>
+    <!-- TalkBack reads the chart as one sentence: what it is, then the line above. -->
+    <string name="history_chart_spoken_steps">Steps by day, %1$s. %2$s</string>
+    <string name="history_chart_spoken_heart_rate">Heart rate by day, the range and the average, %1$s. %2$s</string>
+    <string name="history_chart_spoken_sleep">Sleep by night, by stage, %1$s. %2$s</string>
+    <string name="history_chart_spoken_calories">Calories by day, %1$s. %2$s</string>
+    <!-- A range with no record of the metric. -->
+    <string name="history_range_empty_steps">No steps recorded in this range</string>
+    <string name="history_range_empty_heart_rate">No heart-rate readings in this range</string>
+    <string name="history_range_empty_sleep">No sleep recorded in this range</string>
+    <string name="history_range_empty_calories">No calories recorded in this range</string>
+    <string name="history_range_empty_body">Days with records show up as bars here.</string>
+
+    <!-- A day's row. -->
+    <string name="history_today">Today</string>
+    <string name="history_yesterday">Yesterday</string>
+    <string name="history_row_date_pattern" translatable="false">d MMMM</string>
+    <string name="history_row_date_year_pattern" translatable="false">d MMMM yyyy</string>
+    <string name="history_row_weekday_pattern" translatable="false">EEE</string>
+    <string name="history_month_pattern" translatable="false">MMMM yyyy</string>
+    <string name="history_axis_date_pattern" translatable="false">d MMM</string>
+    <string name="history_axis_weekday_pattern" translatable="false">EEE</string>
+    <plurals name="history_row_steps">
+        <item quantity="one">%1$s step</item>
+        <item quantity="other">%1$s steps</item>
+    </plurals>
+    <string name="history_row_calories">%1$s kcal</string>
+    <string name="history_row_heart_rate">%1$s–%2$s bpm · average %3$s</string>
+    <string name="history_row_heart_rate_single">%1$s bpm · one reading</string>
+    <string name="history_row_sleep">%1$s asleep · deep %2$s</string>
+    <!-- TalkBack: "Yesterday, Wednesday 8 October, 9,120 steps, goal reached". -->
+    <string name="history_row_spoken">%1$s, %2$s</string>
+    <string name="history_row_spoken_goal">%1$s, %2$s, goal reached</string>
+    <string name="history_row_spoken_relative">%1$s, %2$s</string>
+    <string name="history_heart_rate_spoken">lowest %1$s, highest %2$s, average %3$s beats a minute</string>
+    <string name="history_sleep_spoken">%1$s asleep, deep %2$s, light %3$s, awake %4$s</string>
+
+    <!-- A metric with no record at all, below its chart. -->
+    <string name="history_rows_empty_steps">No step records synced yet.</string>
+    <string name="history_rows_empty_heart_rate">No heart-rate readings synced yet. The watch takes them while it measures your heart rate.</string>
+    <string name="history_rows_empty_sleep">No sleep synced yet. The watch records sleep in sleep mode, or with auto sleep on.</string>
+    <string name="history_rows_empty_calories">No calorie records synced yet.</string>
+
+    <!-- Nothing synced at all. -->
+    <string name="history_empty_title">Nothing synced yet</string>
+    <string name="history_empty_body">Your days appear here once Norm+ has synced with your watch. Pull down on Today to sync, or sync now.</string>
+    <string name="history_empty_action">Sync now</string>
+    <string name="history_empty_needs_watch">Connect your watch to sync.</string>
+
+    <!-- The database could not be read. -->
+    <string name="history_failed_title">Your history could not be read</string>
+    <string name="history_failed_body">The records on this phone are still there. Try reading them again.</string>
+    <string name="history_loading_more">Loading earlier days</string>
+</resources>
