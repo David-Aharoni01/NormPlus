@@ -10,7 +10,6 @@
     <string name="history_range_week">Week</string>
     <string name="history_range_month">Month</string>
     <string name="history_range_three_months">3 months</string>
-    <string name="history_range_label">Range</string>
     <string name="history_range_caption">Last %1$d days</string>
 
     <!-- The chart card's line about its range. -->

@@ -46,6 +46,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextDirection
 import com.normplus.R
 import com.normplus.ui.components.BarChart
 import com.normplus.ui.components.CardTitle
@@ -221,7 +222,7 @@ private fun RangeButtons(selected: HistoryRange, onSelect: (HistoryRange) -> Uni
                 selected = r == selected,
                 onClick = { onSelect(r) },
                 shape = SegmentedButtonDefaults.itemShape(i, count),
-                label = { Text(stringResource(r.label), style = NormPlusTheme.type.pill, maxLines = 1) },
+                label = { Text(stringResource(r.label), style = NormPlusTheme.type.pill.copy(textDirection = TextDirection.Content), maxLines = 1) },
             )
         }
     }
