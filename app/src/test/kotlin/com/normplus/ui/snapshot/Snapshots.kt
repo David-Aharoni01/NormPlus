@@ -23,11 +23,14 @@ import com.normplus.ui.theme.NormPlusTheme
  * docs/app.md ("UI Layer") says how to add a screen's tests and re-record goldens.
  */
 
-/** The renders every screen and component is checked in: light, dark, and light at font scale 1.3. */
+/**
+ * The renders every screen and component is checked in: light, dark, and font scale 1.3 in
+ * dark (the app is dark first, so that is where most people meet the large font).
+ */
 enum class Variant(val dark: Boolean, val fontScale: Float) {
     Light(dark = false, fontScale = 1f),
     Dark(dark = true, fontScale = 1f),
-    LargeFont(dark = false, fontScale = 1.3f),
+    LargeFont(dark = true, fontScale = 1.3f),
     ;
 
     override fun toString() = name.lowercase()

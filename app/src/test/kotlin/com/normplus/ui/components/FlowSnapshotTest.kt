@@ -1,9 +1,12 @@
 package com.normplus.ui.components
 
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import com.normplus.ui.theme.heroGlow
+import java.time.LocalTime
 import com.normplus.ui.snapshot.Variant
 import com.normplus.ui.snapshot.normPaparazzi
 import com.normplus.ui.theme.NormPlusTheme
@@ -32,10 +35,16 @@ class FlowSnapshotTest(variant: Variant) {
                 step = "Step 1 of 2 · Minute hand",
                 onClose = {},
                 actions = {
-                    TextButton(onClick = {}) { Text("Back") }
-                    Button(onClick = {}) { Text("Next") }
+                    PillButton("Back", {}, tone = PillTone.Neutral)
+                    PillButton("Next", {}, tone = PillTone.Primary)
                 },
             ) {
+                WatchDial(
+                    time = LocalTime.of(10, 9),
+                    highlight = DialHand.Minute,
+                    showTwelveMark = true,
+                    modifier = Modifier.fillMaxWidth(0.7f).align(Alignment.CenterHorizontally).heroGlow(),
+                )
                 Text("Move the minute hand to 12", style = MaterialTheme.typography.headlineSmall)
                 Text(
                     "Nudge it with − and +, or hold to turn it. The hour hand stays where it is.",
