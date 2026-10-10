@@ -196,7 +196,7 @@ fun WatchContent(
     when (picker) {
         Picker.Timeout -> ChoiceDialog(
             title = stringResource(R.string.watch_timeout),
-            choices = TIMEOUT_CHOICES.map { stringResource(R.string.watch_seconds, it) },
+            choices = TIMEOUT_CHOICES.map { androidx.compose.ui.res.pluralStringResource(R.plurals.watch_seconds, it, it) },
             selected = TIMEOUT_CHOICES.indexOf(state.settings.screenTimeoutSeconds),
             onChoose = { actions.onTimeout(TIMEOUT_CHOICES[it]) },
             onDismiss = { picker = null },
@@ -316,7 +316,7 @@ private fun WatchSection(state: WatchUiState, live: Boolean, asOf: String?, acti
     SettingsSection(stringResource(R.string.watch_section_watch)) {
         BrightnessRow(state, live, asOf, actions)
         SettingsDivider()
-        PickerRow(stringResource(R.string.watch_timeout), stringResource(R.string.watch_seconds, s.screenTimeoutSeconds), SettingKey.Timeout, state, live, asOf, actions) { open(Picker.Timeout) }
+        PickerRow(stringResource(R.string.watch_timeout), androidx.compose.ui.res.pluralStringResource(R.plurals.watch_seconds, s.screenTimeoutSeconds, s.screenTimeoutSeconds), SettingKey.Timeout, state, live, asOf, actions) { open(Picker.Timeout) }
         SettingsDivider()
         SwitchRow(stringResource(R.string.watch_raise_to_wake), stringResource(R.string.watch_raise_to_wake_body), SettingKey.RaiseToWake, state, live, asOf, actions)
         SettingsDivider()

@@ -1,6 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Technical (#107). The stub's words (#97); #107 replaces them. -->
+<!-- Technical (#107): the details ordinary users need not see. -->
 <resources>
     <string name="technical_title">Technical</string>
-    <string name="technical_placeholder">The technical details are moving here. Until then they are on Watch, under Connection health.</string>
+
+    <string name="technical_section_connection">Connection</string>
+    <string name="technical_service">Background service</string>
+    <string name="technical_running">Running</string>
+    <string name="technical_stopped">Stopped</string>
+    <string name="technical_start">Start</string>
+    <string name="technical_link">Watch link</string>
+    <string name="technical_link_no_watch">No watch saved</string>
+    <string name="technical_link_disconnected">Disconnected</string>
+    <string name="technical_link_scanning">Scanning</string>
+    <string name="technical_link_connecting">Connecting</string>
+    <string name="technical_link_setting_up">Setting up</string>
+    <string name="technical_link_reconnecting">Reconnecting</string>
+    <string name="technical_link_ready">Ready</string>
+    <string name="technical_last_connected">Last connected</string>
+    <string name="technical_never">Never</string>
+    <string name="technical_start_on_boot">Start on boot</string>
+    <string name="technical_start_on_boot_body">Connect to the watch when the phone starts</string>
+
+    <string name="technical_section_watch">Watch</string>
+    <string name="technical_address">Address</string>
+    <string name="technical_version">Version</string>
+    <string name="technical_none">None</string>
+    <string name="technical_not_read">Not read yet</string>
+
+    <string name="technical_section_sync">Sync</string>
+    <string name="technical_last_sync">Last sync</string>
+    <string name="technical_sync_running">Running: %1$s of %2$s</string>
+    <string name="technical_sync_complete">Complete at %1$s</string>
+    <string name="technical_sync_short">Stopped short at %1$s: %2$s</string>
+    <string name="technical_records">Records in Norm+</string>
+    <string name="technical_records_body">%1$s sport · %2$s heart rate · %3$s sleep sessions</string>
+
+    <string name="technical_section_update">Update</string>
+    <string name="technical_update_file">Update from a file</string>
+    <string name="technical_update_file_body">Send a .bin to the watch, through the same steps as any update</string>
 </resources>
