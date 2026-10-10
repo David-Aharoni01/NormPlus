@@ -136,6 +136,7 @@ class WatchPreferences @Inject constructor(
     }
 
     companion object {
-        const val DEFAULT_STEP_GOAL = 10_000
+        // The official app's own default (SPDefaultPrivateValue.DEFAULT_GOAL_STEP = 0x1b58); owner's call, #102.
+        const val DEFAULT_STEP_GOAL = 7_000
     }
 }

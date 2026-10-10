@@ -3,7 +3,7 @@ package com.normplus.domain.model
 data class DailyStats(
     val dateEpochMs: Long,
     val steps: Int = 0,
-    val stepGoal: Int = 10_000,
+    val stepGoal: Int = 7_000,
     val calories: Float = 0f,
     val distanceMeters: Float = 0f,
     val avgHeartRate: Int = 0,
@@ -45,7 +45,7 @@ data class WatchSettings(
     val metricUnits: Boolean = true,
     val powerSaveMode: Boolean = false,
     val switchMask: Int = 0,
-    val stepGoal: Int = 10_000,
+    val stepGoal: Int = 7_000,
     val calorieGoal: Int = 500,
     val distanceGoalMeters: Int = 5000,
     val sleepGoalMinutes: Int = 480,

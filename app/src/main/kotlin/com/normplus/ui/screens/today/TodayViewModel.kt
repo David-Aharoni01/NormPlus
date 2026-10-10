@@ -38,7 +38,7 @@ import javax.inject.Inject
 private const val TAG = "TodayVM"
 
 /** Until the preference is read: the goal WatchPreferences.stepGoal defaults to. */
-private const val DEFAULT_GOAL = 10_000
+private const val DEFAULT_GOAL = WatchPreferences.DEFAULT_STEP_GOAL
 
 /**
  * Everything Today prints (#99). Figures the watch has not reported are null: absent, never
