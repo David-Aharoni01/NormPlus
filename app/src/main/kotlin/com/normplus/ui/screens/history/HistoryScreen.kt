@@ -201,8 +201,9 @@ private fun MetricChips(selected: HistoryMetric, onSelect: (HistoryMetric) -> Un
             FilterChip(
                 selected = isSelected,
                 onClick = { onSelect(m) },
+                // Words only, so the four fit side by side at the normal font size; the card's
+                // title carries the metric's icon.
                 label = { Text(stringResource(m.label), style = NormPlusTheme.type.pill, maxLines = 1) },
-                leadingIcon = { Icon(m.icon, contentDescription = null, Modifier.size(spacing.smallIcon)) },
                 shape = NormPlusTheme.shapes.pill,
             )
         }
