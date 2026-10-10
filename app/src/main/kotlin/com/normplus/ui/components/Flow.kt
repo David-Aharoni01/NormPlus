@@ -30,7 +30,8 @@ import com.normplus.ui.theme.NormPlusTheme
 /**
  * A full-screen flow: first run, hands calibration, the firmware update, the custom-file
  * update. The large-title header with a Close action and the step in a neutral pill under
- * the title ("Step 2 of 4", "Minute hand"); the step's content, scrolling; its pill actions
+ * the title ("Step 2 of 4", "Minute hand"), and the connection banner under that whenever the
+ * shell has one (none in the first run); the step's content, scrolling; its pill actions
  * along the bottom, the way on at the end ([PillTone.Primary]) and the way back before it.
  *
  * Closing is the screen's decision: a flow that must not be left half-done (an update that is
@@ -48,6 +49,7 @@ fun FlowScaffold(
 ) {
     val spacing = NormPlusTheme.spacing
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val banner = LocalShellStatus.current.banner
     Scaffold(
         modifier = modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
@@ -59,7 +61,14 @@ fun FlowScaffold(
                         Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_close))
                     }
                 },
-                status = step?.let { { StatusPill(it, StatusKind.Neutral) } },
+                // The step, and under it the connection banner whenever something needs fixing
+                // (#97): a flow on the watch is the one place a dropped link matters most.
+                status = if (step == null && banner == null) null else ({
+                    Column(verticalArrangement = Arrangement.spacedBy(spacing.s)) {
+                        if (step != null) StatusPill(step, StatusKind.Neutral)
+                        ShellBanner(banner = banner)
+                    }
+                }),
             )
         },
         bottomBar = {

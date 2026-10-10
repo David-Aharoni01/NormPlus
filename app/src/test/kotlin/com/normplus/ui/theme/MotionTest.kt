@@ -27,6 +27,12 @@ class MotionTest {
     }
 
     @Test
+    fun backIsACutWhenAnimationsAreRemoved() {
+        assertEquals(ExitTransition.None, NormMotion.backPreviewExit(animationsRemoved = true))
+        assertNotEquals(ExitTransition.None, NormMotion.backPreviewExit(animationsRemoved = false))
+    }
+
+    @Test
     fun sharedAxisAnimatesOtherwise() {
         val t = NormMotion.sharedAxisX(forward = false, animationsRemoved = false, density, LayoutDirection.Rtl)
         assertNotEquals(EnterTransition.None, t.targetContentEnter)

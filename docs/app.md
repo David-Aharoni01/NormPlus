@@ -56,6 +56,7 @@ data/                 Data: Room DB + DataStore prefs
 domain/               Domain: Business logic, use cases, models
 notification/         Infrastructure: System notification interception + junk filter
 call/                 Infrastructure: Phone-call detection (PHONE_STATE) + watch call-control
+status/               The shared watch status: link, battery, sync, blockers and their fixes (#97)
 ui/                   Presentation: Compose screens + ViewModels
 di/                   Dependency injection (Hilt)
 ```
@@ -119,7 +120,7 @@ not evidence that encryption failed.
 
 **Warm-connection via `BleService` (the "snappy reconnect" fix) — IMPLEMENTED (pending on-device verification):**
 The cold-start penalty only applies when the BLE link has gone fully idle. The app now **holds the GATT connection alive** in the foreground `BleService`, so a brief drop reconnects on a *warm* SMP state. What was built:
-1. **`BleService` hardened** — typed foreground start via `ServiceCompat.startForeground(…, FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)` (closes the Android 12+/14 type gap), `START_STICKY`, and a "Disconnect" notification action (`ACTION_STOP`) for a clean user-initiated stop. It owns `BleManager`'s connection for the app/process lifetime.
+1. **`BleService` hardened** — typed foreground start via `ServiceCompat.startForeground(…, FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)` (closes the Android 12+/14 type gap), `START_STICKY`, and a "Stop" notification action (`ACTION_STOP`) for a clean user-initiated stop. It owns `BleManager`'s connection for the app/process lifetime.
 2. **Always-on re-kick** — after `BleManager` exhausts its retry budget (→ `Disconnected`), the service waits `REKICK_DELAY_MS` (30s) and starts a fresh connect cycle, so the watch re-attaches on its own when back in range. Suppressed after a user stop (`userStopped`).
 3. **Keep-alive** — a conservative periodic remote-RSSI read while `Ready` (`KEEPALIVE_INTERVAL_MS`, 90s), which exercises the radio without touching the command queue (can't fail the link). Relies primarily on the watch's connection supervision; tune/disable after on-device verification.
 4. **Warm reconnect in `BleManager`** — tracks `reachedReady`; a drop from an established (encrypted) link reconnects after only `WARM_RECONNECT_DELAY_MS` (250ms) on the still-warm SMP state, instead of the 1–1.5s *spaced* cold-retry path. A warm attempt that fails to reach `Ready` degrades to the cold path automatically.
@@ -140,7 +141,7 @@ the service itself running, so the user is never silently disconnected:
 | Process killed (memory / OEM optimiser) | `START_STICKY` + `onStartCommand` now resumes from DataStore on a **null intent** |
 | Process killed *and* not restarted | `ble/ConnectionWatchdog.kt` — 15-min `AlarmManager` (`setAndAllowWhileIdle`) tick that restarts the service / re-kicks the connect |
 | Doze / battery optimisation | in-app prompt (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, shown only when `isIgnoringBatteryOptimizations` is false; dismissal remembered in DataStore) |
-| Permission revoked, app background-restricted | surfaced in the FGS notification *and* the Settings → **Connection health** card, with one-tap fixes |
+| Permission revoked, app background-restricted | surfaced in the FGS notification, the app's banner on every screen (#97) *and* the Settings → **Connection health** card, with one-tap fixes |
 
 Design rules to preserve:
 - **All connect requests funnel through `BleService.requestConnect` → `BleManager.connect`** (mutex +
@@ -365,8 +366,9 @@ ui/
   theme/        the theme: NormPlusTheme, colour roles, type, shapes, spacing, motion, the glow
   components/   the shared components every screen is built from (below)
   legacy/       DEPRECATED: what the pre-redesign screens still use; deleted with the last one
-  screens/      one package per screen, each rebuilt by its own issue (#97-#107)
-  navigation/   AppNavGraph
+  screens/      one package per screen, each rebuilt by its own issue (#98-#107)
+  shell/        the app shell (#97): NormPlusApp, the tabs, the status line and banner, the fixes
+  navigation/   the routes (Destinations) and the app's graph (AppNavGraph)
 ```
 
 #### The theme (`ui/theme/`)
@@ -437,6 +439,8 @@ tabular figures.
 | `LargeTitleHeader` | Every screen's head: Material's large top app bar with a big bold title (collapsing on scroll), actions, Back or Close, and the status slot under the title |
 | `StatusPill`, `StatusKind` | The quiet line about the watch under the title: fine (green), charging, syncing (violet), offline ("as of"), neutral (a flow's step) |
 | `ConnectionBanner`, `BannerTone` | The pill grown into a full-width rounded banner: the state and its one fix. Working (violet tint), Notice (raised), NeedsFixing (amber fill), Failed (red fill) |
+| `ShellStatus`, `PillContent`, `BannerContent`, `LocalShellStatus`, `ShellStatusSlot`, `ShellBanner` | The status the shell resolved (#97), provided to every screen: the slot prints the banner when there is one, the pill otherwise |
+| `ScreenScaffold` | A screen below a tab (#97): the header with Back, the title and `ShellStatusSlot`, collapsing on scroll; the content's padding |
 | `NavigationCapsule`, `NavigationCapsuleDefaults` | The floating rounded navigation bar (Material `NavigationBar` semantics, 48 dp items): the selected tab violet on its tinted pill |
 | `PillButton`, `PillTone`, `pillColors` | Full-round buttons: Primary (violet), Tonal (raised, violet words), Neutral, Danger, Quiet |
 | `NormCard` | The rounded card with its hairline every card uses |
@@ -448,11 +452,174 @@ tabular figures.
 | `FixItCard`, `Notice`, `NoticeTone` | A blocker with its one-tap fix (amber); a failure (red), with Details |
 | `BarChart`, `ChartBar` | One bar per record (half hour or day): violet, goal days green, a goal line, heart-rate ranges with an average tick, single readings; gaps empty, zeros as stubs |
 | `SleepStackChart`, `SleepNight`, `SleepStageBand`, `StageSpan`, `SleepStage`, `SleepLegend` | Sleep stacked by stage per night; a night as a stage band with a lane per stage |
-| `FlowScaffold` | A full-screen flow (first run, calibration, firmware): Close, the title, the step pill, pill actions along the bottom |
+| `FlowScaffold` | A full-screen flow (first run, calibration, firmware): Close, the title, the step pill and the banner under it, pill actions along the bottom |
 | `WatchDial`, `DialHand`, `WatchScreen`, `rememberWatchTime` | The signature: the watch drawn live, its hands at the time (no second hand), sweeping; a hand highlighted and a twelve mark for calibration (#105); every screen's preview |
 | `DialPager`, `PageDots`, `rememberDialPagerState`, `moveDialTo` | The Watch tab's hero: the watch's screens in their order (`WatchScreen.inWatchOrder`), neighbours peeking, the name, page dots |
 | `WatchScreenThumbnail` | A screen's round thumbnail with its place in the order, the selected one ringed in violet (#103) |
 | `countText`, `durationText`, `rememberClockFormatter`, `dateLineText` | How numbers, durations, clock times and dates print, the same everywhere |
+
+#### The app shell (#97)
+
+What every screen sits in. The shell owns `MainActivity`, `ui/navigation/`, `ui/shell/`,
+`status/` and `strings_shell.xml`.
+
+- **`MainActivity`**: edge-to-edge, both system bars transparent over the ground, their icons
+  following the system's dark setting as the theme does (`SystemBarStyle.auto`: light icons on
+  the dark ground, dark on the light one). It starts the connection service when the app is
+  opened (not on a rotation or a theme change), calls the first run's `LaunchPermissions`
+  (below), and shows `NormPlusApp`.
+- **`ui/shell/NormPlusApp`**: the app's graph, starting at the first run when no watch is saved
+  and at Today otherwise. It provides `LocalWatchStatus` (the facts) and `LocalShellStatus` (the
+  pill and the banner, worded, with their fixes) to every screen, and samples the system again
+  whenever the app comes to the front.
+- **The head of every screen** is `LargeTitleHeader`: a large bold title (collapsing to a small
+  one as the content scrolls) with the watch's status under it. All is well: the **status
+  pill**. In any state but Ready, or with any blocker: the **banner** in the pill's place,
+  full width, in its state colour, with its one fix (`ShellStatusSlot`; a short crossfade
+  between the two, a cut with Remove animations).
+- **The tabs** (`ui/shell/TabsShell.kt`, `TabsScaffold`): Today · History · Watch. One header
+  with the tab's title (and Sync at its end on Today); the tab's content, running the full
+  height of the screen and scrolling under the header and the floating **navigation capsule**. The header
+  and the capsule stay put when the tab changes; only the content fades through. Each tab keeps
+  its state and its header's collapse; Back from History or Watch returns to Today, and Back
+  from Today leaves the app.
+- **Screens below a tab** are drawn full screen over the tabs with `ScreenScaffold` (the header
+  with Back); **flows** (first run, calibration, firmware) use `FlowScaffold` (the header with
+  Close, the step's pill, and the banner under it when there is one). Both read
+  `LocalShellStatus`, so no screen has to remember to print it. The first run has neither pill
+  nor banner: the connection is its own business there.
+- **Motion:** between tabs, fade-through; going to a screen, a cut; going back, Material's
+  predictive back preview (`NormMotion.backPreviewExit`: the screen shrinks toward 90 % as the
+  back gesture is drawn, then fades over the one beneath). All of it a cut with Remove
+  animations. Predictive back is on (`enableOnBackInvokedCallback`), so the system draws
+  back-to-home too.
+- **The pill** (`statusPill`): "Norm 2 · 82% · synced 14:32", green with a tick, while
+  connected (a bolt while charging); "Reading sport records · 412 of 922", violet with the
+  sending arc, while a sync runs; "Norm 2 · synced 14:32", grey with the link off, while not
+  connected (the battery is only shown live; on a screen the banner stands in its place then).
+  A sync on an earlier day prints its date; none yet, "not synced yet".
+- **The banner** (`StatusWords.banner`) names one thing and its one fix, in this order: a
+  blocker that stops the link (the Bluetooth permission, the service stopped from its
+  notification, Bluetooth off, background restricted); then the connection in any state but
+  Ready (Scanning, Connecting, Setting up, Reconnecting with the attempt, Disconnected with
+  Connect; after three failed attempts, "Turning Bluetooth off and on usually helps" with a way
+  to Bluetooth settings); then battery optimisation (unless the person said "Not now") and
+  notifications blocked. Under way it is violet (Working), a plain fact grey (Notice), a
+  blocker amber (NeedsFixing).
+- **The service notification** says what the banner says, in the same words (`StatusWords`):
+  the blocker that stops the link, the connection's state, or "Connected". Its action is Stop;
+  the banner then says "Norm+ was stopped from its notification · Start". Opening the app
+  afresh starts the service again, as it always has.
+
+#### The navigation contract (#97)
+
+Ten screen issues are built in parallel on top of the shell, so each owns exactly one entry
+composable with a fixed signature, in its own package and file. The shell's graphs call these
+and nothing else; a screen never sees the `NavController`.
+
+| Route (`ui/navigation/Destinations.kt`) | Entry composable | File | Issue | Chrome |
+|---|---|---|---|---|
+| `Destination.FirstRun` (start, no watch saved) | `FirstRunRoute(onFinished: () -> Unit, onOpenNotificationApps: () -> Unit)` | `ui/screens/firstrun/FirstRunRoute.kt` | #98 | `FlowScaffold`, no pill or banner |
+| `Destination.Today` (tab, start otherwise) | `TodayRoute(contentPadding: PaddingValues, onOpenDay: (LocalDate) -> Unit)` | `ui/screens/today/TodayRoute.kt` | #99 | the shell's |
+| `Destination.History` (tab) | `HistoryRoute(contentPadding: PaddingValues, onOpenDay: (LocalDate) -> Unit)` | `ui/screens/history/HistoryRoute.kt` | #100 | the shell's |
+| `Destination.DayDetail(epochDay: Long)` | `DayDetailRoute(date: LocalDate, onBack: () -> Unit)` | `ui/screens/daydetail/DayDetailRoute.kt` | #101 | `ScreenScaffold` |
+| `Destination.Watch` (tab) | `WatchRoute(contentPadding: PaddingValues, onOpenNotificationApps, onOpenWatchScreens, onOpenHandsCalibration, onOpenFirmwareUpdate, onOpenTechnical, onWatchForgotten)`, the callbacks each `() -> Unit` | `ui/screens/watch/WatchRoute.kt` | #102 | the shell's |
+| `Destination.WatchScreens` | `WatchScreensRoute(onBack: () -> Unit)` | `ui/screens/watchscreens/WatchScreensRoute.kt` | #103 | `ScreenScaffold` |
+| `Destination.NotificationApps` | `NotificationAppsRoute(onBack: () -> Unit)` | `ui/screens/notificationapps/NotificationAppsRoute.kt` | #104 | `ScreenScaffold` |
+| `Destination.HandsCalibration` | `HandsCalibrationRoute(onClose: () -> Unit)` | `ui/screens/calibration/HandsCalibrationRoute.kt` | #105 | `FlowScaffold` |
+| `Destination.FirmwareUpdate(customFile: String? = null)` | `FirmwareRoute(customFile: Uri?, onClose: () -> Unit)` | `ui/screens/firmware/FirmwareRoute.kt` | #106 | `FlowScaffold` |
+| `Destination.Technical` | `TechnicalRoute(onBack: () -> Unit, onUpdateFromFile: (Uri) -> Unit)` | `ui/screens/technical/TechnicalRoute.kt` | #107 | `ScreenScaffold` |
+
+- `DayDetail` takes the day as `LocalDate.toEpochDay()`; build it with `Destination.DayDetail(date)`.
+  The previous and next day are the Day detail screen's own business (shared axis X inside it),
+  not new routes.
+- `onWatchForgotten` returns to the first run with the back stack cleared; `onFinished` goes to
+  Today and drops the first run. `onUpdateFromFile` opens the firmware flow with the chosen
+  `.bin`, so the custom-file update goes through #106's deliberate steps rather than a copy of
+  them.
+- **A tab's entry** fills the whole screen under the shell's header and capsule, with no header
+  of its own (a Scaffold for a snackbar host is fine). Its content scrolls under both, so it
+  passes `contentPadding` (the header at the top; the capsule and the system navigation bar at
+  the bottom) to its list's `contentPadding`, adding its own gutter. A scrolling tab collapses
+  the header on its own (the shell connects the nested scroll); the header takes the ground's
+  colour once something scrolls beneath it. Today's Sync action and pull to refresh both call `WatchStatusSource.sync()`; the
+  hero's glow (`heroGlow()`) shows through the transparent header.
+- **A screen below a tab** draws `ScreenScaffold(title, onBack, actions, snackbarHost) { padding -> }`
+  (`ui/components/Shell.kt`) and applies `padding`; its own actions (Done on Watch screens) go in
+  `actions`. **A flow** draws `FlowScaffold`, and catches system Back with a `BackHandler` only
+  where leaving must be asked about first (an update that is sending).
+- **Every callback is safe to call twice**: the graph acts only for the screen on top, so a
+  double tap cannot open two screens or pop two.
+
+**Who edits what.** A screen issue edits its own package (`ui/screens/<package>/`: the entry
+file's body, and anything else it adds there), its own `res/values/strings_<screen>.xml`, its
+own tests (`app/src/test/kotlin/com/normplus/ui/screens/<package>/`), and the data or BLE code
+its brief needs. It does **not** edit `MainActivity`, `ui/navigation/`, `ui/shell/`, `status/`,
+`strings_shell.xml`, or another screen's package or strings. A screen that needs a new callback
+or route argument says so on its issue; the shell changes once, not ten times in parallel. A
+change to a shared component (`ui/components/`) re-records that component's goldens in the
+same commit; two issues changing the same component file will conflict, so say so on both.
+
+**The stubs** keep the app usable at every merge, and are what each issue replaces:
+Today → the old dashboard; History → the old activity history (its workout rows open nothing;
+the Workouts screens are dropped); Watch → the old settings; Notification apps → the old
+notification rules; Hands calibration, Firmware update, First run → their old screens;
+Day detail, Watch screens and Technical → a placeholder. The old files are deleted by the issue
+that replaces them:
+
+| Old files | Deleted by |
+|---|---|
+| `screens/pairing/`, and `firstrun/LaunchPermissions.kt` with `MainActivity`'s two calls to it | #98 |
+| `screens/dashboard/` | #99 |
+| `screens/activity/` (the activity history, and the now unreachable `WorkoutDetailScreen` and its ViewModel) | #100 |
+| `screens/settings/WatchSettingsScreen.kt`, `WatchSettingsViewModel.kt`, `ConnectionHealthSection.kt`, `ConnectionHealthViewModel.kt` | #102 |
+| `screens/settings/NotificationRulesScreen.kt`, `NotificationRulesViewModel.kt` | #104 |
+| `screens/calibration/HandsCalibrationScreen.kt` (its ViewModel may stay) | #105 |
+| `screens/firmware/FirmwareScreen.kt` (its ViewModel may stay; the custom-file part goes to #107) | #106 |
+| `ui/legacy/` | whichever issue deletes the last old screen |
+
+**Permissions.** The request `MainActivity` made at launch (everything at once) now lives in
+`ui/screens/firstrun/LaunchPermissions.kt`, behind `requestMissing()`, which the activity calls
+on opening. It is #98's: the first run asks for each permission at the step that needs it and
+replaces it.
+
+#### The shared status source (`status/`, #97)
+
+One place holds what the app knows about the watch; the banner, the status pill, the service
+notification and every screen read the same value, and nobody else samples the system.
+
+- **`WatchStatusSource`** (a Hilt singleton; inject it in a ViewModel):
+  - `status: StateFlow<WatchStatus>`;
+  - `sync(): Boolean` starts the sync (one at a time, only while connected; it runs app-wide, so
+    it outlives the screen that started it), and `status.sync` shows its progress and outcome;
+  - `refresh()` samples the system facts again (the shell does it on every return to the front;
+    `rememberStatusFixes()` after every fix); `onAppVisible()`; `refreshBattery()`;
+  - `dismissBatteryOptimisation()`: "Not now" to the battery prompt (it stays a fix-it, it
+    leaves the banner);
+  - the permission lists `BLUETOOTH_PERMISSIONS`, `CALL_PERMISSIONS`, `NOTIFICATION_PERMISSIONS`.
+- **`WatchStatus`**:
+  - `link: Link`: `NoWatch`, `Disconnected`, `Scanning`, `Connecting`, `SettingUp`,
+    `Reconnecting(attempt)` (failed attempts so far; 0 is a dropped link picked up at once; a
+    reconnect stays Reconnecting through its own Connecting and Setting up), `Ready`;
+  - `battery: WatchBattery?` (`percent`, `charging`, `readAtEpochMs`; the last reading, kept
+    after the link drops), read on every connection, after every sync, and on coming to the
+    front when older than 15 minutes;
+  - `lastSyncEpochMs` (null: never), and `sync: SyncState` (`Idle`; `Running(stage, done, total)`
+    with `SyncStage` Counting, Sport, HeartRate, Sleep; `Finished(atEpochMs, problems)`, each
+    `SyncProblem` with its stage and, for a stream that stopped short, `received` of `expected`);
+  - `blockers: List<Blocker>`, most severe first, and `dismissed`.
+- **`Blocker`**, each with its one `Fix`: `BluetoothPermissionMissing`, `ServiceStopped`,
+  `BluetoothOff`, `BackgroundRestricted`, `BatteryOptimisationOn`, `NotificationsBlocked` (in the
+  banner); `NotificationAccessOff`, `CallsNotAllowed` (fix-its for Watch, Notification apps and
+  the first run, never in the banner).
+- **In a composable**: `LocalWatchStatus.current`; `rememberStatusFixes()` returns
+  `(Fix) -> Unit`, which opens Android's own dialog or settings page for each fix (or starts the
+  service) and samples the status again afterwards.
+- **Words**: `StatusWords` chooses them, `strings_shell.xml` holds them. A fix-it card is
+  `FixItCard(title = stringResource(StatusWords.title(b)), reason = stringResource(StatusWords.reason(b)),
+  actionLabel = stringResource(StatusWords.fixLabel(b)), onAction = { fixes(b.fix) })`.
+- It never throws: a battery reply that makes no sense is logged with its bytes and the last
+  good reading kept; a failed sync ends as `Finished` with its problems.
 
 #### Strings
 
@@ -505,7 +672,6 @@ The old screens (`screens/`, until each is rebuilt) still compile against `ui/le
 colour names now resolve to the theme's roles, so they show in the new palette. A rebuilt
 screen imports nothing from `legacy`; the package is deleted with the last old screen.
 
-Navigation graph: `ui/navigation/AppNavGraph.kt`.
 
 ## Verified on the watch
 

@@ -1,18 +1,16 @@
 package com.normplus.ui.screens.settings
 
-import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.PowerManager
 import android.provider.Settings
-import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.normplus.ble.BleConnectionState
-import com.normplus.ble.BleManager
 import com.normplus.ble.BleService
 import com.normplus.data.preferences.WatchPreferences
+import com.normplus.status.Blocker
+import com.normplus.status.Link
+import com.normplus.status.WatchStatusSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,7 +19,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -30,9 +27,8 @@ import javax.inject.Inject
  * restricted in the background, no battery-optimisation exemption) rather than a single
  * "disconnected" — a silent disconnect the user can't explain is the problem this screen exists for.
  *
- * System-level facts (battery-optimisation exemption, background restriction, permissions) are not
- * observable as flows, so they are sampled by [refresh]; the UI calls it on entry and again after
- * returning from any system dialog.
+ * Every fact comes from [WatchStatusSource] (#97), which samples the system for the whole app;
+ * [refresh] asks it to sample again (on entry, and after returning from any system dialog).
  */
 data class ConnectionHealthUiState(
     val serviceRunning: Boolean = false,
@@ -57,7 +53,7 @@ data class ConnectionHealthUiState(
 @HiltViewModel
 class ConnectionHealthViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val bleManager: BleManager,
+    private val statusSource: WatchStatusSource,
     private val watchPreferences: WatchPreferences,
 ) : ViewModel() {
 
@@ -65,8 +61,21 @@ class ConnectionHealthViewModel @Inject constructor(
     val state: StateFlow<ConnectionHealthUiState> = _state.asStateFlow()
 
     init {
-        bleManager.connectionState
-            .onEach { s -> _state.update { it.copy(connectionLabel = label(s), connected = s.isConnected) } }
+        statusSource.status
+            .onEach { s ->
+                _state.update {
+                    it.copy(
+                        connectionLabel = label(s.link),
+                        connected = s.isReady,
+                        bluetoothOn = Blocker.BluetoothOff !in s.blockers,
+                        hasBlePermission = Blocker.BluetoothPermissionMissing !in s.blockers,
+                        notificationsEnabled = Blocker.NotificationsBlocked !in s.blockers,
+                        backgroundRestricted = Blocker.BackgroundRestricted in s.blockers,
+                        ignoringBatteryOptimizations = Blocker.BatteryOptimisationOn !in s.blockers,
+                        batteryPromptDismissed = Blocker.BatteryOptimisationOn in s.dismissed,
+                    )
+                }
+            }
             .launchIn(viewModelScope)
         BleService.isRunning
             .onEach { running -> _state.update { it.copy(serviceRunning = running) } }
@@ -77,34 +86,16 @@ class ConnectionHealthViewModel @Inject constructor(
         watchPreferences.autoStartEnabled
             .onEach { enabled -> _state.update { it.copy(autoStartEnabled = enabled) } }
             .launchIn(viewModelScope)
-        watchPreferences.batteryPromptDismissed
-            .onEach { dismissed -> _state.update { it.copy(batteryPromptDismissed = dismissed) } }
-            .launchIn(viewModelScope)
         refresh()
     }
 
     /** Re-sample the system-level facts (call on screen entry and after any system dialog). */
-    fun refresh() {
-        val power = context.getSystemService(PowerManager::class.java)
-        val activity = context.getSystemService(ActivityManager::class.java)
-        _state.update {
-            it.copy(
-                bluetoothOn = BleService.isBluetoothOn(context),
-                hasBlePermission = BleService.hasBleConnectPermission(context),
-                notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled(),
-                backgroundRestricted = activity?.isBackgroundRestricted ?: false,
-                ignoringBatteryOptimizations =
-                    power?.isIgnoringBatteryOptimizations(context.packageName) ?: true,
-            )
-        }
-    }
+    fun refresh() = statusSource.refresh()
 
-    /** Explicit user intent — also clears a previous "Disconnect" so auto-start is armed again. */
+    /** Explicit user intent — also clears a previous "Stop" so auto-start is armed again. */
     fun startService() = BleService.start(context)
 
-    fun dismissBatteryPrompt() {
-        viewModelScope.launch { watchPreferences.setBatteryPromptDismissed(true) }
-    }
+    fun dismissBatteryPrompt() = statusSource.dismissBatteryOptimisation()
 
     /**
      * System dialog that asks the user to exempt us from Doze/battery optimisation. The exemption
@@ -124,13 +115,12 @@ class ConnectionHealthViewModel @Inject constructor(
 
     fun bluetoothSettingsIntent(): Intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
 
-    private fun label(state: BleConnectionState): String = when (state) {
-        is BleConnectionState.Ready -> "Connected to ${state.deviceName}"
-        is BleConnectionState.Connecting -> "Connecting…"
-        is BleConnectionState.Discovering -> "Setting up…"
-        is BleConnectionState.Scanning -> "Scanning…"
-        is BleConnectionState.Error ->
-            if (state.retryCount > 0) "Reconnecting (attempt ${state.retryCount})" else state.message
-        is BleConnectionState.Disconnected -> "Disconnected"
+    private fun label(link: Link): String = when (link) {
+        Link.Ready -> "Connected"
+        Link.Connecting -> "Connecting…"
+        Link.SettingUp -> "Setting up…"
+        Link.Scanning -> "Scanning…"
+        is Link.Reconnecting -> if (link.attempt > 0) "Reconnecting (attempt ${link.attempt})" else "Reconnecting…"
+        Link.Disconnected, Link.NoWatch -> "Disconnected"
     }
 }
