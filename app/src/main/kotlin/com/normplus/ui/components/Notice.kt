@@ -1,6 +1,8 @@
 package com.normplus.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +42,7 @@ enum class NoticeTone {
  * matters, and the one pill action that deals with it, with an optional quieter second one.
  * [FixItCard] is the amber kind every fix-it on Watch and in first run uses.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun Notice(
     title: String,
@@ -91,10 +94,12 @@ fun Notice(
                 }
             }
             if (actionLabel != null && onAction != null) {
-                Row(
+                // A flow row: two long labels at a large font wrap onto a second line rather
+                // than cutting the action short (#98); when they fit it is the same single row.
+                FlowRow(
                     Modifier.fillMaxWidth().padding(top = spacing.m, end = spacing.s),
                     horizontalArrangement = Arrangement.spacedBy(spacing.s, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(spacing.xs),
                 ) {
                     if (secondaryLabel != null && onSecondary != null) {
                         PillButton(

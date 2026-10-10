@@ -18,7 +18,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.normplus.ble.BleService
 import com.normplus.data.preferences.WatchPreferences
-import com.normplus.ui.screens.firstrun.LaunchPermissions
 import com.normplus.ui.shell.NormPlusApp
 import com.normplus.ui.theme.NormPlusTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -26,15 +25,13 @@ import javax.inject.Inject
 
 /**
  * The one activity (#97): edge-to-edge, the connection service started on opening, and
- * [NormPlusApp]. The first run owns the permission request ([LaunchPermissions], #98).
+ * [NormPlusApp]. Nothing is asked at launch: the first run asks for each permission at the
+ * step that needs it (#98), and the fix-its ask for anything skipped there.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var watchPreferences: WatchPreferences
-
-    // Registered as a property: a launcher must exist before the activity starts.
-    private val launchPermissions = LaunchPermissions(this) { BleService.start(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Edge-to-edge, both bars transparent over the ground. The ground follows the system's
@@ -48,11 +45,10 @@ class MainActivity : ComponentActivity() {
 
         // Opening the app is the explicit intent that (re)starts the always-on connection, as it
         // always was; Nearby devices is the only permission the service needs. A configuration
-        // change (rotation, dark mode) is not an opening: it neither restarts a service stopped
-        // from its notification nor asks for permissions again.
+        // change (rotation, dark mode) is not an opening: it does not restart a service stopped
+        // from its notification. Without Nearby devices the first run starts it once allowed.
         if (savedInstanceState == null) {
             if (BleService.hasBleConnectPermission(this)) BleService.start(this)
-            launchPermissions.requestMissing()
         }
 
         setContent {
