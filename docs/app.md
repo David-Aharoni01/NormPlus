@@ -352,16 +352,17 @@ and `runCatching` around the fire-and-forget write so a link flap can't crash th
 
 ### UI Layer (`ui/`)
 
-Jetpack Compose + Material 3, in the **Day Sheet** world (#92; the brief is on #95, the
-theme decisions on #96): a tear-off block calendar. Today is the top sheet, its steps set
-huge like the date; the facts of the day are its almanac lines; a goal day prints in
-calendar red. Material 3 supplies the navigation, the components and system Back; the world
-supplies type, palette, density and that one signature move. Each screen has a ViewModel that
-calls `BleManager` directly or a use case.
+Jetpack Compose + Material 3, in the **Dark Dial** world (#92; the direction contract is in
+`.impeccable/surfaces/app-src-main-kotlin-com-normplus-ui.md`, the screen structure in the
+brief on #95): a dark room with the watch in it. A near-black ground with one soft violet
+glow behind each screen's hero, the day's numbers on rounded cards, big bold titles, pill
+buttons, and the watch itself drawn live on its own tab. Material 3 supplies the navigation,
+the components and system Back; the world supplies type, palette, density and that one
+signature move. Each screen has a ViewModel that calls `BleManager` directly or a use case.
 
 ```
 ui/
-  theme/        the theme: NormPlusTheme, colour roles, type, shapes, spacing, motion
+  theme/        the theme: NormPlusTheme, colour roles, type, shapes, spacing, motion, the glow
   components/   the shared components every screen is built from (below)
   legacy/       DEPRECATED: what the pre-redesign screens still use; deleted with the last one
   screens/      one package per screen, each rebuilt by its own issue (#97-#107)
@@ -370,72 +371,87 @@ ui/
 
 #### The theme (`ui/theme/`)
 
-`NormPlusTheme { }` wraps the app (MainActivity). Light and dark follow the system; there is
-no Dynamic Color. Read everything from it:
+`NormPlusTheme { }` wraps the app (MainActivity). Dark first, with a designed light scheme;
+both follow the system. There is no Dynamic Color. Read everything from it:
 
 | What | Where |
 |---|---|
-| Material colour roles (primary = the ink-blue for filled buttons, surface = sheet white, background = the newsprint ground, error = the failure red) | `MaterialTheme.colorScheme` |
-| The Day Sheet's own colours: `plate` / `onPlate` (the shell and the one reversed plate), `sheet`, `sheetEdge`, `sheetBelow`, `redLetter`, `needsFixing` (amber), the chart and sleep-stage inks | `NormPlusTheme.colors` |
-| Material type roles, on Roboto Flex (display roles in the condensed heavy cut) | `MaterialTheme.typography` |
-| `numeral`, `numeralMedium`, `numeralSmall` (the condensed date figures), `dateLine` (tracked capitals), `almanacLabel` / `almanacValue`, `status`, `chartLabel` | `NormPlusTheme.type` |
-| Spacing and sizes: `gutter` (16 dp side margin), `sheetPadding`, `s`/`m`/`l`/`xl`…, `touchTarget` (48 dp), `hairline`, `icon` | `NormPlusTheme.spacing` |
-| Material shapes (tightened: paper is cut square), and `sheet`, `plate`, `notice`, `bar` | `MaterialTheme.shapes`, `NormPlusTheme.shapes` |
-| Shared axis X between days, fade-through between tabs; `NormPlusTheme.animationsRemoved` | `NormMotion` |
+| Material colour roles: primary = signal violet (selection, actions, progress), primaryContainer / secondaryContainer = the violet tint selection sits on, background = surface = the ground, surfaceContainer = a card, surfaceContainerHigh = raised, tertiary = the "fine" green, error | `MaterialTheme.colorScheme` |
+| Dark Dial's own colours: `card`, `cardHairline`, `raised`, `glow`; `fine` / `fineContainer` (green: fine, goal reached); `fix…` (amber: fix-its and their banner); `failBanner`; the chart and sleep-stage inks; the dial's (`dialDisplay`, `dialBezel`, `dialRing`, `dialHand`, `dialInk`, `dialAccent`) | `NormPlusTheme.colors` |
+| Material type roles, on Roboto Flex (headlines and display roles in the heavy weights) | `MaterialTheme.typography` |
+| `screenTitle`, `heroFigure`, `tileFigure`, `figureUnit`, `cardTitle`, `sectionTitle`, `pill`, `chartLabel`, `dialText` | `NormPlusTheme.type` |
+| Spacing and sizes: `gutter` (16 dp side margin), `cardPadding`, `s`/`m`/`l`/`xl`…, `touchTarget` (48 dp), `hairline`, `progressBar`, `icon`, `capsuleHeight` | `NormPlusTheme.spacing` |
+| Material shapes (cards 20 dp, dialogs 28 dp, chips full pills), and `hero`, `card`, `tile`, `banner`, `pill`, `barCorner` | `MaterialTheme.shapes`, `NormPlusTheme.shapes` |
+| Fade-through between tabs, shared axis X between days, the hands' sweep, the dial's pager, a progress bar filling; `NormPlusTheme.animationsRemoved` | `NormMotion` |
+| The one glow behind a screen's hero | `Modifier.heroGlow()` |
+
+Every text pair passes 4.5:1 (the figures are noted in `Color.kt`). The watch's display is a
+black AMOLED in both schemes, so the dial draws the same object in light and dark; only its
+violet ring follows the scheme.
 
 Roboto Flex is bundled (`res/font/roboto_flex.ttf`, the variable font from `google/fonts`,
-SIL OFL 1.1, licence in `assets/licenses/roboto_flex_OFL.txt`); its width, weight, optical
-size and figure-height axes make both cuts. Every style asks for tabular figures.
+SIL OFL 1.1, licence in `assets/licenses/roboto_flex_OFL.txt`); its weight, grade and
+optical-size axes make the bold display cuts and the plain text cut. Every style asks for
+tabular figures.
 
 **Rules for every screen:**
 - **No colour, size or font is written in a screen.** No `Color(…)`, no `Color.White`, no
   literal `dp`/`sp`, no `FontFamily`: roles from the table above, or a component. If a screen
   needs something the theme lacks, add it to the theme (or a component) in the same change,
   named for its job.
-- **Calendar red is the red-letter colour only**: the goal-met numeral, "GOAL REACHED", a goal
-  day's bar. Never decoration, never an error. Every red numeral comes with the words and a
-  TalkBack sentence (`DayFigure`, `SheetEdge` and `GoalReachedLabel` do it).
-- **One reversed plate per screen** (`Plate`): Today's backing, the watch card on Watch, the
-  confirm step of the firmware flow. Never two.
-- **Errors are an icon plus words in a container** (`Notice`, `StateMark(NotSent)`,
-  `ConnectionBanner(Failed)`), never a bare red figure.
-- **A figure the watch has not reported is absent, never zero**: `DayFigure(steps = null)`,
-  `AlmanacEntry(absent = true)`, a `null` bar.
-- **48 dp touch targets**, at least (Material buttons, list items and icon buttons already
-  are; anything custom uses `NormPlusTheme.spacing.touchTarget`).
+- **Violet is for selection, actions, progress and the dial's ring.** Never decoration. No
+  colour per metric: tiles are uniform cards, the figures are the colour.
+- **State colours always come with an icon and words**: green "fine" and "Goal reached"
+  (`StatusPill`, `GoalReachedChip`, a goal day's bar with its row's words), amber fix-its
+  (`FixItCard`, `ConnectionBanner(NeedsFixing)`), red errors (`Notice(Failed)`,
+  `StateMark(NotSent)`, `ConnectionBanner(Failed)`). Never a bare coloured figure.
+- **One glow per screen**, behind its hero (`heroGlow()`): Today's steps card, Watch's dial,
+  calibration's dial. Nothing else glows.
+- **A figure the watch has not reported is absent, never zero**: `StepsHeroCard(steps = null)`,
+  `MetricTile(value = null, absentText = …)`, a `null` bar.
+- **Every watch preview is our own drawing** (`WatchDial`, `WatchScreen`): an icon and a
+  label on the black round, never the watch's artwork.
+- **48 dp touch targets**, at least (Material buttons, list items, navigation items and icon
+  buttons already are; `PillButton` is 48 dp tall; anything custom uses
+  `NormPlusTheme.spacing.touchTarget`).
 - **Edge-to-edge**: the activity draws behind the system bars; every screen applies the
-  insets (Scaffold's `innerPadding`, `navigationBarsPadding`, IME insets on text fields). The
-  shell is ink-blue, so the status bar's icons are light (#97 sets `SystemBarStyle.dark`).
+  insets (`LargeTitleHeader` takes the status bar's, `NavigationCapsule` the navigation
+  bar's; content under the capsule leaves `NavigationCapsuleDefaults.contentPadding`; IME
+  insets on text fields). The ground follows the scheme, so the system bars' icons do too
+  (`SystemBarStyle.auto`; `NormPlusTheme.isDark` says which).
 - **RTL-safe**: `start`/`end`, never `left`/`right`; `AutoMirrored` icons for anything with a
-  direction; `placeRelative` in custom layouts. The charts and the progress line mirror
-  themselves. Labels in any script keep their own direction (the notification-app list).
+  direction; `placeRelative` in custom layouts. The charts, the progress bar and the grid
+  mirror themselves. Labels in any script keep their own direction (the notification-app list).
 - **TalkBack**: every control and icon is labelled or marked decorative; a composite reads as
-  one sentence (`clearAndSetSemantics { contentDescription = … }`); headings are `heading()`;
-  changing state is a polite live region (the marks and banners are already).
+  one sentence (`clearAndSetSemantics { contentDescription = … }`: the hero card, tiles, day
+  rows, the dial); headings are `heading()`; changing state is a polite live region (the
+  pill, marks and banners are already).
 - **Remove animations**: motion goes through `NormMotion`, which is a cut when
-  `NormPlusTheme.animationsRemoved`; nothing else moves.
+  `NormPlusTheme.animationsRemoved`; nothing else moves. The sending arc stops turning but
+  stays an arc.
 
 #### The shared components (`ui/components/`)
 
 | Component | For |
 |---|---|
-| `DaySheet` | A day's sheet: square top, one perforated hairline, no texture/curl/shadow/tear. Prints in the page's colours even on a plate |
-| `SheetEdge` | The edge of the sheet beneath (yesterday's under Today's), red on a goal day, opens that day |
-| `DateLine` | "THURSDAY · 9 OCTOBER", tracked capitals; TalkBack hears the plain date |
-| `DateNumeral` | A figure in the condensed heavy cut, red in its red-letter state, shrinks to fit (40,000 at font scale 1.3) |
-| `DayFigure` | The sheet's head: the steps numeral, "of 8,000 steps", the progress line, "GOAL REACHED"; one TalkBack sentence |
-| `GoalReachedLabel`, `ProgressLine` | The red-letter words; the one thin progress line |
-| `Almanac`, `AlmanacEntry` | The almanac lines: two aligned columns, one TalkBack stop each |
-| `Plate` | The one reversed ink-blue plate; Material components inside come out reversed |
-| `SendState`, `StateMark`, `MarkGlyph` | The one set of state marks: sending, sent, not sent, waiting |
-| `SettingsSection`, `SettingRow`, `SettingsDivider` | Grouped settings, each row with its own send state, Retry, "as of", disabled reason |
-| `NormTopAppBar`, `QuietStatusLine`, `StatusMark` | The ink-blue top app bar with the quiet status line (charging, syncing) |
-| `ConnectionBanner`, `BannerTone` | The banner under the top app bar: the state and its one fix |
-| `ShellDefaults` | The navigation bar's colours |
-| `FixItCard`, `Notice`, `NoticeTone` | A blocker with its one-tap fix (amber); a failure (error red) |
-| `BarChart`, `ChartBar` | One bar per record (half hour or day), goal line, ranges with an average tick, single readings; gaps empty, zeros as stubs |
+| `LargeTitleHeader` | Every screen's head: Material's large top app bar with a big bold title (collapsing on scroll), actions, Back or Close, and the status slot under the title |
+| `StatusPill`, `StatusKind` | The quiet line about the watch under the title: fine (green), charging, syncing (violet), offline ("as of"), neutral (a flow's step) |
+| `ConnectionBanner`, `BannerTone` | The pill grown into a full-width rounded banner: the state and its one fix. Working (violet tint), Notice (raised), NeedsFixing (amber fill), Failed (red fill) |
+| `NavigationCapsule`, `NavigationCapsuleDefaults` | The floating rounded navigation bar (Material `NavigationBar` semantics, 48 dp items): the selected tab violet on its tinted pill |
+| `PillButton`, `PillTone`, `pillColors` | Full-round buttons: Primary (violet), Tonal (raised, violet words), Neutral, Danger, Quiet |
+| `NormCard` | The rounded card with its hairline every card uses |
+| `StepsHeroCard`, `HeroMetricCard`, `ProgressBar`, `GoalReachedChip` | The hero card: label, the big figure, "of 8,000 · 1,588 to go", the violet bar that turns green with "Goal reached" at the goal; one TalkBack sentence |
+| `MetricTile`, `MetricGrid`, `figure`, `durationFigure`, `FitText`, `CardTitle` | The two-column tiles (sleep, heart rate, calories, distance), figures with small units, absent figures in words; text that shrinks to fit (40,000 at font scale 1.3) |
+| `DayRow` | A row that opens a day: date badge, title, the day's figure, "Goal reached", chevron (Today's Yesterday, History's rows) |
+| `SendState`, `StateMark`, `MarkGlyph` | The one set of state marks, as tinted pills: sending, sent, not sent, waiting |
+| `SettingsSection`, `SettingRow`, `SettingsDivider` | Grouped settings on a card, each row with its own send state, Retry, "as of", disabled reason |
+| `FixItCard`, `Notice`, `NoticeTone` | A blocker with its one-tap fix (amber); a failure (red), with Details |
+| `BarChart`, `ChartBar` | One bar per record (half hour or day): violet, goal days green, a goal line, heart-rate ranges with an average tick, single readings; gaps empty, zeros as stubs |
 | `SleepStackChart`, `SleepNight`, `SleepStageBand`, `StageSpan`, `SleepStage`, `SleepLegend` | Sleep stacked by stage per night; a night as a stage band with a lane per stage |
-| `FlowScaffold` | A full-screen flow (first run, calibration, firmware): Close, the step, actions along the bottom |
+| `FlowScaffold` | A full-screen flow (first run, calibration, firmware): Close, the title, the step pill, pill actions along the bottom |
+| `WatchDial`, `DialHand`, `WatchScreen`, `rememberWatchTime` | The signature: the watch drawn live, its hands at the time (no second hand), sweeping; a hand highlighted and a twelve mark for calibration (#105); every screen's preview |
+| `DialPager`, `PageDots`, `rememberDialPagerState`, `moveDialTo` | The Watch tab's hero: the watch's screens in their order (`WatchScreen.inWatchOrder`), neighbours peeking, the name, page dots |
+| `WatchScreenThumbnail` | A screen's round thumbnail with its place in the order, the selected one ringed in violet (#103) |
 | `countText`, `durationText`, `rememberClockFormatter`, `dateLineText` | How numbers, durations, clock times and dates print, the same everywhere |
 
 #### Strings
@@ -448,7 +464,7 @@ The components' words are in `strings_components.xml`; `strings.xml` keeps the a
 #### Screenshot tests (Paparazzi)
 
 Every shared component and every rebuilt screen is rendered on the PC, without a device, in
-light, dark, and light at font scale 1.3, and compared with its golden image in
+light, dark, and dark at font scale 1.3, and compared with its golden image in
 `app/src/test/snapshots/images/` (tracked; our own renders) on **every**
 `./gradlew :app:testDebugUnitTest`. A render that drifts from its golden fails the build; the
 diff lands in `app/build/paparazzi/failures/`.
@@ -473,7 +489,8 @@ class TodaySnapshotTest(variant: Variant) {
 ```
 
 Render the screen's **stateless content** composable with a hand-made UI state, one test per
-state the issue lists (no ViewModel, no Hilt, no BLE in a snapshot). Then:
+state the issue lists (no ViewModel, no Hilt, no BLE in a snapshot). Pass the dial a fixed
+time, never `rememberWatchTime()`. Then:
 
 ```bash
 ./gradlew :app:recordPaparazziDebug --tests "com.normplus.ui.screens.today.*"   # write its goldens
