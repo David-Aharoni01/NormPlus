@@ -466,8 +466,8 @@ What every screen sits in. The shell owns `MainActivity`, `ui/navigation/`, `ui/
 - **`MainActivity`**: edge-to-edge, both system bars transparent over the ground, their icons
   following the system's dark setting as the theme does (`SystemBarStyle.auto`: light icons on
   the dark ground, dark on the light one). It starts the connection service when the app is
-  opened (not on a rotation or a theme change), calls the first run's `LaunchPermissions`
-  (below), and shows `NormPlusApp`.
+  opened (not on a rotation or a theme change) and shows `NormPlusApp`. It asks for no
+  permission: the first run does, one step at a time (#98).
 - **`ui/shell/NormPlusApp`**: the app's graph, starting at the first run when no watch is saved
   and at Today otherwise. It provides `LocalWatchStatus` (the facts) and `LocalShellStatus` (the
   pill and the banner, worded, with their fixes) to every screen, and samples the system again
@@ -578,10 +578,11 @@ that replaces them:
 | `screens/firmware/FirmwareScreen.kt` (its ViewModel may stay; the custom-file part goes to #107) | #106 |
 | `ui/legacy/` | whichever issue deletes the last old screen |
 
-**Permissions.** The request `MainActivity` made at launch (everything at once) now lives in
-`ui/screens/firstrun/LaunchPermissions.kt`, behind `requestMissing()`, which the activity calls
-on opening. It is #98's: the first run asks for each permission at the step that needs it and
-replaces it.
+**Permissions.** Nothing is asked at launch any more (#98). The first run asks for each
+permission at the step that needs it, through the shell's fixes (`rememberStatusFixes`), and
+reads whether it was granted from `WatchStatusSource`'s blockers; only Nearby devices is
+required, and anything skipped is a fix-it on Watch afterwards. The first run starts the
+connection service once Nearby devices is allowed, as the launch request did before.
 
 #### The shared status source (`status/`, #97)
 
