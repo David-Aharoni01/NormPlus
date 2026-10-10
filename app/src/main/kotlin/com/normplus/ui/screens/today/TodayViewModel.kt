@@ -63,6 +63,8 @@ data class TodayUiState(
     val heartRate: HeartReading? = null,
     val yesterday: DaySteps = DaySteps(date.minusDays(1), null),
     val nothingSynced: Boolean = false,
+    /** [steps] come from the synced records, the watch having reported no total of its own. */
+    val stepsFromRecords: Boolean = false,
     val syncing: Boolean = false,
     val canSync: Boolean = false,
     val shortfall: SyncShortfall? = null,
@@ -75,6 +77,8 @@ private data class Stored(
     val sleep: SleepSummary?,
     val heartRate: HeartReading?,
     val yesterdaySteps: Int?,
+    /** Today's steps from the synced records: Today's figure when the watch reports no total (0x57 "no data"). */
+    val todaySteps: Int? = null,
 )
 
 @HiltViewModel
@@ -103,7 +107,9 @@ class TodayViewModel @Inject constructor(
         TodayUiState(
             date = db.date,
             goal = goal,
-            steps = summary?.steps,
+            // The watch's own today total; when it reports none, the synced records stand in.
+            steps = summary?.steps ?: db.todaySteps,
+            stepsFromRecords = summary?.steps == null && db.todaySteps != null,
             calories = summary?.calories,
             distanceMeters = summary?.distanceMeters,
             activeMinutes = summary?.activeMinutes,
@@ -191,7 +197,8 @@ class TodayViewModel @Inject constructor(
                 val heart = heartRateDao.queryByRange(day.first, day.last).first().lastOrNull()
                     ?.let { HeartReading(it.bpm, it.timestampEpoch) }
                 val yesterdaySteps = sportDao.sumSteps(yesterday.first, yesterday.last)
-                Stored(today, sleep, heart, yesterdaySteps)
+                val todaySteps = sportDao.sumSteps(day.first, day.last)
+                Stored(today, sleep, heart, yesterdaySteps, todaySteps)
             }.onSuccess { stored.value = it }
                 .onFailure { e ->
                     if (e is CancellationException) throw e

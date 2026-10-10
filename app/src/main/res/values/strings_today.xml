@@ -54,4 +54,6 @@
     <string name="today_short_title">Sync stopped short</string>
     <string name="today_short_counted">%1$s of %2$s records were read. The rest are still on your watch.</string>
     <string name="today_short_body">Some records weren\'t read. They are still on your watch.</string>
+    <!-- The watch reported no today total, so the steps are summed from the synced records. -->
+    <string name="today_steps_from_records">From the records synced today</string>
 </resources>
