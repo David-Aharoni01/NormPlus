@@ -24,6 +24,7 @@ import com.normplus.notification.NotificationListenerHealth
 import com.normplus.protocol.Action
 import com.normplus.protocol.CommandCode
 import com.normplus.protocol.commands.BatteryCommand
+import com.normplus.protocol.commands.GoalCommand
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
@@ -148,7 +150,28 @@ class WatchStatusSource @Inject constructor(
         // The battery is read on every connection, as the official app reads it with every sync
         // (SyncBluetoothDataNew$1 → PBluetooth.getBatteryPower), and again after each sync here.
         scope.launch {
-            bleManager.connectionState.collect { if (it is BleConnectionState.Ready) readBattery() }
+            bleManager.connectionState.collect {
+                if (it is BleConnectionState.Ready) {
+                    readBattery()
+                    sendStepGoal()
+                }
+            }
+        }
+    }
+
+    /**
+     * The step goal Norm+ keeps is sent on every connection (#102, brief section 7.2), so the
+     * watch never drifts from it, whatever set the watch's own goal meanwhile. GoalCommand's
+     * steps payload, as Watch sends it when the goal changes.
+     */
+    private suspend fun sendStepGoal() {
+        if (!bleManager.isConnected) return
+        runCatching {
+            val goal = prefs.stepGoal.first()
+            bleManager.sendAndAwait(GoalCommand.CMD, Action.SET, GoalCommand.setStepsPayload(goal))
+        }.onFailure { e ->
+            if (e is CancellationException) throw e
+            Log.w(TAG, "step goal on connect: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 

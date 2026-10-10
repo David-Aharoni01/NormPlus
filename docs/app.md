@@ -575,9 +575,9 @@ that replaces them:
 | `screens/pairing/`, and `firstrun/LaunchPermissions.kt` with `MainActivity`'s two calls to it | #98 |
 | `screens/dashboard/` | #99 |
 | `screens/activity/` (the activity history, and the now unreachable `WorkoutDetailScreen` and its ViewModel) | #100 |
-| `screens/settings/WatchSettingsScreen.kt`, `WatchSettingsViewModel.kt`, `ConnectionHealthSection.kt`, `ConnectionHealthViewModel.kt` | #102 |
+| `screens/settings/WatchSettingsScreen.kt`, `WatchSettingsViewModel.kt`, `ConnectionHealthSection.kt`, `ConnectionHealthViewModel.kt` (deleted) | #102 |
 | `screens/settings/NotificationRulesScreen.kt`, `NotificationRulesViewModel.kt` (deleted) | #104 |
-| `screens/calibration/HandsCalibrationScreen.kt` (its ViewModel may stay) | #105 |
+| `screens/calibration/HandsCalibrationScreen.kt` (deleted; its ViewModel stays) | #105 |
 | `screens/firmware/FirmwareScreen.kt` (its ViewModel may stay; the custom-file part goes to #107) | #106 |
 | `ui/legacy/` | whichever issue deletes the last old screen |
 

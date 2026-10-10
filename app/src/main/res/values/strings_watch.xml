@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Watch (#102): the live dial, the watch card, the fix-its, the settings, Forget this watch. -->
+<resources>
+    <!-- Under the dial's screen name. -->
+    <string name="watch_dial_face_caption">The time, drawn where your hands are</string>
+    <string name="watch_dial_page_caption">Swipe through your watch\'s screens</string>
+
+    <!-- The watch card. -->
+    <string name="watch_card_name">Norm 2</string>
+    <string name="watch_card_connected">Connected</string>
+    <string name="watch_card_connecting">Connecting</string>
+    <string name="watch_card_not_connected">Not connected</string>
+    <string name="watch_card_battery">%1$d%%</string>
+    <string name="watch_card_battery_charging">%1$d%%, charging</string>
+    <string name="watch_card_synced">synced %1$s</string>
+    <string name="watch_card_never_synced">not synced yet</string>
+    <string name="watch_find">Find watch</string>
+    <string name="watch_not_now">Not now</string>
+
+    <!-- Sections. -->
+    <string name="watch_section_notifications">Notifications</string>
+    <string name="watch_section_watch">Watch</string>
+    <string name="watch_section_health">Health</string>
+    <string name="watch_section_sync">Sync</string>
+    <string name="watch_section_more">More</string>
+
+    <!-- Notifications. -->
+    <string name="watch_notification_apps">Notification apps</string>
+    <string name="watch_notification_apps_none">No apps forwarding yet</string>
+    <plurals name="watch_notification_apps_count">
+        <item quantity="one">%1$s app forwarding</item>
+        <item quantity="other">%1$s apps forwarding</item>
+    </plurals>
+    <string name="watch_kind_calls">Calls</string>
+    <string name="watch_kind_missed_calls">Missed calls</string>
+    <string name="watch_kind_sms">Messages</string>
+    <string name="watch_kind_social">Social</string>
+    <string name="watch_kind_email">Email</string>
+    <string name="watch_kind_calendar">Calendar</string>
+
+    <!-- Watch. -->
+    <string name="watch_brightness">Brightness</string>
+    <string name="watch_percent">%1$d%%</string>
+    <string name="watch_timeout">Screen timeout</string>
+    <string name="watch_seconds">%1$d seconds</string>
+    <string name="watch_raise_to_wake">Raise to wake</string>
+    <string name="watch_raise_to_wake_body">Lights the screen when you lift your wrist</string>
+    <string name="watch_dnd">Do not disturb</string>
+    <string name="watch_dnd_body">%1$s to %2$s</string>
+    <string name="watch_dnd_from">From</string>
+    <string name="watch_dnd_to">To</string>
+    <string name="watch_vibration">Vibration pattern</string>
+    <string name="watch_vibration_unknown">Unknown pattern</string>
+    <!-- VibrationCommand's patterns, in their order (0-14). -->
+    <string name="watch_vibration_0">Off</string>
+    <string name="watch_vibration_1">One long</string>
+    <string name="watch_vibration_2">One short</string>
+    <string name="watch_vibration_3">Two long</string>
+    <string name="watch_vibration_4">Two short</string>
+    <string name="watch_vibration_5">Long and short</string>
+    <string name="watch_vibration_6">Continuous long</string>
+    <string name="watch_vibration_7">Continuous short</string>
+    <string name="watch_vibration_8">Five long</string>
+    <string name="watch_vibration_9">Sound</string>
+    <string name="watch_vibration_10">Two sounds</string>
+    <string name="watch_vibration_11">Continuous sound</string>
+    <string name="watch_vibration_12">Buzz and sound</string>
+    <string name="watch_vibration_13">Continuous buzz and sound</string>
+    <string name="watch_vibration_14">Silent</string>
+    <string name="watch_screens">Watch screens</string>
+    <string name="watch_screens_body">Which screens your watch shows, and in what order</string>
+    <string name="watch_power_save">Power save</string>
+    <string name="watch_power_save_body">Fewer features, longer battery</string>
+    <string name="watch_units">Units</string>
+    <string name="watch_units_metric">Metric (km, kg)</string>
+    <string name="watch_units_imperial">Imperial (mi, lb)</string>
+
+    <!-- Health. -->
+    <string name="watch_step_goal">Step goal</string>
+    <string name="watch_steps">%1$s steps</string>
+    <string name="watch_heart_rate_monitor">Heart-rate monitor</string>
+    <string name="watch_heart_rate_monitor_body">Measures your heart rate through the day</string>
+    <string name="watch_sedentary">Sedentary reminder</string>
+    <string name="watch_sedentary_body">A nudge when you have sat still too long</string>
+    <string name="watch_goal_alert">Goal reached alert</string>
+    <string name="watch_goal_alert_body">The watch tells you when you reach your step goal</string>
+
+    <!-- Sync. -->
+    <string name="watch_delete_after_sync">Delete records from the watch after syncing</string>
+    <string name="watch_delete_after_sync_body">Each sync reads only what is new. Records stay on the watch until Norm+ has them all.</string>
+
+    <!-- More. -->
+    <string name="watch_calibrate">Calibrate hands</string>
+    <string name="watch_calibrate_body">Line the hands up when they drift</string>
+    <string name="watch_firmware">Firmware</string>
+    <string name="watch_firmware_body">Update your watch</string>
+    <string name="watch_technical">Technical</string>
+    <string name="watch_technical_body">The connection in detail, versions, updating from a file</string>
+
+    <!-- Forget this watch: Norm+ forgets it; Android's pairing stays (#102). -->
+    <string name="watch_forget">Forget this watch</string>
+    <string name="watch_forget_title">Forget this watch?</string>
+    <string name="watch_forget_body">Norm+ disconnects and goes back to setup. Your synced history stays. Android stays paired with the watch; remove that in Android\'s Bluetooth settings if you want to.</string>
+    <string name="watch_forget_bluetooth_settings">Open Bluetooth settings</string>
+    <string name="watch_forget_confirm">Forget</string>
+
+    <string name="watch_ok">OK</string>
+    <string name="watch_cancel">Cancel</string>
+</resources>
