@@ -36,17 +36,31 @@ data class CalibrationUiState(
     val isConnected: Boolean = false,
     val saving: Boolean = false,
     val done: Boolean = false,
+    /** The link was down when Save was pressed, or dropped during the sweep (#105). */
+    val saveFailed: Boolean = false,
 ) {
     val currentHand: HandMode get() = hands[stepIndex]
     val stepNumber: Int get() = stepIndex + 1
     val total: Int get() = hands.size
     val isLast: Boolean get() = stepIndex == hands.lastIndex
     val isFirst: Boolean get() = stepIndex == 0
+
+    /** What the screen shows (#105). A save under way, done or failed outranks the link. */
+    val phase: CalibrationPhase get() = when {
+        done -> CalibrationPhase.Done
+        saveFailed -> CalibrationPhase.SaveFailed
+        saving -> CalibrationPhase.Saving
+        !isConnected -> CalibrationPhase.NotConnected
+        else -> CalibrationPhase.Hand
+    }
 }
+
+/** The calibration flow's states, as the brief on #95 lists them. */
+enum class CalibrationPhase { NotConnected, Hand, Saving, Done, SaveFailed }
 
 /**
  * Drives hybrid-watch hand calibration: UNLOCK the hands on entry, let the user move each hand
- * (minute → hour → second) to 12:00 with nudge/hold-rotate, then Save = set the current time and
+ * (minute → hour) to 12:00 with nudge/hold-rotate, then Save = set the current time and
  * LOCK. LOCK is guaranteed on every exit so the hands are never left free (see [onLeave]).
  */
 @HiltViewModel
@@ -60,9 +74,14 @@ class HandsCalibrationViewModel @Inject constructor(
     private var started = false
     private var lastRotateClockwise = true
 
+    // Set when the link drops while a save is under way: its DATETIME or LOCK may then never
+    // have reached the watch (sendCommandNoResponse drops a write while not connected).
+    private var linkLostDuringSave = false
+
     init {
         viewModelScope.launch {
             bleManager.connectionState.collect { s ->
+                if (!s.isConnected && _state.value.saving) linkLostDuringSave = true
                 _state.update { it.copy(isConnected = s.isConnected) }
             }
         }
@@ -118,7 +137,8 @@ class HandsCalibrationViewModel @Inject constructor(
     /** Persist: set the watch to the real current time (drives hands from 12:00), then lock them. */
     fun save() {
         if (_state.value.saving) return
-        _state.update { it.copy(saving = true) }
+        linkLostDuringSave = !bleManager.connectionState.value.isConnected
+        _state.update { it.copy(saving = true, saveFailed = false) }
         viewModelScope.launch {
             // A single DATETIME with byte[8]=1 both sets the clock and drives the hands from their
             // current 12:00 position to that time (matches completeCalibration). Then lock them in;
@@ -129,8 +149,23 @@ class HandsCalibrationViewModel @Inject constructor(
             kotlinx.coroutines.delay(REHOME_SETTLE_MS)
             Log.i(TAG, "save: locking hands")
             sendKeep(KeepAction.LOCK)
-            _state.update { it.copy(saving = false, done = true) }
+            val failed = linkLostDuringSave || !bleManager.connectionState.value.isConnected
+            if (failed) Log.w(TAG, "save: the link was down during the save; the time may not be set")
+            _state.update { it.copy(saving = false, done = !failed, saveFailed = failed) }
         }
+    }
+
+    /**
+     * After a failed save: start over from the minute hand, arming again exactly as on entry
+     * ([onStart]: speed up, UNLOCK). The re-home is not simply resent, because the first may
+     * have reached the watch and moved the hands off twelve; lining them up again is the only
+     * safe way on.
+     */
+    fun restart() {
+        if (_state.value.saving) return
+        _state.update { it.copy(stepIndex = 0, saveFailed = false) }
+        started = false
+        onStart()
     }
 
     /**
