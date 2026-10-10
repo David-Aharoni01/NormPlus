@@ -119,9 +119,20 @@ class WatchPreferences @Inject constructor(
     private val KEY_STEP_GOAL = intPreferencesKey("step_goal")
 
     val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: DEFAULT_STEP_GOAL }
+    private val KEY_TODAY_SUMMARY = stringPreferencesKey("today_summary")
 
     suspend fun saveStepGoal(steps: Int) {
         context.dataStore.edit { it[KEY_STEP_GOAL] = steps }
+    }
+
+    /**
+     * The last reading of the watch's own today summary (0x57), encoded by
+     * `TodaySummary.encode()`, so Today shows it "as of" its time while the watch is away.
+     */
+    val todaySummary: Flow<String?> = context.dataStore.data.map { it[KEY_TODAY_SUMMARY] }
+
+    suspend fun saveTodaySummary(encoded: String) {
+        context.dataStore.edit { it[KEY_TODAY_SUMMARY] = encoded }
     }
 
     companion object {

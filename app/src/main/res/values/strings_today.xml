@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Today (#99), the first tab. See docs/app.md, "UI Layer". -->
+<resources>
+    <!-- The tiles' labels. -->
+    <string name="today_sleep">Sleep</string>
+    <string name="today_heart_rate">Heart rate</string>
+    <string name="today_calories">Calories</string>
+    <string name="today_distance">Distance</string>
+
+    <!-- Units set small beside a figure. -->
+    <string name="today_unit_bpm">bpm</string>
+    <string name="today_unit_kcal">kcal</string>
+    <string name="today_unit_km">km</string>
+    <string name="today_unit_mi">mi</string>
+
+    <!-- In place of a figure the watch has not reported. Never a zero. -->
+    <string name="today_sleep_absent">No sleep recorded</string>
+    <string name="today_heart_rate_absent">No reading yet</string>
+    <string name="today_not_reported">Not reported yet</string>
+
+    <!-- The tiles' detail lines: "deep 1 h 32 m", then "23:41–06:29", "at 14:05", "active 52 min". -->
+    <string name="today_sleep_deep">deep %1$s</string>
+    <string name="today_sleep_span">%1$s–%2$s</string>
+    <!-- Two lines, so a time range never breaks inside a time. -->
+    <string name="today_detail_join">%1$s\n%2$s</string>
+    <string name="today_heart_rate_at">at %1$s</string>
+    <!-- The watch's own summary carries the reading but not its time. -->
+    <string name="today_heart_rate_on_watch">latest on your watch</string>
+    <string name="today_active">active %1$s</string>
+
+    <!-- TalkBack reads each tile as one sentence. -->
+    <string name="today_spoken_with_detail">%1$s, %2$s, %3$s</string>
+    <string name="today_spoken">%1$s, %2$s</string>
+    <string name="today_sleep_spoken_span">from %1$s to %2$s</string>
+    <string name="today_sleep_spoken_asleep">%1$s asleep</string>
+
+    <!-- Last known values, while the watch is away or the reading is old. -->
+    <string name="today_as_of">as of %1$s</string>
+    <!-- Nothing synced and nothing read from the watch today. -->
+    <string name="today_nothing_yet">Nothing from your watch yet. Pull down to sync once it\'s connected.</string>
+
+    <!-- The Yesterday row. -->
+    <string name="today_yesterday">Yesterday</string>
+    <plurals name="today_steps">
+        <item quantity="one">%1$s step</item>
+        <item quantity="other">%1$s steps</item>
+    </plurals>
+    <string name="today_yesterday_none">No steps synced</string>
+    <string name="today_yesterday_spoken">Yesterday, %1$s, %2$s</string>
+    <string name="today_yesterday_spoken_goal">Yesterday, %1$s, %2$s, goal reached</string>
+    <string name="today_weekday_pattern" translatable="false">EEE</string>
+
+    <!-- A sync that stopped short. -->
+    <string name="today_short_title">Sync stopped short</string>
+    <string name="today_short_counted">%1$s of %2$s records were read. The rest are still on your watch.</string>
+    <string name="today_short_body">Some records weren\'t read. They are still on your watch.</string>
+</resources>
