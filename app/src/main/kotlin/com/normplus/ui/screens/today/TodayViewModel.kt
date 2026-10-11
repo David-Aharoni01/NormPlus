@@ -11,10 +11,7 @@ import com.normplus.data.db.dao.SleepDao
 import com.normplus.data.db.dao.SportDao
 import com.normplus.data.preferences.WatchPreferences
 import com.normplus.protocol.Action
-import com.normplus.protocol.CommandCode
 import com.normplus.protocol.commands.DeviceDisplayCommand
-import com.normplus.protocol.commands.DeviceVersionCommand
-import com.normplus.protocol.commands.SwitchSettingCommand
 import com.normplus.status.SyncState
 import com.normplus.status.WatchStatusSource
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -128,15 +125,13 @@ class TodayViewModel @Inject constructor(
     init {
         loadStored()
         viewModelScope.launch {
-            // On every connection: the summary, and the chores the old dashboard did on connect.
+            // On every connection: the watch's own today summary. (The connect-time chores the old
+            // dashboard did are WatchStatusSource's now, #111: they run with the app closed too.)
             bleManager.connectionState
                 .map { it is BleConnectionState.Ready }
                 .distinctUntilChanged()
                 .collect { ready ->
-                    if (ready) {
-                        readSummary()
-                        connectChores()
-                    }
+                    if (ready) readSummary()
                 }
         }
         viewModelScope.launch {
@@ -146,7 +141,6 @@ class TodayViewModel @Inject constructor(
                 if (wasSyncing && status.sync is SyncState.Finished) {
                     loadStored()
                     readSummary()
-                    connectChores() // the old dashboard ran them after every sync too
                 }
                 wasSyncing = status.isSyncing
             }
@@ -238,55 +232,6 @@ class TodayViewModel @Inject constructor(
         }
     }
 
-    /**
-     * What the old dashboard did on every connection, kept as it was (#92: no change to BLE or
-     * notification behaviour): the watch's version string for the firmware screen, and the
-     * notification kinds switched on in the watch's SwitchSetting mask, without which the
-     * watch drops every notification it is sent. Each is on its own, so one failing cannot
-     * stop the other.
-     */
-    private suspend fun connectChores() {
-        runCatching {
-            // Source: MBluetooth.smali getDeviceFunctionInfo → DeviceVersion(callback, 1, 6):
-            // payload [06] (type 6 = the full version info string).
-            val verPkt = bleManager.sendAndAwait(CommandCode.DEVICE_VERSION, Action.CHECK, byteArrayOf(6))
-            prefs.saveDeviceVersion(DeviceVersionCommand.parseVersionString(verPkt))
-        }.onFailure { e ->
-            if (e is CancellationException) throw e
-            Log.w(TAG, "reading the version failed: ${e.message}")
-        }
-
-        // OR the notification kinds into the current mask (non-destructive: every other bit,
-        // high bytes included, is kept). The first query right after connect can time out, so
-        // it is tried up to three times.
-        var current: Int? = null
-        repeat(3) {
-            if (current != null) return@repeat
-            current = runCatching {
-                SwitchSettingCommand.parse(
-                    bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.CHECK, SwitchSettingCommand.queryPayload()),
-                )
-            }.onFailure { if (it is CancellationException) throw it }.getOrNull()
-        }
-        val cur = current
-        if (cur == null) {
-            Log.w(TAG, "could not read the switch mask to enable notification kinds")
-            return
-        }
-        val wanted = cur or SwitchSettingCommand.NOTIFICATION_BITS
-        if (wanted == cur) {
-            Log.d(TAG, "notification kinds already enabled (mask=0x%08X)".format(cur))
-            return
-        }
-        runCatching {
-            bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.SET, SwitchSettingCommand.setPayload(wanted))
-        }.onSuccess {
-            Log.i(TAG, "enabled notification kinds on the watch: 0x%08X -> 0x%08X".format(cur, wanted))
-        }.onFailure { e ->
-            if (e is CancellationException) throw e
-            Log.w(TAG, "enabling notification kinds failed: ${e.message}")
-        }
-    }
 
     private fun <T> kotlinx.coroutines.flow.Flow<T>.catchAs(default: T) = catch { e ->
         Log.w(TAG, "preferences: ${e.javaClass.simpleName}: ${e.message}")
