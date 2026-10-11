@@ -103,4 +103,6 @@
     <!-- Reading the day failed. -->
     <string name="daydetail_failed_title">This day couldn\'t be read</string>
     <string name="daydetail_failed_body">Something went wrong reading the synced records.</string>
+    <!-- A day whose records came from a watch other than the current one (#113). -->
+    <string name="daydetail_other_watch">These records came from another watch, one Norm+ has since forgotten.</string>
 </resources>

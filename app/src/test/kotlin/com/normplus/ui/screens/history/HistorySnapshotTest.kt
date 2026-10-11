@@ -88,6 +88,15 @@ class HistorySnapshotTest(variant: Variant) {
     }
 
     /** Nothing in the range, older days below it. */
+    /** The days before the current watch came from a forgotten one: marked, never goal days (#113). */
+    @Test
+    fun anotherWatchsDays() = paparazzi.snapshot {
+        val all = days(40, gaps = setOf(2)) { steps(it) }.mapIndexed { i, d ->
+            d.copy(watches = setOf(if (i < 2) "4C:59:80:12:44:F1" else "4C:59:80:00:00:01")).markedFor("4C:59:80:12:44:F1")
+        }
+        Screen(state(HistoryMetric.Steps, HistoryRange.Week, all, goal = 8_000))
+    }
+
     @Test
     fun rangeWithNoData() = paparazzi.snapshot {
         val old = days(30) { steps(it) }.map { it.copy(date = it.date.minusDays(200)) }

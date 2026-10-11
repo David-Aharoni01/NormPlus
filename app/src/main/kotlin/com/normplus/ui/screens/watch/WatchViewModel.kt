@@ -4,7 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.normplus.ble.BleManager
+import com.normplus.data.db.dao.HeartRateDao
 import com.normplus.data.db.dao.NotificationRuleDao
+import com.normplus.data.db.dao.SleepDao
+import com.normplus.data.db.dao.SportDao
 import com.normplus.data.preferences.WatchPreferences
 import com.normplus.domain.model.DndSettings
 import com.normplus.domain.model.WatchSettings
@@ -49,6 +52,9 @@ class WatchViewModel @Inject constructor(
     private val bleManager: BleManager,
     private val prefs: WatchPreferences,
     rules: NotificationRuleDao,
+    private val sportDao: SportDao,
+    private val heartRateDao: HeartRateDao,
+    private val sleepDao: SleepDao,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(WatchUiState())
@@ -185,10 +191,16 @@ class WatchViewModel @Inject constructor(
     /**
      * Forget this watch (#102): Norm+ forgets the saved watch and what it kept about it, then
      * lets the link go. Android's pairing is kept (the owner's decision); the confirm step
-     * offers Android's Bluetooth settings for that. The synced history stays.
+     * offers Android's Bluetooth settings for that. The synced history stays, marked as this watch's (#113).
      */
     fun forgetWatch(onDone: () -> Unit) {
         viewModelScope.launch {
+            // The history stays, marked as this watch's (#113): claim what was synced before
+            // Norm+ kept the watch of each record, so it shows as another watch's from now on.
+            prefs.getDeviceMac()?.let { old ->
+                runCatching { sportDao.claimUnowned(old); heartRateDao.claimUnowned(old); sleepDao.claimUnowned(old) }
+                    .onFailure { Log.w(TAG, "forget: claiming records: ${it.message}") }
+            }
             prefs.clearDeviceMac()
             prefs.saveDeviceVersion("")
             runCatching { bleManager.disconnect() }.onFailure { Log.w(TAG, "forget: disconnect: ${it.message}") }

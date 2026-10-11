@@ -37,7 +37,10 @@ data class DayDetailUiState(
     val hasEarlier: Boolean = false,
     /** Reading the database failed; the screen offers Retry. */
     val failed: Boolean = false,
+    val currentWatch: String? = null,
 ) {
+    /** The day's records came from a watch other than the current one (#113). */
+    val fromAnotherWatch: Boolean get() = day?.fromAnotherWatch(currentWatch) == true
     val canGoPrevious: Boolean get() = date != null && hasEarlier
     val canGoNext: Boolean get() = date != null && canGoNext(date, today)
     val isToday: Boolean get() = date == today
@@ -49,11 +52,13 @@ class DayDetailViewModel internal constructor(
     stepGoal: Flow<Int>,
     units: Flow<String>,
     private val clock: () -> LocalDate,
+    /** The current watch's address: a day from any other is marked (#113). */
+    currentWatch: Flow<String?> = kotlinx.coroutines.flow.flowOf(null),
 ) : ViewModel() {
 
     @Inject
     constructor(source: DayDetailSource, preferences: WatchPreferences) :
-        this(source, preferences.stepGoal, preferences.units, LocalDate::now)
+        this(source, preferences.stepGoal, preferences.units, LocalDate::now, preferences.deviceMac)
 
     /** The day asked for. The screen moves to it once it has been read, so a day never shows half-drawn. */
     private val requested = MutableStateFlow<LocalDate?>(null)
@@ -63,6 +68,7 @@ class DayDetailViewModel internal constructor(
     val state: StateFlow<DayDetailUiState> = _state.asStateFlow()
 
     init {
+        viewModelScope.launch { currentWatch.collect { w -> _state.update { it.copy(currentWatch = w) } } }
         // A sync adding records, the goal, the units, a new day asked for, Retry: each re-reads.
         viewModelScope.launch {
             combine(requested.filterNotNull(), source.recordCounts, stepGoal, units, retries) { date, _, goal, u, _ ->

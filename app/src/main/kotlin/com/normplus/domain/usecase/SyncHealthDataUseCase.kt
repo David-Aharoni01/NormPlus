@@ -71,8 +71,18 @@ class SyncHealthDataUseCase @Inject constructor(
     private val sleepDao: SleepDao,
     private val watchPreferences: WatchPreferences,
 ) {
+    /** The watch this sync reads from (its address), stamped on every record it stores (#113). */
+    private var watch: String? = null
+
     fun syncAll(): Flow<SyncProgress> = flow {
         Log.i(TAG, "syncAll: starting")
+        watch = watchPreferences.getDeviceMac()
+        // Records synced before Norm+ kept their watch came from this one: claim them once.
+        watch?.let { w ->
+            runCatching {
+                sportDao.claimUnowned(w); heartRateDao.claimUnowned(w); sleepDao.claimUnowned(w)
+            }.onFailure { Log.w(TAG, "claiming unowned records failed: ${it.message}") }
+        }
 
         emit(SyncProgress.Running("Counting records…", 0, 0, SyncStage.Counting))
         // One TOTAL_SPORT_SLEEP_COUNT for all three counts (SyncCountCommand.parseCounts). It has
@@ -236,6 +246,7 @@ class SyncHealthDataUseCase @Inject constructor(
                 avgHeartRate = rec.avgHr,
                 sportType = rec.sportType,
                 activeMinutes = rec.activeMinutes,
+                watch = watch,
             )
         }
         sportDao.insertAll(records)
@@ -256,7 +267,7 @@ class SyncHealthDataUseCase @Inject constructor(
                 null
             }
         }
-        val records = stream.records.map { HeartRateEntity(timestampEpoch = it.timestampMs, bpm = it.bpm) }
+        val records = stream.records.map { HeartRateEntity(timestampEpoch = it.timestampMs, bpm = it.bpm, watch = watch) }
         heartRateDao.insertAll(records)
         Log.i(TAG, "syncHeartRate: inserted ${records.size} record(s) into DB")
         return stream.complete
@@ -304,7 +315,7 @@ class SyncHealthDataUseCase @Inject constructor(
                     durationSeconds = it.durationSeconds,
                 )
             }
-            sleepDao.insertSessionWithStages(SleepSessionEntity(startEpoch = s.startMs, endEpoch = s.endMs), stages)
+            sleepDao.insertSessionWithStages(SleepSessionEntity(startEpoch = s.startMs, endEpoch = s.endMs, watch = watch), stages)
         }
         return stream.complete
     }

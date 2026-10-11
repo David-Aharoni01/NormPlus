@@ -87,4 +87,6 @@
     <string name="history_failed_title">Your history could not be read</string>
     <string name="history_failed_body">The records on this phone are still there. Try reading them again.</string>
     <string name="history_loading_more">Loading earlier days</string>
+    <!-- A day whose records came from a watch other than the current one (#113). -->
+    <string name="history_row_other_watch">%1$s · from another watch</string>
 </resources>

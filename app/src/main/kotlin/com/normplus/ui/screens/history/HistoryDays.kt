@@ -61,9 +61,23 @@ sealed interface DayValue {
     }
 }
 
-/** A day and its figures for the metric on show. */
+/**
+ * A day and its figures for the metric on show.
+ *
+ * @param watches the watches its records came from (their addresses; #113).
+ * @param otherWatch its records came from a watch other than the current one: a forgotten
+ *   watch's history, shown as such and never a goal day.
+ */
 @Immutable
-data class HistoryDay(val date: LocalDate, val value: DayValue)
+data class HistoryDay(
+    val date: LocalDate,
+    val value: DayValue,
+    val watches: Set<String> = emptySet(),
+    val otherWatch: Boolean = false,
+)
+
+/** [this] day, marked as another watch's when any of its records came from one other than [current]. */
+fun HistoryDay.markedFor(current: String?): HistoryDay = copy(otherWatch = watches.any { it != current })
 
 /** Turns records into days, in [zone] (the phone's). */
 class DayTotals(private val zone: ZoneId = ZoneId.systemDefault()) {
@@ -76,13 +90,13 @@ class DayTotals(private val zone: ZoneId = ZoneId.systemDefault()) {
     /** Steps per day: every half-hour record stamped on that day (the watch stamps a half hour at its end). */
     fun steps(records: List<SportEntity>): List<HistoryDay> =
         records.groupBy { dayOf(it.timestampEpoch) }
-            .map { (day, rs) -> HistoryDay(day, DayValue.Count(rs.sumOf { it.steps })) }
+            .map { (day, rs) -> HistoryDay(day, DayValue.Count(rs.sumOf { it.steps }), rs.mapNotNull { it.watch }.toSet()) }
             .sortedBy { it.date }
 
     /** Kilocalories per day, added up as the records hold them and rounded once. */
     fun calories(records: List<SportEntity>): List<HistoryDay> =
         records.groupBy { dayOf(it.timestampEpoch) }
-            .map { (day, rs) -> HistoryDay(day, DayValue.Count(rs.sumOf { it.calories.toDouble() }.roundToInt())) }
+            .map { (day, rs) -> HistoryDay(day, DayValue.Count(rs.sumOf { it.calories.toDouble() }.roundToInt()), rs.mapNotNull { it.watch }.toSet()) }
             .sortedBy { it.date }
 
     /** Heart rate per day: the range of the day's readings and their average. */
@@ -90,7 +104,7 @@ class DayTotals(private val zone: ZoneId = ZoneId.systemDefault()) {
         samples.groupBy { dayOf(it.timestampEpoch) }
             .map { (day, ss) ->
                 val bpm = ss.map { it.bpm }
-                HistoryDay(day, DayValue.Pulse(bpm.min(), bpm.max(), bpm.average().roundToInt(), bpm.size))
+                HistoryDay(day, DayValue.Pulse(bpm.min(), bpm.max(), bpm.average().roundToInt(), bpm.size), ss.mapNotNull { it.watch }.toSet())
             }
             .sortedBy { it.date }
 
@@ -126,6 +140,7 @@ class DayTotals(private val zone: ZoneId = ZoneId.systemDefault()) {
                         endMillis = ss.maxOf { it.endEpoch },
                         sessions = ss.size,
                     ),
+                    ss.mapNotNull { it.watch }.toSet(),
                 )
             }
             .sortedBy { it.date }
@@ -165,7 +180,8 @@ fun summarise(metric: HistoryMetric, slots: List<HistoryDay?>, goal: Int?): Rang
             RangeSummary(
                 daysWithData = counts.size,
                 average = counts.average().roundToInt(),
-                goalDays = if (goal != null && goal > 0) counts.count { it >= goal } else 0,
+                // Another watch's days are never the current watch's goal days (#113).
+                goalDays = slots.filterNotNull().count { goalMet(metric, it, goal) },
             )
         }
         HistoryMetric.HeartRate -> {
@@ -186,5 +202,5 @@ fun summarise(metric: HistoryMetric, slots: List<HistoryDay?>, goal: Int?): Rang
 
 /** Whether [day] met the step [goal]. Only steps have a goal Norm+ keeps. */
 fun goalMet(metric: HistoryMetric, day: HistoryDay, goal: Int?): Boolean =
-    metric == HistoryMetric.Steps && goal != null && goal > 0 &&
+    metric == HistoryMetric.Steps && goal != null && goal > 0 && !day.otherWatch &&
         (day.value as? DayValue.Count)?.value?.let { it >= goal } == true

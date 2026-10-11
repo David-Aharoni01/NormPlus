@@ -53,11 +53,16 @@ class HistoryViewModel internal constructor(
     stepGoal: Flow<Int>,
     private val startSync: () -> Boolean,
     private val clock: () -> LocalDate,
+    /** The current watch's address: days from any other are marked (#113). */
+    currentWatch: Flow<String?> = kotlinx.coroutines.flow.flowOf(null),
 ) : ViewModel() {
 
     @Inject
     constructor(source: HistorySource, preferences: WatchPreferences, status: WatchStatusSource) :
-        this(source, preferences.stepGoal, status::sync, LocalDate::now)
+        this(source, preferences.stepGoal, status::sync, LocalDate::now, preferences.deviceMac)
+
+    @Volatile private var current: String? = null
+    private fun List<HistoryDay>.marked() = map { it.markedFor(current) }
 
     private val metric = MutableStateFlow(HistoryMetric.Steps)
     private val range = MutableStateFlow(HistoryRange.Week)
@@ -73,8 +78,10 @@ class HistoryViewModel internal constructor(
         // Anything that changes what is on screen re-reads it: a sync adding records, a tab,
         // the goal, Retry. The range only moves the chart (below).
         viewModelScope.launch {
-            combine(source.recordCounts, metric, stepGoal, retries) { counts, m, goal, _ -> Triple(counts, m, goal) }
-                .collectLatest { (counts, m, goal) -> reload(counts, m, goal) }
+            combine(source.recordCounts, metric, stepGoal, retries, currentWatch) { counts, m, goal, _, w ->
+                current = w
+                Triple(counts, m, goal)
+            }.collectLatest { (counts, m, goal) -> reload(counts, m, goal) }
         }
     }
 
@@ -110,7 +117,7 @@ class HistoryViewModel internal constructor(
                 nextBefore = page.nextBefore
                 _state.update {
                     if (it.metric != s.metric) it
-                    else it.copy(rows = it.rows + page.days, rowsComplete = page.nextBefore == null)
+                    else it.copy(rows = it.rows + page.days.marked(), rowsComplete = page.nextBefore == null)
                 }
             }
             _state.update { it.copy(loadingMore = false) }
@@ -136,12 +143,12 @@ class HistoryViewModel internal constructor(
             // The first page: the newest days, up to today.
             val first = source.page(m, today.plusDays(1))
             nextBefore = first.nextBefore
-            _state.update { it.copy(rows = first.days, rowsComplete = first.nextBefore == null, loaded = true) }
+            _state.update { it.copy(rows = first.days.marked(), rowsComplete = first.nextBefore == null, loaded = true) }
         }
     }
 
     private suspend fun readChart(m: HistoryMetric, r: HistoryRange, today: LocalDate) {
-        val days = source.days(m, r.firstDay(today), today)
+        val days = source.days(m, r.firstDay(today), today).marked()
         _state.update { if (it.metric == m && it.range == r) it.copy(chart = chartSlots(days, r, today)) else it }
     }
 

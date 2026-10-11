@@ -68,7 +68,12 @@ data class DayRecords(
     val sleep: List<SleepSessionDetail>,
     /** The night's totals, exactly as History adds them up; null with no session. */
     val night: DayValue.Night?,
+    /** The watches the day's records came from (their addresses; #113). */
+    val watches: Set<String> = emptySet(),
 ) {
+    /** Any of the day's records came from a watch other than [current] (#113). */
+    fun fromAnotherWatch(current: String?): Boolean = watches.any { it != current }
+
     val hasSport: Boolean get() = steps != null
     val isEmpty: Boolean get() = steps == null && heart.isEmpty() && sleep.isEmpty()
 
@@ -154,6 +159,7 @@ class DayBuilder(private val zone: ZoneId = ZoneId.systemDefault()) {
             heart = dayHeart.map { HeartPoint(it.timestampEpoch, it.bpm) },
             sleep = sleep,
             night = totals.sleep(daySessions, dayStages).firstOrNull { it.date == date }?.value as? DayValue.Night,
+            watches = (daySport.mapNotNull { it.watch } + dayHeart.mapNotNull { it.watch } + daySessions.mapNotNull { it.watch }).toSet(),
         )
     }
 

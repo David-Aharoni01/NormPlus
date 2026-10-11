@@ -20,7 +20,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): Norm2Database =
         Room.databaseBuilder(ctx, Norm2Database::class.java, "norm2.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .build()
 
     private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -83,6 +83,16 @@ object AppModule {
             // stored values right without touching them. (RENAME COLUMN needs SQLite 3.25; minSdk
             // 30 ships 3.28.)
             db.execSQL("ALTER TABLE sport_sessions RENAME COLUMN durationSeconds TO activeMinutes")
+        }
+    }
+
+    private val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // The watch each record came from (#113), so history from a forgotten watch is
+            // known as such. Existing records get it from the sync or Forget (claimUnowned).
+            db.execSQL("ALTER TABLE sport_sessions ADD COLUMN watch TEXT")
+            db.execSQL("ALTER TABLE heart_rate_samples ADD COLUMN watch TEXT")
+            db.execSQL("ALTER TABLE sleep_sessions ADD COLUMN watch TEXT")
         }
     }
 
