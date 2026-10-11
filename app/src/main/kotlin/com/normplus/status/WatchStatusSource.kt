@@ -25,6 +25,8 @@ import com.normplus.protocol.Action
 import com.normplus.protocol.CommandCode
 import com.normplus.protocol.commands.BatteryCommand
 import com.normplus.protocol.commands.GoalCommand
+import com.normplus.protocol.commands.SwitchSettingCommand
+import com.normplus.protocol.commands.DeviceVersionCommand
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -154,8 +156,60 @@ class WatchStatusSource @Inject constructor(
                 if (it is BleConnectionState.Ready) {
                     readBattery()
                     sendStepGoal()
+                    connectChores()
                 }
             }
+        }
+    }
+
+    /**
+     * What the old dashboard did on every connection, kept exactly as it was, and now here so it
+     * runs on every connection the service makes, the app open or not (#111): the watch's version
+     * string for Technical and the firmware update, and the notification kinds switched on in the
+     * watch's SwitchSetting mask, without which the watch drops every notification it is sent.
+     * Each is on its own, so one failing cannot stop the other. Also run after every sync, as the
+     * old dashboard did.
+     */
+    private suspend fun connectChores() {
+        runCatching {
+            // Source: MBluetooth.smali getDeviceFunctionInfo → DeviceVersion(callback, 1, 6):
+            // payload [06] (type 6 = the full version info string).
+            val verPkt = bleManager.sendAndAwait(CommandCode.DEVICE_VERSION, Action.CHECK, byteArrayOf(6))
+            prefs.saveDeviceVersion(DeviceVersionCommand.parseVersionString(verPkt))
+        }.onFailure { e ->
+            if (e is CancellationException) throw e
+            Log.w(TAG, "reading the version failed: ${e.message}")
+        }
+
+        // OR the notification kinds into the current mask (non-destructive: every other bit,
+        // high bytes included, is kept). The first query right after connect can time out, so
+        // it is tried up to three times.
+        var current: Int? = null
+        repeat(3) {
+            if (current != null) return@repeat
+            current = runCatching {
+                SwitchSettingCommand.parse(
+                    bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.CHECK, SwitchSettingCommand.queryPayload()),
+                )
+            }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+        }
+        val cur = current
+        if (cur == null) {
+            Log.w(TAG, "could not read the switch mask to enable notification kinds")
+            return
+        }
+        val wanted = cur or SwitchSettingCommand.NOTIFICATION_BITS
+        if (wanted == cur) {
+            Log.d(TAG, "notification kinds already enabled (mask=0x%08X)".format(cur))
+            return
+        }
+        runCatching {
+            bleManager.sendAndAwait(SwitchSettingCommand.CMD, Action.SET, SwitchSettingCommand.setPayload(wanted))
+        }.onSuccess {
+            Log.i(TAG, "enabled notification kinds on the watch: 0x%08X -> 0x%08X".format(cur, wanted))
+        }.onFailure { e ->
+            if (e is CancellationException) throw e
+            Log.w(TAG, "enabling notification kinds failed: ${e.message}")
         }
     }
 
@@ -226,6 +280,7 @@ class WatchStatusSource @Inject constructor(
                 syncRunning.set(false)
             }
             readBattery()
+            connectChores()
         }
         return true
     }
