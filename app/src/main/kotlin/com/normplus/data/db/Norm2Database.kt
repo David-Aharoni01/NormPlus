@@ -26,7 +26,7 @@ import com.normplus.data.db.entities.WorkoutEntity
         WorkoutEntity::class,
         NotificationRuleEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class Norm2Database : RoomDatabase() {

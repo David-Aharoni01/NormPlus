@@ -17,6 +17,8 @@ data class SportEntity(
     // The record's sportTime, which is minutes (SportRecord.activeMinutes). Was `durationSeconds`
     // until v5, holding the same minutes under the wrong name (#89).
     val activeMinutes: Int,
+    /** The watch the record came from (its address), set by the sync (#113); null for records synced before Norm+ kept it. */
+    val watch: String? = null,
 )
 
 @Entity(tableName = "heart_rate_samples", indices = [Index("timestampEpoch", unique = true)])
@@ -24,6 +26,8 @@ data class HeartRateEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val timestampEpoch: Long,
     val bpm: Int,
+    /** The watch the record came from (its address), set by the sync (#113); null for records synced before Norm+ kept it. */
+    val watch: String? = null,
 )
 
 @Entity(tableName = "sleep_sessions", indices = [Index("startEpoch", unique = true)])
@@ -31,6 +35,8 @@ data class SleepSessionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val startEpoch: Long,
     val endEpoch: Long,
+    /** The watch the record came from (its address), set by the sync (#113); null for records synced before Norm+ kept it. */
+    val watch: String? = null,
 )
 
 @Entity(

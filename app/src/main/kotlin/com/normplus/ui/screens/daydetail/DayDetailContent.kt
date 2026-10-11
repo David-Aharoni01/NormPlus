@@ -187,6 +187,16 @@ private fun DayPage(
     ) {
         if (date == null || !state.loaded) return@LazyColumn
         item(key = "date") { DateLine(date, state.today) }
+        if (state.fromAnotherWatch) {
+            // A forgotten watch's day (#113): its figures stay, said to be another watch's.
+            item(key = "other-watch") {
+                Text(
+                    stringResource(R.string.daydetail_other_watch),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (state.failed) {
             item(key = "failed") {
                 Notice(
@@ -260,7 +270,8 @@ private fun DateLine(date: LocalDate, today: LocalDate) {
 private fun Hero(day: DayRecords, state: DayDetailUiState, lastSyncEpochMs: Long?, clock: (Long) -> String) {
     val steps = day.steps
     val goal = state.goal
-    val reached = steps != null && goal > 0 && steps >= goal
+    // Another watch's day is never the current watch's goal day (#113).
+    val reached = steps != null && goal > 0 && steps >= goal && !state.fromAnotherWatch
     val stepsText = steps?.let { countText(it) }
     val goalText = countText(goal)
     val supporting = when {

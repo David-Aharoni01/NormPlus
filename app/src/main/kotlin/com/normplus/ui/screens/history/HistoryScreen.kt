@@ -403,7 +403,9 @@ private fun HistoryDayRow(day: HistoryDay, metric: HistoryMetric, goal: Int?, to
         else -> null
     }
     val met = goalMet(metric, day, goal)
-    val (summary, spokenFigures) = rowFigures(metric, day.value)
+    val (figures, spokenFigures) = rowFigures(metric, day.value)
+    // A forgotten watch's day says so (#113).
+    val summary = if (day.otherWatch) stringResource(R.string.history_row_other_watch, figures) else figures
     val spokenDate = dateSpokenText(day.date).let { d ->
         if (relative != null) stringResource(R.string.history_row_spoken_relative, relative, d) else d
     }

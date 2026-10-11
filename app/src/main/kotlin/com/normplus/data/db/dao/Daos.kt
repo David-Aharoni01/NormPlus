@@ -43,6 +43,10 @@ interface SportDao {
 
     @Query("SELECT COUNT(*) FROM sport_sessions")
     fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE sport_sessions SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 @Dao
@@ -71,6 +75,10 @@ interface HeartRateDao {
 
     @Query("SELECT COUNT(*) FROM heart_rate_samples")
     fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE heart_rate_samples SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 @Dao
@@ -133,6 +141,10 @@ interface SleepDao {
 
     @Query("SELECT COUNT(*) FROM sleep_sessions")
     fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE sleep_sessions SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 data class SleepBreakdown(val deepSec: Int, val lightSec: Int, val awakeSec: Int) {

@@ -131,4 +131,38 @@ class HistoryDaysTest {
         assertNull(third.nextBefore)
         assertEquals(5, source.queries)  // two queries a page, one to find there is no more
     }
+
+    // ── Another watch's days (#113) ──────────────────────────────────────────
+
+    @Test
+    fun aDayCarriesTheWatchesItsRecordsCameFrom() {
+        val days = totals.steps(
+            listOf(
+                sport(at(2026, 10, 8, 9, 29), 400).copy(watch = "AA:AA"),
+                sport(at(2026, 10, 8, 10, 29), 100).copy(watch = "BB:BB"),
+                sport(at(2026, 10, 9, 9, 29), 50), // synced before Norm+ kept the watch
+            ),
+        )
+        assertEquals(setOf("AA:AA", "BB:BB"), days[0].watches)
+        assertEquals(emptySet(), days[1].watches)
+    }
+
+    @Test
+    fun aDayIsAnotherWatchsWhenAnyRecordIsNotTheCurrentWatchs() {
+        val day = HistoryDay(LocalDate.of(2026, 10, 8), DayValue.Count(9_000), setOf("AA:AA"))
+        assertFalse(day.markedFor("AA:AA").otherWatch)
+        assertTrue(day.markedFor("BB:BB").otherWatch)
+        assertTrue(day.markedFor(null).otherWatch, "after Forget, every marked day is another watch's")
+        // A record from before Norm+ kept the watch is taken to be the current one's.
+        assertFalse(HistoryDay(LocalDate.of(2026, 10, 8), DayValue.Count(9_000)).markedFor("AA:AA").otherWatch)
+    }
+
+    @Test
+    fun anotherWatchsDayIsNeverAGoalDay() {
+        val mine = HistoryDay(LocalDate.of(2026, 10, 8), DayValue.Count(9_000), setOf("AA:AA")).markedFor("AA:AA")
+        val theirs = HistoryDay(LocalDate.of(2026, 10, 7), DayValue.Count(12_000), setOf("BB:BB")).markedFor("AA:AA")
+        assertTrue(goalMet(HistoryMetric.Steps, mine, 7_000))
+        assertFalse(goalMet(HistoryMetric.Steps, theirs, 7_000))
+        assertEquals(1, summarise(HistoryMetric.Steps, listOf(theirs, mine), 7_000).goalDays)
+    }
 }
