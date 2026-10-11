@@ -46,12 +46,26 @@ writable space for added code is the one `patch-nand` uses: it borrows the OTA p
 buffer at `0x10010C64` while no update is running. The firmware's allocator is probably
 `0x000B9A5C` (called from the lock create at `0x00031BA8`), but that is unverified.
 
-## The proposed method: C patches linked against the stock image
+## The method: C patches linked against the stock image
 
-This is a design, not yet built. It keeps the shape `patch-nand` proved -- append a routine
-after the image, redirect a handful of 4-byte sites to it, re-seal -- but moves the body
-from hand-assembled bytes into C, so a feature is written once in a language that scales.
-The verification discipline does not change, and neither do the OTA safety rules.
+Built and tested on the emulated watch (#116); `normfw patch`. It keeps the shape `patch-nand`
+proved -- append a routine after the image, redirect a handful of 4-byte sites to it, re-seal
+-- but moves the body from hand-assembled bytes into C, so a feature is written once in a
+language that scales. The verification discipline does not change, and neither do the OTA
+safety rules. Nothing has been flashed to hardware from this path yet.
+
+```bash
+normfw patch --list                                       # the patches the kit can build
+normfw patch NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin -o patched.bin
+normfw patch NORM/assets/Apollo3_P03B_NORM2_F0.2B01.bin --print   # disassemble, write nothing
+```
+
+The kit lives in `tools/normplus/firmware/patchkit.py`; the patches in `patches/`
+(`fw.h`, `firmware.ld`, one `.c` per patch, and the hook table in `patchkit.PATCHES`);
+`tools/tests/test_patchkit.py` pins it (`normtest patchkit`). The one patch today is
+`passthrough` -- the kit's own proof: a transparent detour at the dispatcher fall-through
+that changes no behaviour (it boots, binds, and both a matched and an unmatched command still
+answer unchanged on the emulated watch). The first patch that *does* something is #117.
 
 ### The shape
 
@@ -146,11 +160,11 @@ available and refuses to overflow into `0x000DE000`. The first image that reache
 is also the first to make the bootloader write a page it has never written -- low risk (it
 must erase each page it copies to), but new, and worth stating on the issue that crosses it.
 
-### Where to start
+### The next step (#117)
 
-The smallest real feature that exercises the whole method end to end is a **new read-only
-0x6F command** through the fall-through hook -- no vendor site clobbered except the one
-detour, no persistent state, a reply built with `fw_reply`. It proves the toolchain, the
-linker script, the hook and the verification against the emulated watch before any feature
-that writes state or touches a vendor handler. File it as its own Firmware issue when it
-starts.
+The kit's `passthrough` proves install and transparency but answers nothing. The first patch
+that does something is a **new read-only 0x6F command** through the same fall-through hook --
+no vendor site clobbered except the one detour, no persistent state, a reply built with
+`fw_reply`. It is #117: it turns `passthrough`'s trampoline into one that, before branching
+back, calls a C function to inspect the command byte and either answer it or fall through to
+the stock path. That comes before any feature that writes state or touches a vendor handler.

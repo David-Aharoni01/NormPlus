@@ -97,11 +97,15 @@ tools/              the Python tools: one uv project (pyproject.toml, uv.lock at
                     under Unicorn; normcmd --mac also asks the PHYSICAL watch from the PC
     phone/          the Pixel 8 ANDROID emulator (normphone) + the Bumble HCI bridge, for :app
     firmware/       image_tool.py (verify / re-seal), nand_patch.py (the NAND read-out
-                    patch), query_ota.py (the vendor OTA server): normfw
+                    patch), patchkit.py (build C patches from patches/ into the cave),
+                    query_ota.py (the vendor OTA server): normfw
     testing.py      normtest
   tests/            the Python test suite: standalone scripts, run by normtest
-docs/               reference: app.md, protocol.md, firmware.md, watch-emulator.md,
-                    watch-emulator-internals.md, android-emulator.md, history.md
+patches/            C firmware patches (our source): fw.h, firmware.ld, one .c per patch.
+                    normfw patch builds them into the code cave (docs/firmware-patching.md)
+docs/               reference: app.md, protocol.md, firmware.md, firmware-patching.md,
+                    watch-emulator.md, watch-emulator-internals.md, android-emulator.md,
+                    history.md
 ```
 
 Note the two "emulators": `normphone` (`tools/normplus/phone/`) runs the **phone**,
@@ -161,7 +165,7 @@ Everything in Python is one uv project: `pyproject.toml` at the root, the code i
 | `normwatch` | the watch emulator: `boot`, `info`, `modules`, `dump` (`tools/normplus/watch/`) |
 | `normcmd` | one 0x6F question to a watch -- the emulated one, or the physical one with `--mac` |
 | `normphone` | the Android emulator: `setup`, `start [--watch / --no-bridge]`, `install`, `clear-bond`, `bridge` |
-| `normfw` | firmware images: `verify`, `seal`, `patch-nand`, `query-ota` |
+| `normfw` | firmware images: `verify`, `seal`, `patch-nand`, `patch`, `query-ota` |
 | `normtest` | the Python test suite, one file at a time (`normtest ota cmd`, `normtest ota -- --full`) |
 | `normboard` | the task board: GitHub issues on the NormPlus project (see "Task tracking") |
 | `normhelp` | what every command is for, the common recipes; `normhelp <tool> [subcommand]` for its help |

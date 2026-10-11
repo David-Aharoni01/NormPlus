@@ -12,6 +12,10 @@ dependencies = [
     "cryptography>=49.0.0",
     "grpcio>=1.81.1",
     "bleak>=3.0.2",
+    # Firmware patching (normfw patch, #116): a C cross compiler that needs no
+    # system toolchain (clang + ld.lld bundled), and an ELF symbol reader.
+    "ziglang>=0.16.0,<0.17",
+    "pyelftools>=0.31",
 ]
 
 [project.scripts]
