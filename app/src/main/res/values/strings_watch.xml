@@ -54,22 +54,24 @@
     <string name="watch_dnd_to">To</string>
     <string name="watch_vibration">Vibration pattern</string>
     <string name="watch_vibration_unknown">Unknown pattern</string>
-    <!-- VibrationCommand's patterns, in their order (0-14). -->
-    <string name="watch_vibration_0">Off</string>
-    <string name="watch_vibration_1">One long</string>
-    <string name="watch_vibration_2">One short</string>
-    <string name="watch_vibration_3">Two long</string>
-    <string name="watch_vibration_4">Two short</string>
-    <string name="watch_vibration_5">Long and short</string>
-    <string name="watch_vibration_6">Continuous long</string>
-    <string name="watch_vibration_7">Continuous short</string>
-    <string name="watch_vibration_8">Five long</string>
-    <string name="watch_vibration_9">Sound</string>
-    <string name="watch_vibration_10">Two sounds</string>
-    <string name="watch_vibration_11">Continuous sound</string>
-    <string name="watch_vibration_12">Buzz and sound</string>
-    <string name="watch_vibration_13">Continuous buzz and sound</string>
-    <string name="watch_vibration_14">Silent</string>
+    <!-- VibrationCommand's patterns (SHOCK_MODE, 0x0A), by value. The official app never offers
+         these in its UI, so each name says exactly what its SHOCK_MODE_* constant in
+         BluetoothCommandConstant.smali names, nothing more. -->
+    <string name="watch_vibration_0">No vibration</string><!-- SHOCK_MODE_NO_SHOCK = 0 -->
+    <string name="watch_vibration_1">One long vibration</string><!-- SHOCK_MODE_SIGNAL_LONG_SHOCK = 1 -->
+    <string name="watch_vibration_2">One short vibration</string><!-- SHOCK_MODE_SIGNAL_SHORT_SHOCK = 2 -->
+    <string name="watch_vibration_3">Two long vibrations</string><!-- SHOCK_MODE_INTERVAL_TWO_LONG_SHOCK = 3 -->
+    <string name="watch_vibration_4">Two short vibrations</string><!-- SHOCK_MODE_INTERVAL_TWO_SHORT_SHOCK = 4 -->
+    <string name="watch_vibration_5">Long, then short</string><!-- SHOCK_MODE_INTERVAL_LONG_SHORT_SHOCK = 5 -->
+    <string name="watch_vibration_6">Continuous long vibration</string><!-- SHOCK_MODE_ALWAYS_LONG_SHOCK = 6 -->
+    <string name="watch_vibration_7">Continuous short vibration</string><!-- SHOCK_MODE_ALWAYS_SHORT_SHOCK = 7 -->
+    <string name="watch_vibration_8">Five long vibrations</string><!-- SHOCK_MODE_INTERVAL_FIVE_LONG_SHOCK = 8 -->
+    <string name="watch_vibration_9">One sound</string><!-- SHOCK_MODE_SIGNAL_SOUND = 9 -->
+    <string name="watch_vibration_10">Two sounds</string><!-- SHOCK_MODE_TWO_SOUND = 10 -->
+    <string name="watch_vibration_11">Continuous sound</string><!-- SHOCK_MODE_ALWAYS_SOUND = 11 -->
+    <string name="watch_vibration_12">One vibration with sound</string><!-- SHOCK_MODE_ONE_SHOCK_SOUND = 12 -->
+    <string name="watch_vibration_13">Continuous vibration with sound</string><!-- SHOCK_MODE_ALWAYS_SHOCK_SOUND = 13 -->
+    <string name="watch_vibration_14">Mute</string><!-- SHOCK_MODE_MUTE = 14 -->
     <string name="watch_screens">Watch screens</string>
     <string name="watch_screens_body">Which screens your watch shows, and in what order</string>
     <string name="watch_power_save">Power save</string>
