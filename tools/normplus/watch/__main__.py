@@ -812,6 +812,22 @@ def cmd_dump(args) -> int:
     return 0 if done >= total else 1
 
 
+def cmd_screens(args) -> int:
+    """Screenshots of the watch's own screens, from a machine saved past the boot (#114)."""
+    from .screens import capture
+
+    state = Path(args.load_state)
+    if not state.exists():
+        print(f"error: no saved machine at {state}; make one with "
+              "`normwatch boot --no-ble --flash-state BOUND.zip --save-state SNAP`", file=sys.stderr)
+        return 2
+    blobs = [] if args.no_factory_resources else mount_blobs([str(DEFAULT_FACTORY_NAND)])         if DEFAULT_FACTORY_NAND.is_dir() else []
+    print(f"screens: from {state}, {args.swipes} swipes each way, into {args.output}")
+    capture(_load(args.image), state, Path(args.output), resources=Path(args.resources),
+            nand_blobs=blobs, swipes=args.swipes, log=print)
+    return 0
+
+
 def cmd_boot(args) -> int:
     img = _load(args.image)
     quiet = args.json
@@ -1283,6 +1299,21 @@ def main(argv=None) -> int:
     dev.add_argument("--address", default=WATCH, metavar="MAC",
                      help="the emulated watch's BD address")
     p_rec.set_defaults(func=cmd_records)
+
+    p_scr = sub.add_parser(
+        "screens", help="screenshot the watch's face and its pages, for the app (#114)")
+    p_scr.add_argument("--load-state", required=True, metavar="PATH",
+                       help="a machine saved past the boot with the same switches: "
+                            "`boot --no-ble --flash-state BOUND.zip --save-state PATH`")
+    p_scr.add_argument("-o", "--output", required=True, metavar="DIR",
+                       help="where face.png, next-NN.png, prev-NN.png and screens.json go; "
+                            "the vendor's screens, so a NORM/ path (CLAUDE.md)")
+    p_scr.add_argument("--swipes", type=int, default=6,
+                       help="swipes each way from the face (default 6)")
+    p_scr.add_argument("--image", default=str(DEFAULT_IMAGE), help=argparse.SUPPRESS)
+    p_scr.add_argument("--resources", default=str(DEFAULT_RESOURCES), help=argparse.SUPPRESS)
+    p_scr.add_argument("--no-factory-resources", action="store_true", help=argparse.SUPPRESS)
+    p_scr.set_defaults(func=cmd_screens)
 
     p_dump = sub.add_parser(
         "dump", help="read a range of the watch's SPI NAND out through the patched 0xEE "

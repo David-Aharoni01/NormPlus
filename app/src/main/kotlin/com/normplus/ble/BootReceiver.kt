@@ -79,7 +79,7 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         if (!watchPreferences.isAutoStartEnabled()) {
-            Log.i(TAG, "$action: auto-start disabled by the user (Disconnect) — not starting")
+            Log.i(TAG, "$action: auto-start disabled by the user (Stop) — not starting")
             return
         }
         if (!BleService.hasBleConnectPermission(app)) {

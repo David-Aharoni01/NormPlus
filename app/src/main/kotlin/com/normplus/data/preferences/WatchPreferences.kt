@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -29,7 +30,7 @@ class WatchPreferences @Inject constructor(
     // ── Always-on / uptime prefs ──────────────────────────────────────────────
     // Whether the connection service may (re)start itself unattended — on boot, after an app
     // update, on a START_STICKY restart, or from the periodic watchdog. Cleared by the
-    // notification's "Disconnect" action so a deliberate stop actually stays stopped, and set
+    // notification's "Stop" action so a deliberate stop actually stays stopped, and set
     // again the next time the user opens the app.
     private val KEY_AUTOSTART = booleanPreferencesKey("autostart_enabled")
     // The user dismissed the battery-optimization exemption prompt — never nag again.
@@ -40,6 +41,9 @@ class WatchPreferences @Inject constructor(
 
     suspend fun getDeviceMac(): String? =
         context.dataStore.data.firstOrNull()?.get(KEY_MAC)
+
+    /** The saved watch's address: null before the first run saves one, and after it is forgotten. */
+    val deviceMac: Flow<String?> = context.dataStore.data.map { it[KEY_MAC] }
 
     suspend fun saveDeviceMac(mac: String) {
         context.dataStore.edit { it[KEY_MAC] = mac }
@@ -106,5 +110,33 @@ class WatchPreferences @Inject constructor(
 
     suspend fun saveLastConnectedEpoch(epoch: Long) {
         context.dataStore.edit { it[KEY_LAST_CONNECTED] = epoch }
+    }
+
+    // ── The step goal Norm+ keeps (#95 §7.2) ──────────────────────────────────
+    // Norm+ keeps the goal and sends it to the watch on connect (#102 sets and sends it);
+    // Today, History and Day detail measure against it. Until it is set, the default the
+    // app has always sent (WatchSettings.stepGoal).
+    private val KEY_STEP_GOAL = intPreferencesKey("step_goal")
+
+    val stepGoal: Flow<Int> = context.dataStore.data.map { it[KEY_STEP_GOAL] ?: DEFAULT_STEP_GOAL }
+    private val KEY_TODAY_SUMMARY = stringPreferencesKey("today_summary")
+
+    suspend fun saveStepGoal(steps: Int) {
+        context.dataStore.edit { it[KEY_STEP_GOAL] = steps }
+    }
+
+    /**
+     * The last reading of the watch's own today summary (0x57), encoded by
+     * `TodaySummary.encode()`, so Today shows it "as of" its time while the watch is away.
+     */
+    val todaySummary: Flow<String?> = context.dataStore.data.map { it[KEY_TODAY_SUMMARY] }
+
+    suspend fun saveTodaySummary(encoded: String) {
+        context.dataStore.edit { it[KEY_TODAY_SUMMARY] = encoded }
+    }
+
+    companion object {
+        // The official app's own default (SPDefaultPrivateValue.DEFAULT_GOAL_STEP = 0x1b58); owner's call, #102.
+        const val DEFAULT_STEP_GOAL = 7_000
     }
 }

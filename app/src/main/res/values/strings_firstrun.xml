@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The first run (#98): find, pair and bind the watch, then the permissions one step at a time. -->
+<resources>
+    <string name="firstrun_step">Step %1$d of %2$d</string>
+
+    <!-- 1. Welcome -->
+    <string name="firstrun_welcome_title">Norm+</string>
+    <string name="firstrun_welcome_headline">An independent app for the Norm 2.</string>
+    <string name="firstrun_welcome_body">Norm+ keeps your watch connected, brings your phone\'s notifications and calls to your wrist, and shows the steps, heart rate and sleep your watch has counted. It is not made by the watch\'s maker.</string>
+    <string name="firstrun_welcome_action">Get started</string>
+
+    <!-- 2. Nearby devices -->
+    <string name="firstrun_bluetooth_title">Nearby devices</string>
+    <string name="firstrun_bluetooth_headline">Let Norm+ find your watch</string>
+    <string name="firstrun_bluetooth_body">Norm+ talks to your watch over Bluetooth. Android calls this permission Nearby devices. It is the only one Norm+ needs: everything after it can be skipped.</string>
+    <string name="firstrun_bluetooth_action">Allow</string>
+    <string name="firstrun_bluetooth_denied_title">Norm+ can\'t reach your watch without it</string>
+    <string name="firstrun_bluetooth_denied_body">Allow Nearby devices to go on. If Android no longer asks, Allow opens Norm+\'s settings: turn on Nearby devices under Permissions.</string>
+
+    <!-- 3. Find your watch -->
+    <string name="firstrun_find_title">Find your watch</string>
+    <string name="firstrun_find_nearby">Nearby</string>
+    <string name="firstrun_find_scanning">Looking for watches</string>
+    <string name="firstrun_find_none">No watch found. Wake your watch, keep it close to the phone, and make sure no other phone or app is connected to it.</string>
+    <string name="firstrun_find_failed_title">Couldn\'t look for watches</string>
+    <string name="firstrun_find_failed_body">Android\'s Bluetooth did not start the scan. Try again in a moment.</string>
+    <string name="firstrun_find_again">Look again</string>
+    <string name="firstrun_find_unnamed">Norm watch</string>
+    <string name="firstrun_find_watch_spoken">Connect to %1$s, %2$s</string>
+    <string name="firstrun_find_manual">Or enter its address</string>
+    <string name="firstrun_find_manual_hint">On the watch, Settings → About shows its address and a QR code. Type the address, or paste the QR code\'s text.</string>
+    <string name="firstrun_find_field">Address or QR text</string>
+    <string name="firstrun_find_field_example">4C:59:80:12:44:F1</string>
+    <string name="firstrun_find_invalid">That isn\'t an address. It looks like 4C:59:80:12:44:F1.</string>
+    <string name="firstrun_find_connect">Connect</string>
+
+    <!-- 4–5. Connecting, and Android's pairing request -->
+    <string name="firstrun_connect_title">Connecting</string>
+    <string name="firstrun_connect_pair_title">Pair on Android</string>
+    <string name="firstrun_connect_your_watch">your watch</string>
+    <string name="firstrun_connect_honest">Connecting takes up to about 10 seconds, and sometimes more than one try. Keep the watch close.</string>
+    <string name="firstrun_connect_stage_pair">Pair with Android</string>
+    <string name="firstrun_connect_stage_connect">Connect</string>
+    <string name="firstrun_connect_stage_setup">Set up the link</string>
+    <string name="firstrun_connect_stage_paired">Paired</string>
+    <string name="firstrun_connect_stage_waiting_dialog">Android\'s request is open</string>
+    <string name="firstrun_connect_stage_trying">Trying</string>
+    <plurals name="firstrun_connect_stage_retry">
+        <item quantity="one">Trying again · %1$d try failed</item>
+        <item quantity="other">Trying again · %1$d tries failed</item>
+    </plurals>
+    <string name="firstrun_connect_pair_headline">Android will ask to pair with %1$s</string>
+    <string name="firstrun_connect_pair_body">Tap Pair. The request closes after 30 seconds.</string>
+    <plurals name="firstrun_connect_pair_seconds">
+        <item quantity="one">%1$d second left</item>
+        <item quantity="other">%1$d seconds left</item>
+    </plurals>
+    <string name="firstrun_connect_pair_closed_title">The pairing request closed</string>
+    <string name="firstrun_connect_pair_closed_body">Pair wasn\'t tapped within 30 seconds, or the request was cancelled. Try again, and Android asks once more.</string>
+    <string name="firstrun_connect_gave_up_title">Couldn\'t connect to %1$s</string>
+    <string name="firstrun_connect_gave_up_body">Keep the watch close, and make sure no other phone or app is connected to it. Turning Bluetooth off and on usually helps.</string>
+    <string name="firstrun_try_again">Try again</string>
+    <string name="firstrun_another_watch">Choose another watch</string>
+
+    <!-- 6. The watch's bind -->
+    <string name="firstrun_bind_title">Set up your watch</string>
+    <string name="firstrun_bind_binding">Your watch shows “Pairing Success”, then its face.</string>
+    <string name="firstrun_bind_bound">Your watch is set up</string>
+    <string name="firstrun_bind_already">Your watch was already set up</string>
+    <string name="firstrun_bind_working">Setting up</string>
+    <string name="firstrun_bind_failed_title">Your watch didn\'t finish setting up</string>
+    <string name="firstrun_bind_failed_body">If it shows “Pairing Failed”, that clears by itself in a moment. Try again, or go on: Norm+ stays connected either way.</string>
+    <string name="firstrun_bind_continue_anyway">Continue anyway</string>
+
+    <!-- 7. Notifications -->
+    <string name="firstrun_notifications_title">Notifications</string>
+    <string name="firstrun_notifications_post_headline">Let Norm+ show notifications</string>
+    <string name="firstrun_notifications_post_body">Norm+ keeps one quiet notification while it holds the connection, and uses it to say when something needs fixing.</string>
+    <string name="firstrun_notifications_post_denied">Norm+\'s notifications are off. You can turn them on later from Watch.</string>
+    <string name="firstrun_notifications_access_headline">Send notifications to your watch</string>
+    <string name="firstrun_notifications_access_body">To pass your phone\'s notifications to the watch, Norm+ needs notification access. Android opens its settings: turn on Norm+ there, then come back.</string>
+    <string name="firstrun_notifications_access_restricted">If Android says it is a restricted setting, open Norm+\'s App info, tap ⋮ and choose Allow restricted settings, then try again.</string>
+    <string name="firstrun_notifications_access_denied">Notification access is off, so nothing reaches the watch yet. You can turn it on later from Watch.</string>
+    <string name="firstrun_notifications_access_action">Open settings</string>
+    <string name="firstrun_notifications_apps_headline">Choose the apps</string>
+    <string name="firstrun_notifications_apps_body">Only the apps you choose reach your watch. You can change them any time from Watch.</string>
+    <string name="firstrun_notifications_apps_action">Choose apps</string>
+    <string name="firstrun_notifications_apps_again">Change apps</string>
+
+    <!-- 8. Calls -->
+    <string name="firstrun_calls_title">Calls</string>
+    <string name="firstrun_calls_headline">Calls on your watch</string>
+    <string name="firstrun_calls_body">Your watch can show who is calling, and answer or decline. For that Android asks for phone, call log and contacts. Without them everything else still works.</string>
+    <string name="firstrun_calls_denied">Calls won\'t reach your watch. You can allow them later from Watch.</string>
+
+    <!-- 9. Battery -->
+    <string name="firstrun_battery_title">Battery</string>
+    <string name="firstrun_battery_headline">Keep Norm+ running in the background</string>
+    <string name="firstrun_battery_body">Android pauses apps to save battery, and a paused Norm+ loses the watch. Letting it run keeps the watch connected all day.</string>
+    <string name="firstrun_battery_denied">Norm+ may be paused in the background. You can allow it later from Watch.</string>
+
+    <!-- Shared actions -->
+    <string name="firstrun_allow">Allow</string>
+    <string name="firstrun_not_now">Not now</string>
+    <string name="firstrun_skip">Skip</string>
+    <string name="firstrun_continue">Continue</string>
+    <string name="firstrun_ask_again">Ask again</string>
+</resources>

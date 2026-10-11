@@ -33,6 +33,20 @@ interface SportDao {
 
     @Query("DELETE FROM sport_sessions")
     suspend fun deleteAll()
+
+    // History (#100): the records by the page, and a signal when the table changes.
+    @Query("SELECT * FROM sport_sessions WHERE timestampEpoch >= :start AND timestampEpoch < :end ORDER BY timestampEpoch ASC")
+    suspend fun listInRange(start: Long, end: Long): List<SportEntity>
+
+    @Query("SELECT MAX(timestampEpoch) FROM sport_sessions WHERE timestampEpoch < :before")
+    suspend fun latestBefore(before: Long): Long?
+
+    @Query("SELECT COUNT(*) FROM sport_sessions")
+    fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE sport_sessions SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 @Dao
@@ -51,6 +65,20 @@ interface HeartRateDao {
 
     @Query("DELETE FROM heart_rate_samples")
     suspend fun deleteAll()
+
+    // History (#100): the readings by the page, and a signal when the table changes.
+    @Query("SELECT * FROM heart_rate_samples WHERE timestampEpoch >= :start AND timestampEpoch < :end ORDER BY timestampEpoch ASC")
+    suspend fun listInRange(start: Long, end: Long): List<HeartRateEntity>
+
+    @Query("SELECT MAX(timestampEpoch) FROM heart_rate_samples WHERE timestampEpoch < :before")
+    suspend fun latestBefore(before: Long): Long?
+
+    @Query("SELECT COUNT(*) FROM heart_rate_samples")
+    fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE heart_rate_samples SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 @Dao
@@ -95,6 +123,28 @@ interface SleepDao {
 
     @Query("DELETE FROM sleep_sessions")
     suspend fun deleteAll()
+
+    // History (#100): a night belongs to the day it ends on, so these go by the session's end.
+    @Query("SELECT * FROM sleep_sessions WHERE endEpoch >= :start AND endEpoch < :end ORDER BY startEpoch ASC")
+    suspend fun listSessionsEndingIn(start: Long, end: Long): List<SleepSessionEntity>
+
+    @Query("""
+        SELECT s.* FROM sleep_stages s
+        JOIN sleep_sessions ss ON s.sessionId = ss.id
+        WHERE ss.endEpoch >= :start AND ss.endEpoch < :end
+        ORDER BY s.sessionId, s.timestampEpoch ASC
+    """)
+    suspend fun listStagesOfSessionsEndingIn(start: Long, end: Long): List<SleepStageEntity>
+
+    @Query("SELECT MAX(endEpoch) FROM sleep_sessions WHERE endEpoch < :before")
+    suspend fun latestEndBefore(before: Long): Long?
+
+    @Query("SELECT COUNT(*) FROM sleep_sessions")
+    fun observeCount(): Flow<Int>
+
+    /** Records synced before Norm+ kept their watch are claimed for [watch] (#113). */
+    @Query("UPDATE sleep_sessions SET watch = :watch WHERE watch IS NULL")
+    suspend fun claimUnowned(watch: String)
 }
 
 data class SleepBreakdown(val deepSec: Int, val lightSec: Int, val awakeSec: Int) {

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hands calibration (#105): the flow that lines the watch's two physical hands up at twelve,
+     then sets the time so they sweep to it. -->
+<resources>
+    <string name="calibration_title">Calibrate hands</string>
+
+    <!-- The step pill: "Step 1 of 2 · Minute hand". -->
+    <string name="calibration_step">Step %1$d of %2$d · %3$s</string>
+    <string name="calibration_minute_hand">Minute hand</string>
+    <string name="calibration_hour_hand">Hour hand</string>
+
+    <!-- Not connected: say so and offer nothing else (the banner above carries the fix). -->
+    <string name="calibration_offline_headline">Connect your watch to calibrate its hands</string>
+    <string name="calibration_offline_body">Norm+ moves the hands over Bluetooth, so the watch has to be connected. Nothing has moved yet.</string>
+
+    <!-- One step per hand. -->
+    <string name="calibration_minute_headline">Move the minute hand to 12</string>
+    <string name="calibration_minute_body">Line it up with the violet mark at twelve. The hour hand comes next.</string>
+    <string name="calibration_hour_headline">Move the hour hand to 12</string>
+    <string name="calibration_hour_body">Line it up with the mark, under the minute hand. The minute hand stays where you left it.</string>
+
+    <!-- The controls. -->
+    <string name="calibration_nudge_title">Nudge</string>
+    <string name="calibration_nudge_body">A small step with each tap</string>
+    <string name="calibration_hold_title">Hold to turn</string>
+    <string name="calibration_hold_body">Turns for as long as you hold</string>
+    <string name="calibration_nudge_back">Nudge the %1$s back</string>
+    <string name="calibration_nudge_forward">Nudge the %1$s forward</string>
+    <string name="calibration_hold_back">Hold to turn the %1$s anticlockwise</string>
+    <string name="calibration_hold_forward">Hold to turn the %1$s clockwise</string>
+    <!-- The hand's name inside a sentence: "Nudge the minute hand back". -->
+    <string name="calibration_minute_hand_inline">minute hand</string>
+    <string name="calibration_hour_hand_inline">hour hand</string>
+
+    <!-- The actions along the bottom. -->
+    <string name="calibration_next">Next</string>
+    <string name="calibration_back">Back</string>
+    <string name="calibration_save">Save</string>
+    <string name="calibration_done">Done</string>
+    <string name="calibration_start_again">Start again</string>
+
+    <!-- Saving: one DATETIME with the re-home flag, then LOCK, about 4 seconds. -->
+    <string name="calibration_saving_headline">Setting the time — the hands are moving</string>
+    <string name="calibration_saving_body">The watch sweeps both hands from twelve to the current time. This takes about 4 seconds.</string>
+
+    <string name="calibration_done_headline">Hands calibrated</string>
+    <string name="calibration_done_body">The watch is set to the current time and its hands are locked.</string>
+
+    <string name="calibration_failed_title">The time wasn’t set</string>
+    <string name="calibration_failed_body">The watch disconnected while saving, so its hands may not show the right time. Once it is connected again, line them up from the start.</string>
+
+    <!-- TalkBack reads the drawn watch as one sentence. -->
+    <string name="calibration_dial_minute_spoken">The watch, its minute hand highlighted, pointing at twelve</string>
+    <string name="calibration_dial_hour_spoken">The watch, its hour hand highlighted, pointing at twelve</string>
+    <string name="calibration_dial_offline_spoken">The watch, not connected</string>
+</resources>

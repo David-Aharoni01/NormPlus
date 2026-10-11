@@ -14,7 +14,6 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -22,6 +21,9 @@ import androidx.core.content.ContextCompat
 import com.normplus.R
 import com.normplus.call.CallManager
 import com.normplus.data.preferences.WatchPreferences
+import com.normplus.status.StatusMessage
+import com.normplus.status.StatusWords
+import com.normplus.status.WatchStatusSource
 import com.normplus.ui.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +34,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
@@ -72,8 +76,10 @@ private const val KEEPALIVE_INTERVAL_MS = 90_000L
  *    process kill (`START_STICKY` + a null-intent resume from prefs), reboot / app update
  *    ([BootReceiver]), and an outright process kill by an OEM optimiser ([ConnectionWatchdog]).
  *  - Report honestly: the ongoing notification names the actual blocker (Bluetooth off, missing
- *    permission, battery restriction) instead of a generic "disconnected".
- *  - Expose a "Disconnect" notification action ([ACTION_STOP]) for a clean, user-initiated stop.
+ *    permission) or the connection's state, in the same words as the app's banner: both come
+ *    from [StatusWords] and one [WatchStatusSource] (#97).
+ *  - Expose a "Stop" notification action ([ACTION_STOP]) for a clean, user-initiated stop; the
+ *    app's banner then says "Norm+ was stopped from its notification · Start".
  *
  * **Connect serialisation.** Every path here (start intent, re-kick, adapter-ON, watchdog) funnels
  * into [requestConnect] → `BleManager.connect`, which is mutex-guarded and rate-limited; a losing
@@ -86,6 +92,7 @@ class BleService : Service() {
     @Inject lateinit var bleManager: BleManager
     @Inject lateinit var watchPreferences: WatchPreferences
     @Inject lateinit var callManager: CallManager
+    @Inject lateinit var statusSource: WatchStatusSource
 
     private val serviceScope = CoroutineScope(SupervisorJob())
 
@@ -106,17 +113,15 @@ class BleService : Service() {
 
     private var btStateReceiver: BluetoothStateReceiver? = null
 
-    // Last state rendered into the notification, so adapter/permission changes can re-render it.
-    @Volatile private var lastState: BleConnectionState = BleConnectionState.Disconnected
-
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         bluetoothOn = isBluetoothOn(this)
-        startForegroundCompat(buildNotification(notificationTextFor(lastState)))
+        startForegroundCompat(buildNotification(StatusWords.notification(statusSource.status.value)))
         _isRunning.value = true
         registerBluetoothStateReceiver()
         observeConnectionState()
+        observeStatus()
         // Safety net for the failure modes this service cannot see (its own process being killed).
         ConnectionWatchdog.schedule(this)
         // Forward phone calls to the watch + handle the watch's answer/reject. Lives for the
@@ -170,7 +175,7 @@ class BleService : Service() {
 
     // ── Start paths ───────────────────────────────────────────────────────────
 
-    /** Unattended start: honour a previous user "Disconnect" instead of overriding it. */
+    /** Unattended start: honour a previous user "Stop" instead of overriding it. */
     private fun resumeFromPreferences(reason: String) {
         serviceScope.launch {
             if (!watchPreferences.isAutoStartEnabled()) {
@@ -256,9 +261,6 @@ class BleService : Service() {
 
     private fun observeConnectionState() {
         bleManager.connectionState.onEach { state ->
-            lastState = state
-            updateNotification(notificationTextFor(state))
-
             // Keep-alive runs only while the link is up.
             if (state is BleConnectionState.Ready) {
                 startKeepAlive()
@@ -343,39 +345,30 @@ class BleService : Service() {
     }
 
     /**
-     * Notification text. Names the *actual* blocker where there is one — a "Watch disconnected"
-     * that really means "you revoked Bluetooth permission" or "Bluetooth is off" is exactly the
-     * silent failure this work exists to remove.
+     * The notification says what the app's banner says, in the same words (#97): the blocker that
+     * stops the link (Bluetooth off, the permission), the connection's state, or "Connected".
+     * Re-rendered whenever the status changes, which includes the adapter going off and on.
      */
-    private fun notificationTextFor(state: BleConnectionState): String = when {
-        !hasBleConnectPermission(this) -> "Bluetooth permission revoked — open Norm+"
-        !bluetoothOn -> "Bluetooth is off — will reconnect when it's back on"
-        state is BleConnectionState.Ready -> "Connected to ${state.deviceName}"
-        state is BleConnectionState.Connecting -> "Connecting…"
-        state is BleConnectionState.Discovering -> "Setting up…"
-        state is BleConnectionState.Scanning -> "Scanning…"
-        // After a few failed cold attempts, hint at the only reliable cure (a BT adapter reset).
-        state is BleConnectionState.Error ->
-            if (state.retryCount >= 3) "Trouble connecting — try toggling Bluetooth" else "Reconnecting…"
-        // Idle: if the OS may be freezing us, say so — it's the likeliest cause of a long silence.
-        isBatteryOptimized() -> "Watch disconnected — allow background activity in Settings"
-        else -> "Watch disconnected — retrying"
+    private fun observeStatus() {
+        statusSource.status
+            .map { StatusWords.notification(it) }
+            .distinctUntilChanged()
+            .onEach { updateNotification(it) }
+            .launchIn(serviceScope)
     }
-
-    private fun isBatteryOptimized(): Boolean =
-        getSystemService(PowerManager::class.java)
-            ?.isIgnoringBatteryOptimizations(packageName)?.not() ?: false
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Watch Connection",
+            getString(R.string.shell_notification_channel),
             NotificationManager.IMPORTANCE_LOW
         )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(message: StatusMessage): Notification {
+        val text = message.text.resolve(resources)
+        val hint = message.hint?.resolve(resources)
         val openIntent = Intent(this, MainActivity::class.java)
         val openPi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
         val stopPi = PendingIntent.getService(
@@ -385,27 +378,33 @@ class BleService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Norm 2")
+            .setContentTitle(getString(R.string.shell_watch_name))
             .setContentText(text)
+            .apply { if (hint != null) setStyle(NotificationCompat.BigTextStyle().bigText("$text\n$hint")) }
             .setSmallIcon(R.drawable.ic_watch)
             .setContentIntent(openPi)
-            .addAction(0, "Disconnect", stopPi)
+            .addAction(0, getString(R.string.shell_notification_stop), stopPi)
             .setOngoing(true)
             .build()
     }
 
-    private fun updateNotification(text: String) {
+    private fun updateNotification(message: StatusMessage) {
+        // Stopped from the notification: it is gone, and a late status change must not post it again.
+        if (userStopped) return
         val nm = getSystemService(NotificationManager::class.java)
         // POST_NOTIFICATIONS may have been revoked; notify() then throws nothing but is dropped.
-        runCatching { nm.notify(NOTIF_ID, buildNotification(text)) }
+        runCatching { nm.notify(NOTIF_ID, buildNotification(message)) }
             .onFailure { Log.w(TAG, "notification update failed: ${it.message}") }
     }
 
-    /** Re-render the notification for the current state (after a non-state change, e.g. adapter off). */
-    private fun refreshNotification() = updateNotification(notificationTextFor(lastState))
+    /**
+     * Something the notification names changed outside the connection state (the adapter, a
+     * permission): sample it again; the status flow re-renders the notification.
+     */
+    private fun refreshNotification() = statusSource.refresh()
 
     companion object {
-        /** User-initiated clean stop (fired by the notification's Disconnect action): tears down
+        /** User-initiated clean stop (fired by the notification's Stop action): tears down
          *  the link and stops the service without scheduling the always-on re-kick. */
         const val ACTION_STOP = "com.normplus.ble.action.STOP"
 
@@ -424,7 +423,7 @@ class BleService : Service() {
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
         /** Start (or no-op if already running) the always-on connection service, on explicit user
-         *  intent. Re-arms auto-start, overriding an earlier "Disconnect". */
+         *  intent. Re-arms auto-start, overriding an earlier "Stop". */
         fun start(context: Context) = launch(context, ACTION_START)
 
         /** Unattended (re)start from boot, an app update, or the watchdog. Honours the stored

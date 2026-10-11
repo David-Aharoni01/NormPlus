@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The firmware update (#106). -->
+<resources>
+    <string name="firmware_title">Update watch</string>
+
+    <string name="firmware_step_choose">Choose</string>
+    <string name="firmware_step_review">Review</string>
+    <string name="firmware_step_running">Updating</string>
+
+    <!-- Choose. -->
+    <string name="firmware_choose_headline">What to send to your watch</string>
+    <string name="firmware_choose_body">An update replaces part of what your watch runs. Pick one to review it before anything is sent.</string>
+    <string name="firmware_now_label">Your watch runs</string>
+    <string name="firmware_now_value">Version %1$s</string>
+    <string name="firmware_now_unknown">Version not read yet</string>
+    <string name="firmware_original_title">Original screens and fonts (R0.4)</string>
+    <string name="firmware_original_body">The watch\'s own screens, fonts and images, as they came. The way back if they were changed or lost.</string>
+    <string name="firmware_original_missing">This build of Norm+ doesn\'t include them.</string>
+    <string name="firmware_normplus_title">Norm+ firmware</string>
+    <string name="firmware_normplus_body">Not available yet: it needs a way to recover a watch that doesn\'t start before it can be sent (#93).</string>
+    <string name="firmware_custom_title">The file %1$s</string>
+    <string name="firmware_custom_body">Chosen on Technical. Sent with the same checks as any update.</string>
+
+    <!-- Review: two deliberate acts. -->
+    <string name="firmware_review_headline">Send %1$s?</string>
+    <string name="firmware_review_body">Keep your phone close to your watch, with Norm+ open, until it finishes.</string>
+    <string name="firmware_review_warning_title">Your watch shows nothing while this runs</string>
+    <string name="firmware_review_warning_body">Its screens are replaced as soon as the update starts. If it\'s interrupted, the watch stays blank until it is sent again.</string>
+    <string name="firmware_acknowledge">I understand the watch shows nothing until this finishes, and stays blank if it\'s interrupted</string>
+    <string name="firmware_needs_watch">Connect your watch to start.</string>
+    <string name="firmware_settling">Your watch has just connected. You can start in %1$d s.</string>
+    <string name="firmware_back">Back</string>
+    <string name="firmware_start">Start</string>
+
+    <!-- Running. -->
+    <string name="firmware_running_headline">Updating your watch</string>
+    <string name="firmware_running_body">Your watch is blank on purpose. Keep your phone close, with Norm+ open.</string>
+    <string name="firmware_stage_preparing">Preparing</string>
+    <string name="firmware_stage_sending">Sending</string>
+    <string name="firmware_stage_checking">Checking</string>
+    <string name="firmware_stage_restarting">Restarting your watch</string>
+    <string name="firmware_stage_done">Done</string>
+    <string name="firmware_pieces">%1$s of %2$s pieces · %3$d%%</string>
+    <string name="firmware_remaining_seconds">About %1$d s left</string>
+    <string name="firmware_remaining_minutes">About %1$d min left</string>
+
+    <!-- Leaving while it runs. -->
+    <string name="firmware_leave_title">Stop the update?</string>
+    <string name="firmware_leave_body">Leaving stops it, and your watch stays blank until the update is sent again.</string>
+    <string name="firmware_leave_confirm">Stop and leave</string>
+    <string name="firmware_leave_stay">Keep updating</string>
+
+    <!-- Done and failed. -->
+    <string name="firmware_done_headline">Your watch is updated</string>
+    <string name="firmware_done_body">It restarts and shows its face again.</string>
+    <string name="firmware_done">Done</string>
+    <string name="firmware_failed_title">The update stopped</string>
+    <string name="firmware_failed_body">Your watch stays blank until the update is sent again. Keep it close, connected, and send it again.</string>
+    <string name="firmware_send_again">Send again</string>
+    <string name="firmware_close">Close</string>
+    <string name="firmware_details">Details</string>
+    <string name="firmware_hide_details">Hide details</string>
+    <string name="firmware_details_body">Stopped at %1$s: %2$s</string>
+</resources>

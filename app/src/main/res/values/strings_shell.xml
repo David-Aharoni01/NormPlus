@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The shell's words (#97): the tabs, the status pill, the connection banner and the
+     service notification. The banner and the notification say the same thing in the same
+     words; both are chosen in com.normplus.status.StatusWords. -->
+<resources>
+    <!-- The three tabs; each is also its screen's title. -->
+    <string name="shell_tab_today">Today</string>
+    <string name="shell_tab_history">History</string>
+    <string name="shell_tab_watch">Watch</string>
+    <!-- The top app bar's Sync action on Today. -->
+    <string name="shell_sync">Sync with your watch</string>
+
+    <!-- The status pill: "Norm 2 · 82% · synced 14:32". -->
+    <string name="shell_watch_name">Norm 2</string>
+    <string name="shell_status_battery">%1$d%%</string>
+    <string name="shell_status_synced_at">synced %1$s</string>
+    <string name="shell_status_not_synced">not synced yet</string>
+    <!-- While a sync runs, the status pill shows its progress; "412 of 922" never breaks. -->
+    <string name="shell_sync_counting">Counting records…</string>
+    <string name="shell_sync_sport">Reading sport records · %1$s of %2$s</string>
+    <string name="shell_sync_heart_rate">Reading heart-rate records · %1$s of %2$s</string>
+    <string name="shell_sync_sleep">Reading sleep records · %1$s of %2$s</string>
+
+    <!-- The connection's states, in the banner and the notification alike. -->
+    <string name="shell_link_scanning">Scanning for your watch…</string>
+    <string name="shell_link_connecting">Connecting to your watch…</string>
+    <string name="shell_link_setting_up">Setting up the connection…</string>
+    <string name="shell_link_reconnecting">Reconnecting to your watch…</string>
+    <string name="shell_link_reconnecting_attempt">Reconnecting to your watch… (attempt\u00A0%1$d)</string>
+    <string name="shell_link_bluetooth_hint">Turning Bluetooth off and on usually helps</string>
+    <string name="shell_link_disconnected">Your watch is disconnected</string>
+    <string name="shell_fix_connect">Connect</string>
+    <string name="shell_fix_bluetooth_settings">Open Bluetooth</string>
+
+    <!-- The blockers: what each is called, why it matters (fix-it cards), and its one fix. -->
+    <string name="shell_blocker_bluetooth_permission">Norm+ isn\'t allowed to use Bluetooth</string>
+    <string name="shell_blocker_bluetooth_permission_reason">Without Nearby devices, Norm+ can\'t connect to your watch.</string>
+    <string name="shell_blocker_bluetooth_permission_fix">Allow</string>
+    <string name="shell_blocker_service_stopped">Norm+ was stopped from its notification</string>
+    <string name="shell_blocker_service_stopped_reason">Nothing reaches your watch until Norm+ runs again.</string>
+    <string name="shell_blocker_service_stopped_fix">Start</string>
+    <string name="shell_blocker_bluetooth_off">Bluetooth is off</string>
+    <string name="shell_blocker_bluetooth_off_reason">Your watch reconnects on its own once Bluetooth is back on.</string>
+    <string name="shell_blocker_bluetooth_off_fix">Turn on</string>
+    <string name="shell_blocker_background_restricted">Norm+ is restricted in the background</string>
+    <string name="shell_blocker_background_restricted_reason">Android stops the connection whenever Norm+ isn\'t on screen. Set its battery use to Unrestricted.</string>
+    <string name="shell_blocker_background_restricted_fix">Allow</string>
+    <string name="shell_blocker_battery_optimisation">Battery optimisation is on</string>
+    <string name="shell_blocker_battery_optimisation_reason">Android may pause the connection while the phone is idle, and Norm+ can\'t restart itself after it is closed.</string>
+    <string name="shell_blocker_battery_optimisation_fix">Turn off</string>
+    <string name="shell_blocker_notifications_blocked">Norm+ notifications are blocked</string>
+    <string name="shell_blocker_notifications_blocked_reason">The connection\'s notification is hidden, so you can\'t see or stop it from there.</string>
+    <string name="shell_blocker_notifications_blocked_fix">Turn on</string>
+    <string name="shell_blocker_notification_access">Notification access is off</string>
+    <string name="shell_blocker_notification_access_reason">Norm+ needs it to send your phone\'s notifications to your watch.</string>
+    <string name="shell_blocker_notification_access_fix">Turn on</string>
+    <string name="shell_blocker_calls">Calls don\'t reach your watch</string>
+    <string name="shell_blocker_calls_reason">Allow phone access to see who is calling on your watch, and to answer or decline there.</string>
+    <string name="shell_blocker_calls_fix">Allow</string>
+
+    <!-- The service notification. Its text is the banner's words; these are its own. -->
+    <string name="shell_notification_channel">Watch connection</string>
+    <string name="shell_notification_connected">Connected</string>
+    <string name="shell_notification_no_watch">No watch set up yet</string>
+    <string name="shell_notification_stop">Stop</string>
+</resources>

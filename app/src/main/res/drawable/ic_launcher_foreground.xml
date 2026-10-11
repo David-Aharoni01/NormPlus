@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Adaptive icon foreground — 108dp canvas, safe zone 18-90dp.
-    Design: square smartwatch (matches Norm 2 form factor) with teal lightning bolt
-    indicating custom firmware. Straps fill the safe zone vertically.
+    The Norm+ launcher icon's foreground (#96), our own drawing: the watch as the Watch tab
+    draws it. A violet ring, a grey bezel, the black display, and the two physical hands (the
+    Norm 2 has no second hand) at twelve and four, an L that reads as a clock and never as a
+    tick, round a violet pivot.
+
+    108 dp canvas; everything stays inside the 66 dp safe circle (r 33 about 54,54): the
+    ring's outer edge is at r 31.2, so no launcher mask cuts it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -10,36 +14,37 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Top strap -->
+    <!-- The violet ring. -->
     <path
-        android:fillColor="#BDBDBD"
-        android:pathData="M42,18 L66,18 L66,27 L42,27 Z"/>
+        android:strokeColor="#A68BFF"
+        android:strokeWidth="2.4"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 A30,30 0 1,1 53.99,24 Z"/>
 
-    <!-- Bottom strap -->
+    <!-- The bezel, its lighter edge, and the display. -->
+    <path android:fillColor="#3A3C42" android:pathData="M54,27.5 A26.5,26.5 0 1,1 53.99,27.5 Z"/>
     <path
-        android:fillColor="#BDBDBD"
-        android:pathData="M42,81 L66,81 L66,90 L42,90 Z"/>
+        android:strokeColor="#55585F"
+        android:strokeWidth="0.8"
+        android:fillColor="#00000000"
+        android:pathData="M54,27.9 A26.1,26.1 0 1,1 53.99,27.9 Z"/>
+    <path android:fillColor="#000000" android:pathData="M54,31 A23,23 0 1,1 53.99,31 Z"/>
 
-    <!-- Watch body (white, rounded corners) -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M31,27 L77,27 Q83,27 83,33 L83,75 Q83,81 77,81 L31,81 Q25,81 25,75 L25,33 Q25,27 31,27 Z"/>
+    <!-- The hour hand, towards four. -->
+    <group android:pivotX="54" android:pivotY="54" android:rotation="120">
+        <path
+            android:fillColor="#E9EAEE"
+            android:pathData="M51.9,40.5 A2.1,2.1 0 0,1 56.1,40.5 L56.1,57 A2.1,2.1 0 0,1 51.9,57 Z"/>
+    </group>
 
-    <!-- Watch face (deep blue) -->
-    <path
-        android:fillColor="#1565C0"
-        android:pathData="M32,34 L76,34 L76,74 L32,74 Z"/>
+    <!-- The minute hand, at twelve. -->
+    <group android:pivotX="54" android:pivotY="54" android:rotation="0">
+        <path
+            android:fillColor="#E9EAEE"
+            android:pathData="M52.6,35 A1.4,1.4 0 0,1 55.4,35 L55.4,57.5 A1.4,1.4 0 0,1 52.6,57.5 Z"/>
+    </group>
 
-    <!-- Hour tick marks -->
-    <path
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="2.5"
-        android:strokeLineCap="round"
-        android:pathData="M54,34 L54,39 M54,69 L54,74 M32,54 L37,54 M71,54 L76,54"/>
-
-    <!-- Lightning bolt — teal accent, signals custom/open firmware -->
-    <path
-        android:fillColor="#29D3A5"
-        android:pathData="M57,38 L45,56 L52,56 L48,68 L63,51 L56,51 Z"/>
-
+    <!-- The pivot: a cap in the hands' colour with a violet centre. -->
+    <path android:fillColor="#E9EAEE" android:pathData="M54,50.6 A3.4,3.4 0 1,1 53.99,50.6 Z"/>
+    <path android:fillColor="#A68BFF" android:pathData="M54,52.5 A1.5,1.5 0 1,1 53.99,52.5 Z"/>
 </vector>

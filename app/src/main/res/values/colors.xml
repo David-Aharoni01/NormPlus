@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Deep navy — pairs with the white watch body and teal accent in the launcher icon -->
-    <color name="launcher_background">#0D1B2A</color>
+    <!-- The launcher icon's ground: Dark Dial's near-black (ui/theme/Color.kt, Ground). The
+         icon's glow is drawn over it in drawable/ic_launcher_background.xml. -->
+    <color name="ic_launcher_background">#0B0C0F</color>
+    <!-- The window's ground before Compose draws: the light scheme's ground (Color.kt, PaleGround). -->
+    <color name="window_ground">#F2F2F5</color>
 </resources>

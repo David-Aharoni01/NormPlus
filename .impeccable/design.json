@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-11T03:10:00+03:00",
+  "title": "Design System: Norm+",
+  "extensions": {
+    "colorMeta": {
+      "ground": { "role": "neutral", "displayName": "Night Ground", "canonical": "#0B0C0F", "tonalRamp": ["oklch(15% 0.006 270)", "oklch(25% 0.006 270)", "oklch(35% 0.006 270)", "oklch(45% 0.006 270)", "oklch(55% 0.006 270)", "oklch(70% 0.006 270)", "oklch(85% 0.006 270)", "oklch(95% 0.006 270)"] },
+      "card": { "role": "neutral", "displayName": "Card Charcoal", "canonical": "#17181C" },
+      "ink": { "role": "neutral", "displayName": "Dial White", "canonical": "#F4F5F7" },
+      "signal-violet": { "role": "primary", "displayName": "Signal Violet", "canonical": "#A68BFF", "tonalRamp": ["oklch(15% 0.12 290)", "oklch(25% 0.14 290)", "oklch(35% 0.16 290)", "oklch(45% 0.18 290)", "oklch(55% 0.19 290)", "oklch(70% 0.17 290)", "oklch(85% 0.09 290)", "oklch(95% 0.03 290)"] },
+      "glow-violet": { "role": "primary", "displayName": "Dial Glow", "canonical": "#7B5CFF" },
+      "fine-green": { "role": "secondary", "displayName": "All-Fine Green", "canonical": "#5BD98A", "tonalRamp": ["oklch(15% 0.05 150)", "oklch(25% 0.07 150)", "oklch(35% 0.09 150)", "oklch(45% 0.11 150)", "oklch(55% 0.14 150)", "oklch(70% 0.16 150)", "oklch(85% 0.1 150)", "oklch(95% 0.04 150)"] },
+      "fix-amber": { "role": "tertiary", "displayName": "Fix-it Amber", "canonical": "#FFB547" },
+      "fail-red": { "role": "tertiary", "displayName": "Failure Red", "canonical": "#FF6B6B" },
+      "deep-violet": { "role": "primary", "displayName": "Signal Violet (light mode)", "canonical": "#6246E0" }
+    },
+    "typographyMeta": {
+      "screen-title": { "displayName": "Screen title", "purpose": "The large bold title at the head of every screen; collapses to 22 sp on scroll." },
+      "hero-figure": { "displayName": "Hero figure", "purpose": "The hero card's number (today's steps); shrinks to fit at font scale 1.3." },
+      "tile-figure": { "displayName": "Tile figure", "purpose": "A metric tile's number, its unit set smaller beside it." },
+      "section-title": { "displayName": "Section title", "purpose": "The heading over a group of settings." },
+      "body": { "displayName": "Body", "purpose": "Everything people read in sentences." },
+      "label": { "displayName": "Label", "purpose": "Pills, buttons, state marks." }
+    },
+    "shadows": [
+      { "name": "capsule-float", "value": "0 8px 24px rgba(0,0,0,0.35)", "purpose": "Only the floating navigation capsule casts a shadow; everything else is tonal." }
+    ],
+    "motion": [
+      { "name": "fade-through", "value": "300ms, outgoing fades in 90ms, emphasized decelerate", "purpose": "Between the three tabs; a cut with Remove animations on." },
+      { "name": "shared-axis-x", "value": "300ms, emphasized decelerate/accelerate", "purpose": "Between days in Day detail; a cut with Remove animations on." },
+      { "name": "hand-sweep", "value": "the shortest way round, as the steppers move", "purpose": "The dial's hands moving to a new time." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "360-480dp wide; phone only" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary pill button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one way on at the end of a flow (Next, Save, Start).",
+      "html": "<button class=\"ds-btn-primary\">Next</button>",
+      "css": ".ds-btn-primary { background: #A68BFF; color: #1A1033; font: 600 14px/20px 'Roboto Flex', Roboto, sans-serif; letter-spacing: 0.1px; padding: 12px 24px; min-height: 48px; border: none; border-radius: 9999px; transition: filter 0.2s; } .ds-btn-primary:hover { filter: brightness(1.08); } .ds-btn-primary:focus-visible { outline: 2px solid #DCD2FF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Tonal pill button",
+      "kind": "button",
+      "refersTo": "button-tonal",
+      "description": "A secondary action on a card (Find watch, Earlier, Later).",
+      "html": "<button class=\"ds-btn-tonal\">Find watch</button>",
+      "css": ".ds-btn-tonal { background: #1F2126; color: #A68BFF; font: 600 14px/20px 'Roboto Flex', Roboto, sans-serif; padding: 12px 20px; min-height: 48px; border: none; border-radius: 9999px; transition: background 0.2s; } .ds-btn-tonal:hover { background: #2A2147; } .ds-btn-tonal:focus-visible { outline: 2px solid #A68BFF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Status pill",
+      "kind": "chip",
+      "refersTo": "status-pill-fine",
+      "description": "Under every screen title while the watch is fine.",
+      "html": "<span class=\"ds-pill-fine\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"10\" fill=\"#5BD98A\"/><path d=\"M7 12.5l3 3 7-7\" stroke=\"#12301F\" stroke-width=\"2.4\" fill=\"none\"/></svg>Norm 2 · 82% · synced 14:32</span>",
+      "css": ".ds-pill-fine { display: inline-flex; align-items: center; gap: 6px; background: #12301F; color: #5BD98A; font: 600 14px/20px 'Roboto Flex', Roboto, sans-serif; padding: 6px 12px; border-radius: 9999px; }"
+    },
+    {
+      "name": "Fix-it banner",
+      "kind": "custom",
+      "refersTo": "banner-fix",
+      "description": "Replaces the pill when something needs fixing; one fix.",
+      "html": "<div class=\"ds-banner-fix\"><span>Bluetooth is off</span><button>Turn on</button></div>",
+      "css": ".ds-banner-fix { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #FFB547; color: #2A1A00; font: 500 15px/20px 'Roboto Flex', Roboto, sans-serif; padding: 12px 12px 12px 16px; border-radius: 20px; } .ds-banner-fix button { background: #2A1A00; color: #FFB547; border: none; border-radius: 9999px; padding: 10px 18px; font-weight: 600; } .ds-banner-fix button:focus-visible { outline: 2px solid #2A1A00; outline-offset: 2px; }"
+    },
+    {
+      "name": "Steps hero card",
+      "kind": "card",
+      "refersTo": "hero-card",
+      "description": "Today's steps against the goal, with the violet bar.",
+      "html": "<div class=\"ds-hero\"><div class=\"ds-hero-label\">Steps</div><div class=\"ds-hero-figure\">6,412</div><div class=\"ds-hero-sub\">of 7,000 · 588 to go</div><div class=\"ds-hero-bar\"><i></i></div></div>",
+      "css": ".ds-hero { background: #17181C; border: 1px solid #24262C; border-radius: 28px; padding: 24px; color: #F4F5F7; font-family: 'Roboto Flex', Roboto, sans-serif; box-shadow: 0 0 80px rgba(123,92,255,0.18); } .ds-hero-label { color: #A3A7B0; font: 600 15px/20px inherit; } .ds-hero-figure { font: 800 64px/64px inherit; letter-spacing: -1px; font-variant-numeric: tabular-nums; margin-top: 16px; } .ds-hero-sub { color: #A3A7B0; font: 600 16px/24px inherit; margin-top: 8px; } .ds-hero-bar { height: 8px; background: #2A2147; border-radius: 9999px; margin-top: 16px; } .ds-hero-bar i { display: block; width: 92%; height: 100%; background: #A68BFF; border-radius: 9999px; }"
+    },
+    {
+      "name": "Navigation capsule",
+      "kind": "nav",
+      "refersTo": "navigation-capsule",
+      "description": "The floating Today · History · Watch bar.",
+      "html": "<nav class=\"ds-capsule\"><a class=\"on\">Today</a><a>History</a><a>Watch</a></nav>",
+      "css": ".ds-capsule { display: flex; justify-content: space-around; align-items: center; height: 72px; background: #1F2126; border: 1px solid #2A2C33; border-radius: 9999px; box-shadow: 0 8px 24px rgba(0,0,0,0.35); font: 600 12px/16px 'Roboto Flex', Roboto, sans-serif; } .ds-capsule a { color: #A3A7B0; padding: 8px 18px; border-radius: 9999px; cursor: pointer; } .ds-capsule a.on { color: #A68BFF; background: #2A2147; } .ds-capsule a:focus-visible { outline: 2px solid #A68BFF; }"
+    },
+    {
+      "name": "Live dial",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "The signature: the watch drawn by Norm+, hands at the time, violet ring and glow.",
+      "html": "<div class=\"ds-dial\"><svg viewBox=\"0 0 200 200\" width=\"160\" height=\"160\"><circle cx=\"100\" cy=\"100\" r=\"94\" fill=\"none\" stroke=\"#A68BFF\" stroke-width=\"3\"/><circle cx=\"100\" cy=\"100\" r=\"84\" fill=\"#000\" stroke=\"#3A3C42\" stroke-width=\"12\"/><line x1=\"100\" y1=\"100\" x2=\"100\" y2=\"40\" stroke=\"#E9EAEE\" stroke-width=\"6\" stroke-linecap=\"round\"/><line x1=\"100\" y1=\"100\" x2=\"138\" y2=\"78\" stroke=\"#E9EAEE\" stroke-width=\"8\" stroke-linecap=\"round\"/><circle cx=\"100\" cy=\"100\" r=\"6\" fill=\"#A68BFF\"/></svg></div>",
+      "css": ".ds-dial { display: inline-flex; padding: 24px; border-radius: 50%; background: radial-gradient(circle, rgba(123,92,255,0.28) 0%, rgba(123,92,255,0) 70%); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Dark Dial",
+    "overview": "Norm+ is a dark room with the watch in it: a near-black ground, the day's numbers on rounded cards, and the Norm 2 itself drawn live as the hero of its own tab, its physical hands where they really are, inside a violet ring with one soft glow. It is an Operate surface: Material 3 behaviour throughout, with the world lending only type, palette, density and one signature move.",
+    "keyCharacteristics": [
+      "Near-black ground, rounded cards, one violet accent",
+      "Green only for fine and goal reached; amber fix-its, red failures, always with words",
+      "Big bold titles and tabular figures in Roboto Flex",
+      "The watch drawn live as the signature",
+      "Dark first, light designed to match"
+    ],
+    "rules": [
+      { "name": "The One Glow Rule", "body": "One soft violet glow behind each screen's hero; never a second, never on content.", "section": "colors" },
+      { "name": "The State Marks Rule", "body": "Sending, Sent, Not sent and Waiting look the same everywhere.", "section": "colors" },
+      { "name": "The Absent Is Absent Rule", "body": "A figure the watch hasn't reported says so in words; never zero.", "section": "typography" }
+    ],
+    "dos": [
+      "Do keep green for \"fine\" and goals, amber for fix-its, red for failures, violet for everything you can act on.",
+      "Do say an absent figure is absent, in words; never show it as zero.",
+      "Do draw the watch as Norm+'s own drawing; don't use or imitate the watch's own screens."
+    ],
+    "donts": [
+      "Don't smooth a chart, add rings, streaks or badges, or add a second glow to a screen.",
+      "Don't put protocol words, hex or terminal type on an everyday screen; Technical holds them, in the same face.",
+      "Don't break Material behaviour (Back, switches, dialogs) for the look; the world themes Material, it doesn't replace it."
+    ]
+  }
+}
