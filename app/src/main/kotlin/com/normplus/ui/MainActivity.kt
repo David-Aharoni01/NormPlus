@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,8 @@ import androidx.compose.ui.Modifier
 import com.normplus.ble.BleService
 import com.normplus.data.preferences.WatchPreferences
 import com.normplus.ui.shell.NormPlusApp
+import com.normplus.ui.components.LocalWatchScreenImages
+import com.normplus.ui.components.WatchScreenImages
 import com.normplus.ui.theme.NormPlusTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -51,8 +54,10 @@ class MainActivity : ComponentActivity() {
             if (BleService.hasBleConnectPermission(this)) BleService.start(this)
         }
 
+        // The watch's own screenshots, when this build carries them (#114).
+        val screenImages = WatchScreenImages.load(this)
         setContent {
-            NormPlusTheme {
+            CompositionLocalProvider(LocalWatchScreenImages provides screenImages) { NormPlusTheme {
                 // Where to start depends on whether a watch is saved: read once, off the main thread.
                 var startsWithWatch by rememberSaveable { mutableStateOf<Boolean?>(null) }
                 LaunchedEffect(Unit) {
@@ -62,7 +67,7 @@ class MainActivity : ComponentActivity() {
                     null -> Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
                     else -> NormPlusApp(startsWithWatch = withWatch)
                 }
-            }
+            } }
         }
     }
 }

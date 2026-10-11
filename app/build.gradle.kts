@@ -54,13 +54,21 @@ android {
     // It is the vendor's file, so it lives in the private NORM submodule, not in this repo:
     // copied in at build time when the submodule is checked out, left out when it is not.
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/bundledFirmware"))
+    // The watch's own screens, screenshotted from the emulated watch (#114): the vendor's
+    // screens, so kept in NORM/_screens and copied in the same way; without them the app
+    // draws its own previews.
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/watchScreens"))
 }
 
 val copyBundledFirmware by tasks.registering(Copy::class) {
     from(rootProject.file("NORM/assets")) { include("Picture_P03B_NORM2_0.4.bin") }
     into(layout.buildDirectory.dir("generated/bundledFirmware/firmware"))
 }
-tasks.named("preBuild") { dependsOn(copyBundledFirmware) }
+val copyWatchScreens by tasks.registering(Copy::class) {
+    from(rootProject.file("NORM/_screens")) { include("*.png", "pages.json") }
+    into(layout.buildDirectory.dir("generated/watchScreens/watchscreens"))
+}
+tasks.named("preBuild") { dependsOn(copyBundledFirmware, copyWatchScreens) }
 
 dependencies {
     implementation(project(":protocol"))

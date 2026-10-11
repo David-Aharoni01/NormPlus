@@ -4,6 +4,11 @@ import androidx.annotation.StringRes
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -161,7 +166,8 @@ fun WatchDial(
         val d = minOf(maxWidth, maxHeight)
         val g = DialGeometry(d, ring)
         Canvas(Modifier.fillMaxSize()) { drawCase(g, c.dialRing, c.dialBezel, c.dialBezelEdge, c.dialDisplay, ring) }
-        DisplayContent(screen, date, g)
+        // Calibration (the twelve mark) shows the hands alone: no time on the display under them.
+        if (!showTwelveMark) DisplayContent(screen, date, time, g)
         Canvas(Modifier.fillMaxSize()) {
             if (showTwelveMark) drawTwelveMark(g, c.dialAccent)
             if (showHands) {
@@ -232,23 +238,46 @@ private fun DrawScope.drawPivot(g: DialGeometry, cap: Color, accent: Color) {
 
 /** What the black display shows: the face's date line, or a page's icon and label. Fixed in size, as a picture. */
 @Composable
-private fun DisplayContent(screen: WatchScreen, date: LocalDate?, g: DialGeometry) {
+private fun DisplayContent(screen: WatchScreen, date: LocalDate?, time: LocalTime, g: DialGeometry) {
     val c = NormPlusTheme.colors
     val density = LocalDensity.current
     val base = NormPlusTheme.type.dialText
     fun sp(dp: Dp) = with(density) { dp.toSp() }
     val r = g.displayRadius
     if (screen == WatchScreen.Face) {
-        if (date == null) return
-        val pattern = stringResource(R.string.dial_date_pattern)
+        // The face as the watch draws it (#114): its digital time, the day and date under it,
+        // low on the display, in grey; the physical hands go over it. Live, so the time is
+        // never a screenshot's frozen one.
         val locale = currentLocale()
-        val words = remember(date, pattern, locale) { DateTimeFormatter.ofPattern(pattern, locale).format(date) }
+        val clock = remember(time, locale) { DateTimeFormatter.ofPattern("HH:mm", locale).format(time) }
         Text(
-            words.uppercase(locale),
-            style = base.copy(fontSize = sp(r * 0.13f), lineHeight = sp(r * 0.16f), letterSpacing = sp(r * 0.012f)),
+            clock,
+            style = base.copy(fontSize = sp(r * 0.19f), lineHeight = sp(r * 0.22f), fontWeight = FontWeight.Bold),
             color = c.dialInkSecondary,
             maxLines = 1,
-            modifier = Modifier.offset(y = r * 0.5f),
+            modifier = Modifier.offset(y = r * 0.43f),
+        )
+        if (date == null) return
+        val words = remember(date, locale) {
+            DateTimeFormatter.ofPattern("EEE", locale).format(date).uppercase(locale) + " | " +
+                DateTimeFormatter.ofPattern("dd MMM", locale).format(date).uppercase(locale)
+        }
+        Text(
+            words,
+            style = base.copy(fontSize = sp(r * 0.12f), lineHeight = sp(r * 0.15f), letterSpacing = sp(r * 0.008f)),
+            color = c.dialInkSecondary,
+            maxLines = 1,
+            modifier = Modifier.offset(y = r * 0.62f),
+        )
+        return
+    }
+    // A page the build carries a screenshot of: the watch's own screen, round as its display.
+    LocalWatchScreenImages.current.imageFor(screen)?.let { image ->
+        Image(
+            image,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(r * 2).clip(CircleShape),
         )
         return
     }

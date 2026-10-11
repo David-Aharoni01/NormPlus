@@ -677,6 +677,19 @@ colour names now resolve to the theme's roles, so they show in the new palette. 
 screen imports nothing from `legacy`; the package is deleted with the last old screen.
 
 
+### The watch's own screens in the app (#114)
+
+The live dial (Watch, the watch-screens order) shows the watch's real pages: screenshots taken from the emulated watch with `normwatch screens`, kept in the private `NORM/_screens` with a hand-written `pages.json` (page type → file), and copied into the APK's assets at build time (`copyWatchScreens` in `app/build.gradle.kts`). They are the vendor's screens, so they never enter this repository: the app reads them through `LocalWatchScreenImages`, which only `MainActivity` provides, so screenshot tests (and builds without `NORM/`) draw Norm+'s own previews and no golden ever holds a vendor image. The face is always drawn live, in the watch's own layout, with the physical hands over it.
+
+To take them again (after a firmware change):
+
+```bash
+uv run normwatch boot --no-ble --flash-state tools/tests/fixtures/bound-watch.zip --save-state ui.snap
+uv run normwatch screens --load-state ui.snap -o NORM/_screens
+```
+
+then check `pages.json` against the new images and commit them in `NORM/`.
+
 ## Verified on the watch
 
 ### Feature status — verified on-device (works 100%)
