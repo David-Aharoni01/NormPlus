@@ -140,6 +140,7 @@ regenerate it from your own copy of the APK: `java -jar apktool_3.0.2.jar d NORM
 | `docs/app.md` | `:app` and `:protocol` architecture: BLE layer, the cold-connect penalty, always-on uptime, notifications, calls, data, UI; what is verified on the watch |
 | `docs/protocol.md` | The 0x6F channel, CHECK/SET rules, the Apollo DFU update as the firmware answers it, the version string, key smali files, apktool |
 | `docs/firmware.md` | The watch firmware itself: image format, the two CRCs, hardware, the vendor OTA server, what can be patched, the NAND read-out patch |
+| `docs/firmware-patching.md` | Adding code to the firmware: a C compiler from PyPI (`ziglang`), the free flash after the image, where an unknown 0x6F command lands, RAM for new code |
 | `docs/watch-emulator.md` | The watch emulator in summary: boot, radio, NZ8801, architecture, performance switches, and **where it differs from the real watch** (#74) -- read that before trusting an emulator-only result |
 | `docs/watch-emulator-internals.md` | The watch emulator in full -- read it before changing anything in `fw/` |
 | `docs/android-emulator.md` | The Android emulator and its Bluetooth bridge |
